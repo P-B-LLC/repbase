@@ -1,0 +1,62 @@
+{% extends "core/base.html" %}
+
+{% block title %}Members · Repbase{% endblock %}
+
+{% block content %}
+<section class="page-heading">
+    <div>
+        <p class="eyebrow">Fitness community</p>
+        <h1>Members</h1>
+        <p class="subtitle">Everyone currently training with Repbase.</p>
+    </div>
+    <span class="count-badge">{{ users|length }} member{{ users|length|pluralize }}</span>
+</section>
+
+<section class="surface" aria-labelledby="member-list-title">
+    <h2 id="member-list-title" class="visually-hidden">Repbase members</h2>
+
+    {% if users %}
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th scope="col">Member</th>
+                        <th scope="col">Height</th>
+                        <th scope="col">Weight</th>
+                        <th scope="col">Joined</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td data-label="Member">
+                            <div class="member-cell">
+                                <span class="avatar" aria-hidden="true">{{ user.first_name|first|upper }}</span>
+                                <span>
+                                    <strong>{{ user.first_name }} {{ user.last_name }}</strong>
+                                    <small>@{{ user.username }} &middot; {{ user.email }}</small>
+                                </span>
+                            </div>
+                        </td>
+                        <td data-label="Height">
+                            {% if user.height_cm %}{{ user.height_cm }} cm{% else %}<span class="muted">Not set</span>{% endif %}
+                        </td>
+                        <td data-label="Weight">
+                            {% if user.weight_kg %}{{ user.weight_kg }} kg{% else %}<span class="muted">Not set</span>{% endif %}
+                        </td>
+                        <td data-label="Joined">{{ user.created_at|date:"M j, Y" }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <span class="empty-icon" aria-hidden="true">R</span>
+            <h2>No members yet</h2>
+            <p>Create a user through the API and they’ll appear here.</p>
+            <a class="button" href="/api/users/">Open user API</a>
+        </div>
+    {% endif %}
+</section>
+{% endblock %}

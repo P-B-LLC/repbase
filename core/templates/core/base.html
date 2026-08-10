@@ -1,0 +1,26 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Repbase{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'core/css/repbase.css' %}">
+</head>
+<body>
+    <header class="app-bar">
+        <a class="brand" href="{% url 'repbase-users' %}" aria-label="Repbase home">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span>Repbase</span>
+        </a>
+        <nav aria-label="Main navigation">
+            <a href="{% url 'repbase-users' %}" aria-current="page">Members</a>
+            <a href="/api/">API</a>
+        </nav>
+    </header>
+
+    <main class="page-shell">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>
