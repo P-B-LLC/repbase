@@ -1,11 +1,12 @@
 from rest_framework.permissions import SAFE_METHODS, BasePermission
 
 
-class IsSuperUserOrReadOnly(BasePermission):
-    message = "Only a Django superuser can modify users."
+class IsCustomExerciseOwnerOrAdmin(BasePermission):
+    message = "Only the creator of a custom exercise can modify it."
 
-    def has_permission(self, request, view):
+    def has_object_permission(self, request, view, obj):
         if request.method in SAFE_METHODS:
             return True
-
-        return request.user.is_authenticated and request.user.is_superuser
+        if request.user.is_superuser:
+            return True
+        return obj.created_by_id == request.user.repbase_profile.id

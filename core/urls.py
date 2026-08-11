@@ -1,12 +1,45 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from .views import RepbaseUserViewSet, SessionViewSet, repbase_users
+from .views import (
+    BodyWeightEntryViewSet,
+    ExerciseProgressView,
+    ExerciseViewSet,
+    LoginView,
+    LogoutView,
+    MeView,
+    RegisterView,
+    RepbaseUserViewSet,
+    RotateTokenView,
+    SessionExerciseViewSet,
+    SetEntryViewSet,
+    WorkoutExerciseViewSet,
+    WorkoutScheduleViewSet,
+    WorkoutSessionViewSet,
+    WorkoutTemplateViewSet,
+)
+
 
 router = DefaultRouter()
 router.register("users", RepbaseUserViewSet)
-router.register("sessions", SessionViewSet)
+router.register("exercises", ExerciseViewSet, basename="exercise")
+router.register("workouts", WorkoutTemplateViewSet)
+router.register("workout-exercises", WorkoutExerciseViewSet)
+router.register("schedules", WorkoutScheduleViewSet)
+router.register("sessions", WorkoutSessionViewSet)
+router.register("session-exercises", SessionExerciseViewSet)
+router.register("set-entries", SetEntryViewSet)
+router.register("body-weight", BodyWeightEntryViewSet)
 
 urlpatterns = [
-    path("repbase/", repbase_users, name="repbase-users"),
+    path("auth/register/", RegisterView.as_view(), name="register"),
+    path("auth/login/", LoginView.as_view(), name="login"),
+    path("auth/rotate-token/", RotateTokenView.as_view(), name="rotate-token"),
+    path("auth/logout/", LogoutView.as_view(), name="logout"),
+    path("me/", MeView.as_view(), name="me"),
+    path(
+        "progress/exercises/<int:exercise_id>/",
+        ExerciseProgressView.as_view(),
+        name="exercise-progress",
+    ),
 ] + router.urls

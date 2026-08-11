@@ -1,35 +1,347 @@
+from django.contrib.auth import authenticate, get_user_model, password_validation
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import serializers
 
-from .models import RepbaseUser, Session
+from .models import (
+    BodyWeightEntry,
+    Exercise,
+    RepbaseUser,
+    SessionExercise,
+    SetEntry,
+    WorkoutExercise,
+    WorkoutSchedule,
+    WorkoutSession,
+    WorkoutTemplate,
+)
 
 
-class RepbaseUserSerializer(serializers.ModelSerializer):
+User = get_user_model()
+
+
+class PublicRepbaseUserSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+
     class Meta:
         model = RepbaseUser
         fields = [
             "id",
+            "username",
             "first_name",
             "last_name",
-            "username",
-            "email",
-            "height_cm",
-            "weight_kg",
+            "profile_photo_url",
+            "training_style",
+            "gym",
             "created_at",
         ]
-        read_only_fields = ["id", "created_at"]
 
 
-class SessionSerializer(serializers.ModelSerializer):
-    duration_seconds = serializers.ReadOnlyField()
+class RepbaseUserSerializer(serializers.ModelSerializer):
+    username = serializers.CharField(source="user.username", max_length=150)
+    first_name = serializers.CharField(source="user.first_name", max_length=150)
+    last_name = serializers.CharField(source="user.last_name", max_length=150)
+    email = serializers.EmailField(source="user.email")
 
     class Meta:
-        model = Session
+        model = RepbaseUser
+        fields = [
+            "id",
+            "username",
+            "first_name",
+            "last_name",
+            "email",
+            "birthdate",
+            "height_cm",
+            "weight_kg",
+            "target_weight_kg",
+            "unit_preference",
+            "profile_photo_url",
+            "training_style",
+            "gym",
+            "is_body_metrics_public",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_username(self, value):
+        queryset = User.objects.filter(username__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.user_id)
+        if queryset.exists():
+            raise serializers.ValidationError("This username is already in use.")
+        return value
+
+    def validate_email(self, value):
+        queryset = User.objects.filter(email__iexact=value)
+        if self.instance:
+            queryset = queryset.exclude(pk=self.instance.user_id)
+        if queryset.exists():
+            raise serializers.ValidationError("This email address is already in use.")
+        return value.lower()
+
+    def validate_birthdate(self, value):
+        if value and value > timezone.localdate():
+            raise serializers.ValidationError("Birthdate cannot be in the future.")
+        return value
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        user_data = validated_data.pop("user", {})
+        instance = super().update(instance, validated_data)
+        if user_data:
+            for field, value in user_data.items():
+                setattr(instance.user, field, value)
+            instance.user.save(update_fields=list(user_data))
+        return instance
+
+
+class RegisterSerializer(serializers.Serializer):
+    username = serializers.CharField(max_length=150)
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=8)
+    first_name = serializers.CharField(max_length=150)
+    last_name = serializers.CharField(max_length=150)
+
+    def validate_username(self, value):
+        if User.objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError("This username is already in use.")
+        return value
+
+    def validate_email(self, value):
+        value = value.lower()
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("This email address is already in use.")
+        return value
+
+    def validate(self, attrs):
+        candidate = User(
+            username=attrs["username"],
+            email=attrs["email"],
+            first_name=attrs["first_name"],
+            last_name=attrs["last_name"],
+        )
+        password_validation.validate_password(attrs["password"], candidate)
+        return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        password = validated_data.pop("password")
+        user = User.objects.create_user(password=password, **validated_data)
+        return RepbaseUser.objects.create(user=user)
+
+
+class LoginSerializer(serializers.Serializer):
+    username = serializers.CharField()
+    password = serializers.CharField(write_only=True)
+
+    def validate(self, attrs):
+        user = authenticate(
+            request=self.context.get("request"),
+            username=attrs["username"],
+            password=attrs["password"],
+        )
+        if user is None or not user.is_active:
+            raise serializers.ValidationError("Invalid username or password.")
+        attrs["user"] = user
+        return attrs
+
+
+class AuthResponseSerializer(serializers.Serializer):
+    token = serializers.CharField(read_only=True)
+    user = RepbaseUserSerializer(read_only=True)
+
+
+class ExerciseSerializer(serializers.ModelSerializer):
+    created_by = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = Exercise
+        fields = [
+            "id",
+            "name",
+            "muscle_group",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_by", "created_at", "updated_at"]
+
+
+class WorkoutExerciseSerializer(serializers.ModelSerializer):
+    exercise_name = serializers.CharField(source="exercise.name", read_only=True)
+
+    class Meta:
+        model = WorkoutExercise
+        fields = [
+            "id",
+            "workout",
+            "exercise",
+            "exercise_name",
+            "order",
+            "target_sets",
+            "target_reps",
+            "target_weight_kg",
+            "notes",
+        ]
+        read_only_fields = ["id", "exercise_name"]
+
+    def validate(self, attrs):
+        profile = self.context["request"].user.repbase_profile
+        workout = attrs.get("workout", getattr(self.instance, "workout", None))
+        exercise = attrs.get("exercise", getattr(self.instance, "exercise", None))
+        if workout and workout.owner_id != profile.id:
+            raise serializers.ValidationError("Workout does not belong to this user.")
+        if exercise and exercise.created_by_id not in (None, profile.id):
+            raise serializers.ValidationError("Exercise is not available to this user.")
+        return attrs
+
+
+class WorkoutTemplateSerializer(serializers.ModelSerializer):
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    exercises = WorkoutExerciseSerializer(
+        source="workout_exercises",
+        many=True,
+        read_only=True,
+    )
+
+    class Meta:
+        model = WorkoutTemplate
+        fields = [
+            "id",
+            "owner",
+            "name",
+            "description",
+            "exercises",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "owner", "created_at", "updated_at"]
+
+
+class WorkoutScheduleSerializer(serializers.ModelSerializer):
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    workout_name = serializers.CharField(source="workout.name", read_only=True)
+
+    class Meta:
+        model = WorkoutSchedule
+        fields = [
+            "id",
+            "owner",
+            "workout",
+            "workout_name",
+            "scheduled_date",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "owner", "workout_name", "created_at", "updated_at"]
+
+    def validate_workout(self, value):
+        if value.owner_id != self.context["request"].user.repbase_profile.id:
+            raise serializers.ValidationError("Workout does not belong to this user.")
+        return value
+
+
+class WorkoutSessionSerializer(serializers.ModelSerializer):
+    repbase_user = serializers.PrimaryKeyRelatedField(read_only=True)
+    workout_name = serializers.CharField(source="workout.name", read_only=True)
+    duration_seconds = serializers.FloatField(read_only=True, allow_null=True)
+
+    class Meta:
+        model = WorkoutSession
         fields = [
             "id",
             "repbase_user",
-            "start_datetime",
-            "end_datetime",
+            "workout",
+            "workout_name",
+            "status",
+            "started_at",
+            "ended_at",
             "duration_seconds",
             "created_at",
+            "updated_at",
         ]
-        read_only_fields = ["id", "duration_seconds", "created_at"]
+        read_only_fields = [
+            "id",
+            "repbase_user",
+            "workout_name",
+            "status",
+            "started_at",
+            "ended_at",
+            "duration_seconds",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_workout(self, value):
+        if value and value.owner_id != self.context["request"].user.repbase_profile.id:
+            raise serializers.ValidationError("Workout does not belong to this user.")
+        return value
+
+
+class SessionExerciseSerializer(serializers.ModelSerializer):
+    exercise_name = serializers.CharField(source="exercise.name", read_only=True)
+
+    class Meta:
+        model = SessionExercise
+        fields = ["id", "session", "exercise", "exercise_name", "order", "notes"]
+        read_only_fields = ["id", "exercise_name"]
+
+    def validate(self, attrs):
+        profile = self.context["request"].user.repbase_profile
+        session = attrs.get("session", getattr(self.instance, "session", None))
+        exercise = attrs.get("exercise", getattr(self.instance, "exercise", None))
+        if session and session.repbase_user_id != profile.id:
+            raise serializers.ValidationError("Session does not belong to this user.")
+        if exercise and exercise.created_by_id not in (None, profile.id):
+            raise serializers.ValidationError("Exercise is not available to this user.")
+        return attrs
+
+
+class SetEntrySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SetEntry
+        fields = [
+            "id",
+            "session_exercise",
+            "set_number",
+            "weight_kg",
+            "reps",
+            "completed_at",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_session_exercise(self, value):
+        profile_id = self.context["request"].user.repbase_profile.id
+        if value.session.repbase_user_id != profile_id:
+            raise serializers.ValidationError("Session does not belong to this user.")
+        return value
+
+
+class BodyWeightEntrySerializer(serializers.ModelSerializer):
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = BodyWeightEntry
+        fields = [
+            "id",
+            "owner",
+            "weight_kg",
+            "recorded_at",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "owner", "created_at", "updated_at"]
+
+
+class ExerciseProgressPointSerializer(serializers.Serializer):
+    completed_at = serializers.DateTimeField()
+    weight_kg = serializers.DecimalField(max_digits=7, decimal_places=2)
+    reps = serializers.IntegerField()
+    volume_kg = serializers.DecimalField(max_digits=12, decimal_places=2)
