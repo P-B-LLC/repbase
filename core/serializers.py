@@ -8,6 +8,7 @@ from .models import (
     Exercise,
     RepbaseUser,
     SessionExercise,
+    SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
     WorkoutSchedule,
@@ -250,6 +251,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     repbase_user = serializers.PrimaryKeyRelatedField(read_only=True)
     workout_name = serializers.CharField(source="workout.name", read_only=True)
     duration_seconds = serializers.FloatField(read_only=True, allow_null=True)
+    route_distance_km = serializers.FloatField(read_only=True, allow_null=True)
+    pace_seconds_per_km = serializers.FloatField(read_only=True, allow_null=True)
 
     class Meta:
         model = WorkoutSession
@@ -262,6 +265,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "started_at",
             "ended_at",
             "duration_seconds",
+            "route_distance_km",
+            "pace_seconds_per_km",
             "created_at",
             "updated_at",
         ]
@@ -273,6 +278,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "started_at",
             "ended_at",
             "duration_seconds",
+            "route_distance_km",
+            "pace_seconds_per_km",
             "created_at",
             "updated_at",
         ]
@@ -280,6 +287,26 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     def validate_workout(self, value):
         if value and value.owner_id != self.context["request"].user.repbase_profile.id:
             raise serializers.ValidationError("Workout does not belong to this user.")
+        return value
+
+
+class SessionRoutePointSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SessionRoutePoint
+        fields = ["id", "latitude", "longitude", "recorded_at"]
+        read_only_fields = ["id"]
+
+
+class SessionRouteUploadSerializer(serializers.Serializer):
+    """A batch of GPS fixes recorded during one session."""
+
+    points = SessionRoutePointSerializer(many=True, allow_empty=False)
+
+    def validate_points(self, value):
+        if len(value) > 20000:
+            raise serializers.ValidationError(
+                "Too many points in a single upload."
+            )
         return value
 
 

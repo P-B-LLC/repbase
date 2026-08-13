@@ -1,13 +1,28 @@
+import math
 from decimal import Decimal
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.core.validators import MinValueValidator
+from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
 from django.utils import timezone
 
 
 positive_decimal = MinValueValidator(Decimal("0.01"))
+
+EARTH_RADIUS_KM = 6371.0088
+
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    """Great-circle distance between two coordinates, in kilometers."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    delta_phi = math.radians(lat2 - lat1)
+    delta_lambda = math.radians(lon2 - lon1)
+    a = (
+        math.sin(delta_phi / 2) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2) ** 2
+    )
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 
 class RepbaseUser(models.Model):
@@ -251,6 +266,37 @@ class WorkoutSession(models.Model):
             return None
         return (self.ended_at - self.started_at).total_seconds()
 
+    @property
+    def route_distance_km(self):
+        """Distance along the recorded GPS route.
+
+        Computed here rather than on the device so every client reports the
+        same number for the same track. Returns None when the session has no
+        usable route.
+        """
+        points = list(self.route_points.all())
+        if len(points) < 2:
+            return None
+
+        total = 0.0
+        for previous, current in zip(points, points[1:]):
+            total += haversine_km(
+                float(previous.latitude),
+                float(previous.longitude),
+                float(current.latitude),
+                float(current.longitude),
+            )
+        return round(total, 3)
+
+    @property
+    def pace_seconds_per_km(self):
+        """Average pace over the session, in seconds per kilometer."""
+        distance = self.route_distance_km
+        duration = self.duration_seconds
+        if not distance or duration is None or duration <= 0:
+            return None
+        return round(duration / distance, 2)
+
     def __str__(self):
         return f"{self.repbase_user} - {self.created_at:%Y-%m-%d}"
 
@@ -322,6 +368,38 @@ class SetEntry(models.Model):
 
     def __str__(self):
         return f"{self.session_exercise} set {self.set_number}"
+
+
+class SessionRoutePoint(models.Model):
+    """One GPS fix recorded during a session.
+
+    Points are stored raw and ordered by time; the session derives distance
+    and pace from them so the numbers never depend on the device.
+    """
+
+    session = models.ForeignKey(
+        WorkoutSession,
+        on_delete=models.CASCADE,
+        related_name="route_points",
+    )
+    latitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        validators=[MinValueValidator(-90), MaxValueValidator(90)],
+    )
+    longitude = models.DecimalField(
+        max_digits=9,
+        decimal_places=6,
+        validators=[MinValueValidator(-180), MaxValueValidator(180)],
+    )
+    recorded_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("recorded_at", "id")
+
+    def __str__(self):
+        return f"{self.session_id} @ {self.latitude},{self.longitude}"
 
 
 class BodyWeightEntry(models.Model):

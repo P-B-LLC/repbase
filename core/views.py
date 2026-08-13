@@ -19,6 +19,7 @@ from .models import (
     Exercise,
     RepbaseUser,
     SessionExercise,
+    SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
     WorkoutSchedule,
@@ -36,6 +37,8 @@ from .serializers import (
     RegisterSerializer,
     RepbaseUserSerializer,
     SessionExerciseSerializer,
+    SessionRoutePointSerializer,
+    SessionRouteUploadSerializer,
     SetEntrySerializer,
     WorkoutExerciseSerializer,
     WorkoutScheduleSerializer,
@@ -273,6 +276,48 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             session.ended_at = timezone.now()
             session.full_clean()
             session.save(update_fields=["status", "ended_at", "updated_at"])
+        return Response(self.get_serializer(session).data)
+
+    @extend_schema(
+        methods=["GET"],
+        request=None,
+        responses=SessionRoutePointSerializer(many=True),
+    )
+    @extend_schema(
+        methods=["POST"],
+        request=SessionRouteUploadSerializer,
+        responses=WorkoutSessionSerializer,
+    )
+    @action(detail=True, methods=["get", "post"])
+    def route(self, request, pk=None):
+        """Read or append the GPS track recorded during a session.
+
+        Uploaded points are stored raw; distance and pace are derived from them
+        on the server so every client agrees on the result.
+        """
+        session = get_object_or_404(self.get_queryset(), pk=pk)
+
+        if request.method == "GET":
+            return Response(
+                SessionRoutePointSerializer(
+                    session.route_points.all(),
+                    many=True,
+                ).data
+            )
+
+        upload = SessionRouteUploadSerializer(data=request.data)
+        upload.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            SessionRoutePoint.objects.bulk_create(
+                [
+                    SessionRoutePoint(session=session, **point)
+                    for point in upload.validated_data["points"]
+                ]
+            )
+
+        session.refresh_from_db()
+        # 200, matching the documented contract and the start/end actions.
         return Response(self.get_serializer(session).data)
 
 
