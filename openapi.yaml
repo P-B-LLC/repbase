@@ -1938,6 +1938,11 @@ components:
           minimum: 0
           format: int64
           nullable: true
+        distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          nullable: true
         completed_at:
           type: string
           format: date-time
@@ -1998,6 +2003,8 @@ components:
           type: string
           minLength: 1
           maxLength: 150
+        workout_type:
+          $ref: '#/components/schemas/WorkoutTypeEnum'
         description:
           type: string
     PublicRepbaseUser:
@@ -2272,6 +2279,11 @@ components:
           minimum: 0
           format: int64
           nullable: true
+        distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          nullable: true
         completed_at:
           type: string
           format: date-time
@@ -2310,6 +2322,11 @@ components:
           maximum: 9223372036854775807
           minimum: 0
           format: int64
+          nullable: true
+        distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
           nullable: true
         completed_at:
           type: string
@@ -2546,6 +2563,8 @@ components:
         name:
           type: string
           maxLength: 150
+        workout_type:
+          $ref: '#/components/schemas/WorkoutTypeEnum'
         description:
           type: string
         exercises:
@@ -2575,10 +2594,24 @@ components:
           type: string
           minLength: 1
           maxLength: 150
+        workout_type:
+          $ref: '#/components/schemas/WorkoutTypeEnum'
         description:
           type: string
       required:
       - name
+    WorkoutTypeEnum:
+      enum:
+      - lifting
+      - running
+      - biking
+      - swimming
+      type: string
+      description: |-
+        * `lifting` - Lifting
+        * `running` - Running
+        * `biking` - Biking
+        * `swimming` - Swimming
   securitySchemes:
     cookieAuth:
       type: apiKey

@@ -99,12 +99,30 @@ class Exercise(models.Model):
 
 
 class WorkoutTemplate(models.Model):
+    class WorkoutType(models.TextChoices):
+        LIFTING = "lifting", "Lifting"
+        RUNNING = "running", "Running"
+        BIKING = "biking", "Biking"
+        SWIMMING = "swimming", "Swimming"
+
+    #: Types logged as a distance covered rather than as weighted reps.
+    DISTANCE_TYPES = (
+        WorkoutType.RUNNING,
+        WorkoutType.BIKING,
+        WorkoutType.SWIMMING,
+    )
+
     owner = models.ForeignKey(
         RepbaseUser,
         on_delete=models.CASCADE,
         related_name="workout_templates",
     )
     name = models.CharField(max_length=150)
+    workout_type = models.CharField(
+        max_length=20,
+        choices=WorkoutType.choices,
+        default=WorkoutType.LIFTING,
+    )
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -117,6 +135,10 @@ class WorkoutTemplate(models.Model):
                 name="unique_workout_name_per_owner",
             )
         ]
+
+    @property
+    def tracks_distance(self):
+        return self.workout_type in self.DISTANCE_TYPES
 
     def __str__(self):
         return self.name
@@ -275,6 +297,16 @@ class SetEntry(models.Model):
         validators=[positive_decimal],
     )
     reps = models.PositiveIntegerField(null=True, blank=True)
+    #: Distance covered, for running/biking/swimming efforts. Stored in
+    #: kilometers like every other measurement; clients convert for display
+    #: according to the owner's unit_preference. Null for lifting sets.
+    distance_km = models.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[positive_decimal],
+    )
     completed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
