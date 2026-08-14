@@ -222,6 +222,27 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "owner", "created_at", "updated_at"]
 
+    def validate_name(self, value):
+        """Report a duplicate name as a validation error, not a crash.
+
+        Workout names are unique per owner, but `owner` is read-only and set
+        during creation, so the generated validators cannot see it. Without
+        this the database constraint surfaces as an unhandled 500.
+        """
+        request = self.context.get("request")
+        if request is None:
+            return value
+
+        owner = request.user.repbase_profile
+        duplicates = WorkoutTemplate.objects.filter(owner=owner, name=value)
+        if self.instance is not None:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if duplicates.exists():
+            raise serializers.ValidationError(
+                "You already have a workout with this name."
+            )
+        return value
+
 
 class WorkoutScheduleSerializer(serializers.ModelSerializer):
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
