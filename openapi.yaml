@@ -2366,6 +2366,11 @@ components:
         recorded_at:
           type: string
           format: date-time
+        speed_mps:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          nullable: true
       required:
       - id
       - latitude
@@ -2385,6 +2390,11 @@ components:
         recorded_at:
           type: string
           format: date-time
+        speed_mps:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          nullable: true
       required:
       - latitude
       - longitude
@@ -2399,6 +2409,29 @@ components:
             $ref: '#/components/schemas/SessionRoutePointRequest'
       required:
       - points
+    SessionSplit:
+      type: object
+      description: |-
+        Time taken for one kilometer of a session.
+
+        The final entry may cover less than a kilometer, which `distance_km`
+        reports so a partial split is not mistaken for a fast one.
+      properties:
+        kilometer:
+          type: integer
+          readOnly: true
+        seconds:
+          type: number
+          format: double
+          readOnly: true
+        distance_km:
+          type: number
+          format: double
+          readOnly: true
+      required:
+      - distance_km
+      - kilometer
+      - seconds
     SetEntry:
       type: object
       properties:
@@ -2681,6 +2714,31 @@ components:
           format: double
           readOnly: true
           nullable: true
+        moving_pace_seconds_per_km:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        average_speed_kmh:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        max_speed_kmh:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        moving_seconds:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        splits:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionSplit'
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -2690,13 +2748,18 @@ components:
           format: date-time
           readOnly: true
       required:
+      - average_speed_kmh
       - created_at
       - duration_seconds
       - ended_at
       - id
+      - max_speed_kmh
+      - moving_pace_seconds_per_km
+      - moving_seconds
       - pace_seconds_per_km
       - repbase_user
       - route_distance_km
+      - splits
       - started_at
       - status
       - updated_at

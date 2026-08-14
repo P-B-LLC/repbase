@@ -1,4 +1,5 @@
 import math
+from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -11,6 +12,14 @@ from django.utils import timezone
 positive_decimal = MinValueValidator(Decimal("0.01"))
 
 EARTH_RADIUS_KM = 6371.0088
+
+#: Below this the user is treated as stopped rather than moving, so waiting at
+#: a crossing does not count against their pace.
+MOVING_SPEED_FLOOR_KMH = 2.0
+
+#: A gap longer than this means tracking lapsed rather than the user standing
+#: still, so it is left out of moving time entirely.
+MAX_ROUTE_GAP_SECONDS = 60.0
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -289,13 +298,150 @@ class WorkoutSession(models.Model):
         return round(total, 3)
 
     @property
-    def pace_seconds_per_km(self):
-        """Average pace over the session, in seconds per kilometer."""
-        distance = self.route_distance_km
-        duration = self.duration_seconds
-        if not distance or duration is None or duration <= 0:
+    def route_elapsed_seconds(self):
+        """Time spanned by the recorded track itself.
+
+        Used in place of the session's wall clock for anything derived from
+        the route, so distance and time always describe the same stretch of
+        activity. Time before the first fix or after the last one belongs to
+        the session, not to the route.
+        """
+        points = list(self.route_points.all())
+        if len(points) < 2:
             return None
-        return round(duration / distance, 2)
+        span = (points[-1].recorded_at - points[0].recorded_at).total_seconds()
+        return round(span, 2) if span > 0 else None
+
+    @property
+    def pace_seconds_per_km(self):
+        """Average pace across the recorded route, in seconds per kilometer."""
+        distance = self.route_distance_km
+        elapsed = self.route_elapsed_seconds
+        if not distance or not elapsed:
+            return None
+        return round(elapsed / distance, 2)
+
+    @property
+    def average_speed_kmh(self):
+        """Average speed across the recorded route, including any stops."""
+        distance = self.route_distance_km
+        elapsed = self.route_elapsed_seconds
+        if not distance or not elapsed:
+            return None
+        return round(distance / (elapsed / 3600), 2)
+
+    @property
+    def moving_seconds(self):
+        """Time spent actually moving, ignoring stops.
+
+        Anything slower than a slow walk counts as stopped, so waiting at a
+        crossing does not drag the reported pace down.
+        """
+        points = list(self.route_points.all())
+        if len(points) < 2:
+            return None
+
+        total = 0.0
+        for previous, current in zip(points, points[1:]):
+            gap = (current.recorded_at - previous.recorded_at).total_seconds()
+            if gap <= 0 or gap > MAX_ROUTE_GAP_SECONDS:
+                continue
+            step_km = haversine_km(
+                float(previous.latitude),
+                float(previous.longitude),
+                float(current.latitude),
+                float(current.longitude),
+            )
+            if step_km / (gap / 3600) >= MOVING_SPEED_FLOOR_KMH:
+                total += gap
+        return round(total, 2)
+
+    @property
+    def moving_pace_seconds_per_km(self):
+        """Pace over moving time only — the number a runner compares."""
+        distance = self.route_distance_km
+        moving = self.moving_seconds
+        if not distance or not moving:
+            return None
+        return round(moving / distance, 2)
+
+    @property
+    def max_speed_kmh(self):
+        """Fastest speed reached, from the device's own speed readings."""
+        speeds = [
+            float(point.speed_mps)
+            for point in self.route_points.all()
+            if point.speed_mps is not None
+        ]
+        if not speeds:
+            return None
+        return round(max(speeds) * 3.6, 2)
+
+    @property
+    def splits(self):
+        """Time taken for each kilometer, in order.
+
+        The per-kilometer breakdown is what shows whether a run was even or
+        started too fast, which a single average cannot.
+        """
+        points = list(self.route_points.all())
+        if len(points) < 2:
+            return []
+
+        splits = []
+        total_km = 0.0
+        next_boundary = 1.0
+        split_start = points[0].recorded_at
+
+        for previous, current in zip(points, points[1:]):
+            step_km = haversine_km(
+                float(previous.latitude),
+                float(previous.longitude),
+                float(current.latitude),
+                float(current.longitude),
+            )
+            if step_km <= 0:
+                continue
+
+            step_seconds = (current.recorded_at - previous.recorded_at).total_seconds()
+            step_start_km = total_km
+            total_km += step_km
+
+            # A single step can span more than one kilometer, so close out
+            # every boundary it crosses, interpolating the moment of each.
+            while total_km >= next_boundary:
+                fraction = (next_boundary - step_start_km) / step_km
+                boundary_time = previous.recorded_at + timedelta(
+                    seconds=step_seconds * fraction
+                )
+                splits.append(
+                    {
+                        "kilometer": len(splits) + 1,
+                        "seconds": round(
+                            (boundary_time - split_start).total_seconds(), 2
+                        ),
+                        "distance_km": 1.0,
+                    }
+                )
+                split_start = boundary_time
+                next_boundary += 1.0
+
+        # Whatever is left after the last whole kilometer is still part of the
+        # run. Dropping it would hide the finish of anything that does not end
+        # exactly on a kilometer, which is almost every run.
+        remainder = total_km - (next_boundary - 1.0)
+        if remainder >= 0.01:
+            splits.append(
+                {
+                    "kilometer": len(splits) + 1,
+                    "seconds": round(
+                        (points[-1].recorded_at - split_start).total_seconds(), 2
+                    ),
+                    "distance_km": round(remainder, 3),
+                }
+            )
+
+        return splits
 
     def __str__(self):
         return f"{self.repbase_user} - {self.created_at:%Y-%m-%d}"
@@ -393,6 +539,17 @@ class SessionRoutePoint(models.Model):
         validators=[MinValueValidator(-180), MaxValueValidator(180)],
     )
     recorded_at = models.DateTimeField(db_index=True)
+    #: Instantaneous speed reported by the device, in meters per second.
+    #: Read from the GPS Doppler shift rather than derived from consecutive
+    #: positions, so it does not accumulate positional error. Null when the
+    #: device could not determine it.
+    speed_mps = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

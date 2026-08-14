@@ -247,12 +247,31 @@ class WorkoutScheduleSerializer(serializers.ModelSerializer):
         return value
 
 
+class SessionSplitSerializer(serializers.Serializer):
+    """Time taken for one kilometer of a session.
+
+    The final entry may cover less than a kilometer, which `distance_km`
+    reports so a partial split is not mistaken for a fast one.
+    """
+
+    kilometer = serializers.IntegerField(read_only=True)
+    seconds = serializers.FloatField(read_only=True)
+    distance_km = serializers.FloatField(read_only=True)
+
+
 class WorkoutSessionSerializer(serializers.ModelSerializer):
     repbase_user = serializers.PrimaryKeyRelatedField(read_only=True)
     workout_name = serializers.CharField(source="workout.name", read_only=True)
     duration_seconds = serializers.FloatField(read_only=True, allow_null=True)
     route_distance_km = serializers.FloatField(read_only=True, allow_null=True)
     pace_seconds_per_km = serializers.FloatField(read_only=True, allow_null=True)
+    moving_pace_seconds_per_km = serializers.FloatField(
+        read_only=True, allow_null=True
+    )
+    average_speed_kmh = serializers.FloatField(read_only=True, allow_null=True)
+    max_speed_kmh = serializers.FloatField(read_only=True, allow_null=True)
+    moving_seconds = serializers.FloatField(read_only=True, allow_null=True)
+    splits = SessionSplitSerializer(many=True, read_only=True)
 
     class Meta:
         model = WorkoutSession
@@ -267,6 +286,11 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "duration_seconds",
             "route_distance_km",
             "pace_seconds_per_km",
+            "moving_pace_seconds_per_km",
+            "average_speed_kmh",
+            "max_speed_kmh",
+            "moving_seconds",
+            "splits",
             "created_at",
             "updated_at",
         ]
@@ -280,6 +304,11 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "duration_seconds",
             "route_distance_km",
             "pace_seconds_per_km",
+            "moving_pace_seconds_per_km",
+            "average_speed_kmh",
+            "max_speed_kmh",
+            "moving_seconds",
+            "splits",
             "created_at",
             "updated_at",
         ]
@@ -293,7 +322,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
 class SessionRoutePointSerializer(serializers.ModelSerializer):
     class Meta:
         model = SessionRoutePoint
-        fields = ["id", "latitude", "longitude", "recorded_at"]
+        fields = ["id", "latitude", "longitude", "recorded_at", "speed_mps"]
         read_only_fields = ["id"]
 
 
