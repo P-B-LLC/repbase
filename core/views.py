@@ -5,7 +5,11 @@ from django.db.models import Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
-from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    extend_schema,
+    extend_schema_view,
+)
 from rest_framework import status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
@@ -208,8 +212,32 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         serializer.save(owner=self.owner_profile())
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="status",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                enum=[choice[0] for choice in WorkoutSession.Status.choices],
+                description="Return only sessions in this state.",
+            ),
+            OpenApiParameter(
+                name="workout",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Return only sessions for this workout template.",
+            ),
+        ]
+    )
+)
 class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
-    queryset = WorkoutSession.objects.select_related("repbase_user", "workout")
+    # Every session in a list reports distance, pace, climb and splits, and
+    # each of those walks its route. Without prefetching, asking for a history
+    # of runs issues a query per session per figure.
+    queryset = WorkoutSession.objects.select_related(
+        "repbase_user", "workout"
+    ).prefetch_related("route_points")
     serializer_class = WorkoutSessionSerializer
     permission_classes = [IsAuthenticated]
     owner_lookup = "repbase_user"

@@ -789,6 +789,20 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: status
+        schema:
+          type: string
+          enum:
+          - active
+          - completed
+          - planned
+        description: Return only sessions in this state.
+      - in: query
+        name: workout
+        schema:
+          type: integer
+        description: Return only sessions for this workout template.
       tags:
       - sessions
       security:
