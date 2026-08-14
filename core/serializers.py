@@ -292,6 +292,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     average_speed_kmh = serializers.FloatField(read_only=True, allow_null=True)
     max_speed_kmh = serializers.FloatField(read_only=True, allow_null=True)
     moving_seconds = serializers.FloatField(read_only=True, allow_null=True)
+    elevation_gain_m = serializers.FloatField(read_only=True, allow_null=True)
+    elevation_loss_m = serializers.FloatField(read_only=True, allow_null=True)
     splits = SessionSplitSerializer(many=True, read_only=True)
 
     class Meta:
@@ -311,6 +313,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "average_speed_kmh",
             "max_speed_kmh",
             "moving_seconds",
+            "elevation_gain_m",
+            "elevation_loss_m",
             "splits",
             "created_at",
             "updated_at",
@@ -329,6 +333,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "average_speed_kmh",
             "max_speed_kmh",
             "moving_seconds",
+            "elevation_gain_m",
+            "elevation_loss_m",
             "splits",
             "created_at",
             "updated_at",
@@ -343,7 +349,14 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
 class SessionRoutePointSerializer(serializers.ModelSerializer):
     class Meta:
         model = SessionRoutePoint
-        fields = ["id", "latitude", "longitude", "recorded_at", "speed_mps"]
+        fields = [
+            "id",
+            "latitude",
+            "longitude",
+            "recorded_at",
+            "speed_mps",
+            "altitude_m",
+        ]
         read_only_fields = ["id"]
 
 

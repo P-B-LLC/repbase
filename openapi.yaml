@@ -2371,6 +2371,11 @@ components:
           format: decimal
           pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
           nullable: true
+        altitude_m:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          nullable: true
       required:
       - id
       - latitude
@@ -2394,6 +2399,11 @@ components:
           type: string
           format: decimal
           pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          nullable: true
+        altitude_m:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
           nullable: true
       required:
       - latitude
@@ -2734,6 +2744,16 @@ components:
           format: double
           readOnly: true
           nullable: true
+        elevation_gain_m:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
+        elevation_loss_m:
+          type: number
+          format: double
+          readOnly: true
+          nullable: true
         splits:
           type: array
           items:
@@ -2751,6 +2771,8 @@ components:
       - average_speed_kmh
       - created_at
       - duration_seconds
+      - elevation_gain_m
+      - elevation_loss_m
       - ended_at
       - id
       - max_speed_kmh

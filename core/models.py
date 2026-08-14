@@ -17,9 +17,59 @@ EARTH_RADIUS_KM = 6371.0088
 #: a crossing does not count against their pace.
 MOVING_SPEED_FLOOR_KMH = 2.0
 
+#: The same floor expressed for the device's own speed readings, which arrive
+#: in meters per second.
+MOVING_SPEED_FLOOR_MPS = 0.5
+
 #: A gap longer than this means tracking lapsed rather than the user standing
 #: still, so it is left out of moving time entirely.
 MAX_ROUTE_GAP_SECONDS = 60.0
+
+#: GPS measures height far less precisely than position, wandering by several
+#: meters even standing still, so only sustained changes count as climbing.
+#: Set too low, a flat run reports a hill that was never there.
+ELEVATION_NOISE_METERS = 3.0
+
+#: Readings are averaged over this many samples before any climb is measured,
+#: which removes the sample-to-sample wobble the threshold alone cannot.
+ELEVATION_SMOOTHING_WINDOW = 5
+
+
+def _accumulate(altitudes, ascending):
+    """Total climb or descent in a smoothed altitude series.
+
+    Both filters are needed and neither suffices alone. Smoothing removes the
+    sample-to-sample wobble, but summing every remaining rise still adds up the
+    residue over hundreds of fixes and invents a hill. Waiting until the height
+    has moved clear of a reference point discards that residue, and because the
+    reference only moves when the threshold is crossed, a long steady climb is
+    still counted in full.
+    """
+    total = 0.0
+    reference = altitudes[0]
+    for altitude in altitudes[1:]:
+        change = altitude - reference if ascending else reference - altitude
+        if change >= ELEVATION_NOISE_METERS:
+            total += change
+            reference = altitude
+        elif change <= -ELEVATION_NOISE_METERS:
+            # Moving the other way resets the baseline, so the next climb is
+            # measured from the valley rather than the previous summit.
+            reference = altitude
+    return total
+
+
+def smoothed(values, window=ELEVATION_SMOOTHING_WINDOW):
+    """Moving average over a series, used to settle noisy altitude readings."""
+    if window <= 1 or len(values) < window:
+        return list(values)
+    result = []
+    for index in range(len(values)):
+        start = max(0, index - window // 2)
+        end = min(len(values), start + window)
+        chunk = values[start:end]
+        result.append(sum(chunk) / len(chunk))
+    return result
 
 
 def haversine_km(lat1, lon1, lat2, lon2):
@@ -289,6 +339,15 @@ class WorkoutSession(models.Model):
 
         total = 0.0
         for previous, current in zip(points, points[1:]):
+            # Skip steps the device recorded while stationary. A phone's
+            # position keeps drifting a few meters between fixes when it is
+            # not moving, and summing that adds distance the user never
+            # covered. The speed reading is the reliable way to tell them
+            # apart; steps without one are counted, as before.
+            if current.speed_mps is not None:
+                if float(current.speed_mps) < MOVING_SPEED_FLOOR_MPS:
+                    continue
+
             total += haversine_km(
                 float(previous.latitude),
                 float(previous.longitude),
@@ -364,6 +423,39 @@ class WorkoutSession(models.Model):
         if not distance or not moving:
             return None
         return round(moving / distance, 2)
+
+    @property
+    def elevation_gain_m(self):
+        """Total height climbed, ignoring GPS drift.
+
+        Only the ascents are summed, which is how climbing is normally
+        reported: a hill counts once going up, not again coming down.
+        """
+        altitudes = self._smoothed_altitudes()
+        if altitudes is None:
+            return None
+
+        return round(_accumulate(altitudes, ascending=True), 1)
+
+    @property
+    def elevation_loss_m(self):
+        """Total height descended, as a positive number."""
+        altitudes = self._smoothed_altitudes()
+        if altitudes is None:
+            return None
+
+        return round(_accumulate(altitudes, ascending=False), 1)
+
+    def _smoothed_altitudes(self):
+        """Altitude readings with the sample-to-sample wobble averaged out."""
+        raw = [
+            float(point.altitude_m)
+            for point in self.route_points.all()
+            if point.altitude_m is not None
+        ]
+        if len(raw) < 2:
+            return None
+        return smoothed(raw)
 
     @property
     def max_speed_kmh(self):
@@ -549,6 +641,14 @@ class SessionRoutePoint(models.Model):
         null=True,
         blank=True,
         validators=[MinValueValidator(0)],
+    )
+    #: Height above sea level in meters, as reported by the device. Null when
+    #: no vertical fix was available, which is common indoors.
+    altitude_m = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        null=True,
+        blank=True,
     )
     created_at = models.DateTimeField(auto_now_add=True)
 
