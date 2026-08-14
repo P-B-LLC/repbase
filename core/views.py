@@ -229,6 +229,16 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 location=OpenApiParameter.QUERY,
                 description="Return only sessions for this workout template.",
             ),
+            OpenApiParameter(
+                name="workout_name",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only sessions whose workout has this name, "
+                    "matched without regard to case. Groups a workout's "
+                    "history by what it is called rather than by record."
+                ),
+            ),
         ]
     )
 )
@@ -247,10 +257,13 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         queryset = self.scope_to_owner(super().get_queryset())
         session_status = self.request.query_params.get("status")
         workout = self.request.query_params.get("workout")
+        workout_name = self.request.query_params.get("workout_name")
         if session_status:
             queryset = queryset.filter(status=session_status)
         if workout:
             queryset = queryset.filter(workout_id=workout)
+        if workout_name:
+            queryset = queryset.filter(workout__name__iexact=workout_name)
         return queryset
 
     @transaction.atomic
@@ -412,7 +425,21 @@ class BodyWeightEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 class ExerciseProgressView(APIView):
     permission_classes = [IsAuthenticated]
 
-    @extend_schema(responses=ExerciseProgressPointSerializer(many=True))
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="workout_name",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Only count sets performed in workouts with this name, "
+                    "matched without regard to case. Keeps one workout's "
+                    "history of a lift separate from another's."
+                ),
+            )
+        ],
+        responses=ExerciseProgressPointSerializer(many=True),
+    )
     def get(self, request, exercise_id):
         profile = profile_for(request.user)
         entries = SetEntry.objects.filter(
@@ -422,6 +449,12 @@ class ExerciseProgressView(APIView):
             weight_kg__isnull=False,
             reps__isnull=False,
         ).select_related("session_exercise").order_by("completed_at")
+
+        workout_name = request.query_params.get("workout_name")
+        if workout_name:
+            entries = entries.filter(
+                session_exercise__session__workout__name__iexact=workout_name
+            )
         points = [
             {
                 "completed_at": entry.completed_at,

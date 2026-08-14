@@ -461,6 +461,13 @@ paths:
         schema:
           type: integer
         required: true
+      - in: query
+        name: workout_name
+        schema:
+          type: string
+        description: Only count sets performed in workouts with this name, matched
+          without regard to case. Keeps one workout's history of a lift separate from
+          another's.
       tags:
       - progress
       security:
@@ -803,6 +810,13 @@ paths:
         schema:
           type: integer
         description: Return only sessions for this workout template.
+      - in: query
+        name: workout_name
+        schema:
+          type: string
+        description: Return only sessions whose workout has this name, matched without
+          regard to case. Groups a workout's history by what it is called rather than
+          by record.
       tags:
       - sessions
       security:
