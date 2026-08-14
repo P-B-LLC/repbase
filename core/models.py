@@ -25,6 +25,24 @@ MOVING_SPEED_FLOOR_MPS = 0.5
 #: still, so it is left out of moving time entirely.
 MAX_ROUTE_GAP_SECONDS = 60.0
 
+#: Reps beyond this stop predicting a one-rep max usefully, so a long set is
+#: not treated as a record attempt.
+ONE_REP_MAX_REP_LIMIT = 12
+
+
+def estimated_one_rep_max(weight_kg, reps):
+    """Epley estimate of the most that could be lifted once.
+
+    Lets a heavier set of five count as progress over a lighter single, which
+    a raw heaviest-weight comparison alone would miss.
+    """
+    if not weight_kg or not reps or reps < 1:
+        return None
+    if reps > ONE_REP_MAX_REP_LIMIT:
+        return None
+    return float(weight_kg) * (1 + reps / 30.0)
+
+
 #: GPS measures height far less precisely than position, wandering by several
 #: meters even standing still, so only sustained changes count as climbing.
 #: Set too low, a flat run reports a hill that was never there.
@@ -423,6 +441,110 @@ class WorkoutSession(models.Model):
         if not distance or not moving:
             return None
         return round(moving / distance, 2)
+
+    def personal_records(self):
+        """Bests set during this session that beat everything logged before it.
+
+        Two kinds are reported. The heaviest single lift is what a lifter
+        usually means by a record, and the estimated one-rep max catches
+        progress the raw weight misses: five reps at 80 kg beats one at 85,
+        but only the estimate shows it.
+        """
+        if self.status != WorkoutSession.Status.COMPLETED:
+            return []
+
+        cutoff = self.ended_at or timezone.now()
+        records = []
+
+        for session_exercise in self.session_exercises.select_related("exercise"):
+            performed = [
+                entry
+                for entry in session_exercise.sets.all()
+                if entry.weight_kg is not None
+                and entry.reps
+                and entry.completed_at is not None
+            ]
+            if not performed:
+                continue
+
+            # Everything logged for this exercise before this session. Earlier
+            # sets from this same session are excluded, so a session cannot
+            # beat itself and report two records for one lift.
+            history = SetEntry.objects.filter(
+                session_exercise__exercise=session_exercise.exercise,
+                session_exercise__session__repbase_user=self.repbase_user,
+                completed_at__isnull=False,
+                completed_at__lt=cutoff,
+                weight_kg__isnull=False,
+                reps__isnull=False,
+            ).exclude(session_exercise__session=self)
+
+            heaviest = max(performed, key=lambda entry: entry.weight_kg)
+            previous_heaviest = history.aggregate(
+                best=models.Max("weight_kg")
+            )["best"]
+
+            if (
+                previous_heaviest is None
+                or heaviest.weight_kg > previous_heaviest
+            ):
+                records.append(
+                    {
+                        "exercise": session_exercise.exercise_id,
+                        "exercise_name": session_exercise.exercise.name,
+                        "kind": "heaviest_weight",
+                        "value": float(heaviest.weight_kg),
+                        "previous_value": (
+                            float(previous_heaviest)
+                            if previous_heaviest is not None
+                            else None
+                        ),
+                        "reps": heaviest.reps,
+                    }
+                )
+
+            best = max(
+                (
+                    (estimated_one_rep_max(entry.weight_kg, entry.reps), entry)
+                    for entry in performed
+                ),
+                key=lambda pair: pair[0] or 0,
+                default=(None, None),
+            )
+            estimate, entry = best
+            if estimate is None:
+                continue
+
+            previous_estimate = max(
+                (
+                    value
+                    for value in (
+                        estimated_one_rep_max(item.weight_kg, item.reps)
+                        for item in history
+                    )
+                    if value is not None
+                ),
+                default=None,
+            )
+
+            # A hair above the previous best is rounding, not a record.
+            if previous_estimate is None or estimate > previous_estimate + 0.05:
+                records.append(
+                    {
+                        "exercise": session_exercise.exercise_id,
+                        "exercise_name": session_exercise.exercise.name,
+                        "kind": "best_estimated_1rm",
+                        "value": round(estimate, 1),
+                        "previous_value": (
+                            round(previous_estimate, 1)
+                            if previous_estimate is not None
+                            else None
+                        ),
+                        "reps": entry.reps,
+                    }
+                )
+
+        return records
 
     @property
     def elevation_gain_m(self):

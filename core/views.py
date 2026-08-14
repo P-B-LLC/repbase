@@ -41,6 +41,7 @@ from .serializers import (
     RegisterSerializer,
     RepbaseUserSerializer,
     SessionExerciseSerializer,
+    PersonalRecordSerializer,
     SessionRoutePointSerializer,
     SessionRouteUploadSerializer,
     SetEntrySerializer,
@@ -305,6 +306,25 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             session.full_clean()
             session.save(update_fields=["status", "ended_at", "updated_at"])
         return Response(self.get_serializer(session).data)
+
+    @extend_schema(request=None, responses=PersonalRecordSerializer(many=True))
+    # A session sets a handful of records at most, so the whole list is
+    # returned at once. Without disabling the paginator the schema would
+    # promise a paged envelope the response does not send.
+    @action(detail=True, methods=["get"], pagination_class=None)
+    def records(self, request, pk=None):
+        """Bests set during this session that beat everything logged before.
+
+        Kept off the session list, where it would run a history query per
+        exercise for every session returned.
+        """
+        session = get_object_or_404(self.get_queryset(), pk=pk)
+        return Response(
+            PersonalRecordSerializer(
+                session.personal_records(),
+                many=True,
+            ).data
+        )
 
     @extend_schema(
         methods=["GET"],

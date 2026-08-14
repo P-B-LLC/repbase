@@ -268,6 +268,21 @@ class WorkoutScheduleSerializer(serializers.ModelSerializer):
         return value
 
 
+class PersonalRecordSerializer(serializers.Serializer):
+    """A best set during a session that beat everything logged before it."""
+
+    exercise = serializers.IntegerField(read_only=True)
+    exercise_name = serializers.CharField(read_only=True)
+    kind = serializers.ChoiceField(
+        choices=["heaviest_weight", "best_estimated_1rm"],
+        read_only=True,
+    )
+    value = serializers.FloatField(read_only=True)
+    #: Null when this is the first time the exercise has been logged.
+    previous_value = serializers.FloatField(read_only=True, allow_null=True)
+    reps = serializers.IntegerField(read_only=True, allow_null=True)
+
+
 class SessionSplitSerializer(serializers.Serializer):
     """Time taken for one kilometer of a session.
 
