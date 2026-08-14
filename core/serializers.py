@@ -452,3 +452,7 @@ class ExerciseProgressPointSerializer(serializers.Serializer):
     weight_kg = serializers.DecimalField(max_digits=7, decimal_places=2)
     reps = serializers.IntegerField()
     volume_kg = serializers.DecimalField(max_digits=12, decimal_places=2)
+    #: Which session the set belongs to, so progress can be charted per
+    #: workout. Grouping by date instead would merge two sessions trained on
+    #: the same day into a single point.
+    session = serializers.IntegerField()

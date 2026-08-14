@@ -421,13 +421,14 @@ class ExerciseProgressView(APIView):
             completed_at__isnull=False,
             weight_kg__isnull=False,
             reps__isnull=False,
-        ).order_by("completed_at")
+        ).select_related("session_exercise").order_by("completed_at")
         points = [
             {
                 "completed_at": entry.completed_at,
                 "weight_kg": entry.weight_kg,
                 "reps": entry.reps,
                 "volume_kg": entry.weight_kg * Decimal(entry.reps),
+                "session": entry.session_exercise.session_id,
             }
             for entry in entries
         ]
