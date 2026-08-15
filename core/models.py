@@ -25,6 +25,24 @@ MOVING_SPEED_FLOOR_MPS = 0.5
 #: still, so it is left out of moving time entirely.
 MAX_ROUTE_GAP_SECONDS = 60.0
 
+class CardioMachine(models.TextChoices):
+    """Machines a workout can finish on.
+
+    A finisher belongs to the workout it follows rather than being a workout of
+    its own, so it is recorded on the template and on the session instead of
+    creating a second schedule.
+    """
+
+    TREADMILL = "treadmill", "Treadmill"
+    STATIONARY_BIKE = "stationary_bike", "Stationary Bike"
+    STAIR_MASTER = "stair_master", "Stair Master"
+    ELLIPTICAL = "elliptical", "Elliptical"
+    ROWING_MACHINE = "rowing_machine", "Rowing Machine"
+    ASSAULT_BIKE = "assault_bike", "Assault Bike"
+    SKI_ERG = "ski_erg", "Ski Erg"
+    OTHER = "other", "Other"
+
+
 #: Reps beyond this stop predicting a one-rep max usefully, so a long set is
 #: not treated as a record attempt.
 ONE_REP_MAX_REP_LIMIT = 12
@@ -215,6 +233,21 @@ class WorkoutTemplate(models.Model):
         choices=WorkoutType.choices,
         default=WorkoutType.LIFTING,
     )
+    #: Optional cardio to finish on. Blank means the workout ends with its
+    #: exercises. This is part of the workout, not a second one scheduled
+    #: after it.
+    # Nullable rather than blank: "no finisher" is an absent value, and a
+    # null field generates a plain optional in clients instead of a
+    # choice-or-empty-string union.
+    cardio_machine = models.CharField(
+        max_length=20,
+        choices=CardioMachine.choices,
+        null=True,
+        blank=True,
+        default=None,
+    )
+    #: How long the finisher is meant to last, if the user set a target.
+    cardio_target_minutes = models.PositiveIntegerField(null=True, blank=True)
     description = models.TextField(blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -327,6 +360,28 @@ class WorkoutSession(models.Model):
     )
     started_at = models.DateTimeField(null=True, blank=True)
     ended_at = models.DateTimeField(null=True, blank=True)
+    #: The cardio finisher actually performed after this session's exercises.
+    #: Recorded on the session itself so a workout and the cardio that followed
+    #: it stay one training session rather than two.
+    # Nullable rather than blank: "no finisher" is an absent value, and a
+    # null field generates a plain optional in clients instead of a
+    # choice-or-empty-string union.
+    cardio_machine = models.CharField(
+        max_length=20,
+        choices=CardioMachine.choices,
+        null=True,
+        blank=True,
+        default=None,
+    )
+    cardio_seconds = models.PositiveIntegerField(null=True, blank=True)
+    #: Optional, read off the machine's own display.
+    cardio_distance_km = models.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

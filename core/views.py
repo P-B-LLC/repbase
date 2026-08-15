@@ -42,6 +42,7 @@ from .serializers import (
     RepbaseUserSerializer,
     SessionExerciseSerializer,
     PersonalRecordSerializer,
+    SessionCardioSerializer,
     SessionRoutePointSerializer,
     SessionRouteUploadSerializer,
     SetEntrySerializer,
@@ -318,6 +319,36 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             session.ended_at = timezone.now()
             session.full_clean()
             session.save(update_fields=["status", "ended_at", "updated_at"])
+        return Response(self.get_serializer(session).data)
+
+    @extend_schema(
+        request=SessionCardioSerializer,
+        responses=WorkoutSessionSerializer,
+    )
+    @action(detail=True, methods=["post"])
+    def cardio(self, request, pk=None):
+        """Record the cardio finisher performed after this session.
+
+        Written onto the session rather than creating a second one, because a
+        workout and the cardio that followed it are one training session.
+        Allowed after the session has ended, since the finisher happens after
+        the exercises are done.
+        """
+        session = get_object_or_404(self.get_queryset(), pk=pk)
+        payload = SessionCardioSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+
+        session.cardio_machine = payload.validated_data["machine"]
+        session.cardio_seconds = payload.validated_data["seconds"]
+        session.cardio_distance_km = payload.validated_data.get("distance_km")
+        session.save(
+            update_fields=[
+                "cardio_machine",
+                "cardio_seconds",
+                "cardio_distance_km",
+                "updated_at",
+            ]
+        )
         return Response(self.get_serializer(session).data)
 
     @extend_schema(request=None, responses=PersonalRecordSerializer(many=True))

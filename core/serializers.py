@@ -4,6 +4,7 @@ from django.utils import timezone
 from rest_framework import serializers
 
 from .models import (
+    CardioMachine,
     BodyWeightEntry,
     Exercise,
     RepbaseUser,
@@ -202,6 +203,14 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
 
 class WorkoutTemplateSerializer(serializers.ModelSerializer):
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    # Declared explicitly so the field is "a machine or nothing" rather than
+    # also accepting an empty string, which would put a third, meaningless
+    # case in every generated client.
+    cardio_machine = serializers.ChoiceField(
+        choices=CardioMachine.choices,
+        required=False,
+        allow_null=True,
+    )
     exercises = WorkoutExerciseSerializer(
         source="workout_exercises",
         many=True,
@@ -215,6 +224,8 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
             "owner",
             "name",
             "workout_type",
+            "cardio_machine",
+            "cardio_target_minutes",
             "description",
             "exercises",
             "created_at",
@@ -268,6 +279,20 @@ class WorkoutScheduleSerializer(serializers.ModelSerializer):
         return value
 
 
+class SessionCardioSerializer(serializers.Serializer):
+    """A cardio finisher performed after a session's exercises."""
+
+    machine = serializers.ChoiceField(choices=CardioMachine.choices)
+    seconds = serializers.IntegerField(min_value=1)
+    distance_km = serializers.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        required=False,
+        allow_null=True,
+        min_value=0,
+    )
+
+
 class PersonalRecordSerializer(serializers.Serializer):
     """A best set during a session that beat everything logged before it."""
 
@@ -299,6 +324,11 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     repbase_user = serializers.PrimaryKeyRelatedField(read_only=True)
     workout_name = serializers.CharField(source="workout.name", read_only=True)
     duration_seconds = serializers.FloatField(read_only=True, allow_null=True)
+    cardio_machine = serializers.ChoiceField(
+        choices=CardioMachine.choices,
+        read_only=True,
+        allow_null=True,
+    )
     route_distance_km = serializers.FloatField(read_only=True, allow_null=True)
     pace_seconds_per_km = serializers.FloatField(read_only=True, allow_null=True)
     moving_pace_seconds_per_km = serializers.FloatField(
@@ -322,6 +352,9 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "started_at",
             "ended_at",
             "duration_seconds",
+            "cardio_machine",
+            "cardio_seconds",
+            "cardio_distance_km",
             "route_distance_km",
             "pace_seconds_per_km",
             "moving_pace_seconds_per_km",
@@ -342,6 +375,9 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "started_at",
             "ended_at",
             "duration_seconds",
+            "cardio_machine",
+            "cardio_seconds",
+            "cardio_distance_km",
             "route_distance_km",
             "pace_seconds_per_km",
             "moving_pace_seconds_per_km",
