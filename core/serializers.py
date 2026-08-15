@@ -12,7 +12,9 @@ from .models import (
     SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
+    EVENT_CATEGORIES,
     PlannerEntry,
+    TASK_CATEGORIES,
     WorkoutRecurrence,
     WorkoutSchedule,
     WorkoutSession,
@@ -346,6 +348,27 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"is_complete": "An event happens rather than being completed."}
             )
+
+        # Tasks and events draw from different halves of the category list.
+        # Checked on whatever the row will end up as, not only on what this
+        # request happens to carry, so switching a task to an event cannot
+        # leave "habit" behind on it.
+        category = attrs.get("category", getattr(self.instance, "category", None))
+        if kind is not None and category is not None:
+            allowed = (
+                EVENT_CATEGORIES
+                if kind == PlannerEntry.Kind.EVENT
+                else TASK_CATEGORIES
+            )
+            if category not in allowed:
+                raise serializers.ValidationError(
+                    {
+                        "category": (
+                            f"'{category}' is not a category "
+                            f"{'an event' if kind == PlannerEntry.Kind.EVENT else 'a task'} can have."
+                        )
+                    }
+                )
         return attrs
 
     def _apply_completion(self, instance, is_complete):

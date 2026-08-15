@@ -999,8 +999,14 @@ class PlannerCategory(models.TextChoices):
 
     Deliberately a short, fixed list: the point is to let a day be read at a
     glance, which a free-text label would not do.
+
+    Tasks and events draw from different halves of it. A task is sorted by
+    what kind of doing it is, an event by what kind of occasion it is, and
+    offering "habit" while planning a holiday helps nobody. ``OTHER`` is the
+    one both share.
     """
 
+    # Tasks: kinds of doing.
     HABIT = "habit", "Habit"
     WORKOUT = "workout", "Workout"
     ERRAND = "errand", "Errand"
@@ -1009,7 +1015,46 @@ class PlannerCategory(models.TextChoices):
     HEALTH = "health", "Health"
     WORK = "work", "Work"
     HOME = "home", "Home"
+
+    # Events: kinds of occasion.
+    BIRTHDAY = "birthday", "Birthday"
+    HOLIDAY = "holiday", "Holiday"
+    APPOINTMENT = "appointment", "Appointment"
+    MEETING = "meeting", "Meeting"
+    TRAVEL = "travel", "Travel"
+    SOCIAL = "social", "Social"
+
     OTHER = "other", "Other"
+
+
+#: Which categories each kind of entry may carry. Enforced in the
+#: serializer so a mismatch is a 400 rather than a row nothing can display
+#: sensibly.
+TASK_CATEGORIES = frozenset(
+    {
+        PlannerCategory.HABIT,
+        PlannerCategory.WORKOUT,
+        PlannerCategory.ERRAND,
+        PlannerCategory.STUDY,
+        PlannerCategory.SLEEP,
+        PlannerCategory.HEALTH,
+        PlannerCategory.WORK,
+        PlannerCategory.HOME,
+        PlannerCategory.OTHER,
+    }
+)
+
+EVENT_CATEGORIES = frozenset(
+    {
+        PlannerCategory.BIRTHDAY,
+        PlannerCategory.HOLIDAY,
+        PlannerCategory.APPOINTMENT,
+        PlannerCategory.MEETING,
+        PlannerCategory.TRAVEL,
+        PlannerCategory.SOCIAL,
+        PlannerCategory.OTHER,
+    }
+)
 
 
 class PlannerEntry(models.Model):

@@ -466,13 +466,19 @@ paths:
         schema:
           type: string
           enum:
+          - appointment
+          - birthday
           - errand
           - habit
           - health
+          - holiday
           - home
+          - meeting
           - other
           - sleep
+          - social
           - study
+          - travel
           - work
           - workout
         description: Return only entries in this category.
@@ -2107,6 +2113,12 @@ components:
       - health
       - work
       - home
+      - birthday
+      - holiday
+      - appointment
+      - meeting
+      - travel
+      - social
       - other
       type: string
       description: |-
@@ -2118,6 +2130,12 @@ components:
         * `health` - Health
         * `work` - Work
         * `home` - Home
+        * `birthday` - Birthday
+        * `holiday` - Holiday
+        * `appointment` - Appointment
+        * `meeting` - Meeting
+        * `travel` - Travel
+        * `social` - Social
         * `other` - Other
     Exercise:
       type: object
