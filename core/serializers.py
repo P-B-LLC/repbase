@@ -12,6 +12,7 @@ from .models import (
     SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
+    WorkoutRecurrence,
     WorkoutSchedule,
     WorkoutSession,
     WorkoutTemplate,
@@ -277,6 +278,72 @@ class WorkoutScheduleSerializer(serializers.ModelSerializer):
         if value.owner_id != self.context["request"].user.repbase_profile.id:
             raise serializers.ValidationError("Workout does not belong to this user.")
         return value
+
+
+class WorkoutRecurrenceSerializer(serializers.ModelSerializer):
+    """A workout repeating weekly.
+
+    ``effective_from`` and ``effective_until`` are read-only on purpose. The
+    server always opens a rule at the current week and closes it at the current
+    week, which is what stops a plan reaching backwards into weeks that have
+    already been trained.
+    """
+
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    workout_name = serializers.CharField(source="workout.name", read_only=True)
+
+    class Meta:
+        model = WorkoutRecurrence
+        fields = [
+            "id",
+            "owner",
+            "workout",
+            "workout_name",
+            "weekday",
+            "effective_from",
+            "effective_until",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "owner",
+            "workout_name",
+            "effective_from",
+            "effective_until",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_workout(self, value):
+        if value.owner_id != self.context["request"].user.repbase_profile.id:
+            raise serializers.ValidationError("Workout does not belong to this user.")
+        return value
+
+    def validate(self, attrs):
+        # Checked here so a repeat the user already has comes back as a 400
+        # rather than the partial unique constraint raising a 500.
+        workout = attrs.get("workout")
+        weekday = attrs.get("weekday")
+        if workout is not None and weekday is not None:
+            clash = WorkoutRecurrence.objects.filter(
+                workout=workout,
+                weekday=weekday,
+                effective_until__isnull=True,
+            )
+            if clash.exists():
+                raise serializers.ValidationError(
+                    "This workout already repeats on that day."
+                )
+        return attrs
+
+
+class PlanWeekSerializer(serializers.Serializer):
+    """Which week to fill in from the user's weekly repeats."""
+
+    start = serializers.DateField(
+        help_text="Any date in the week. The week's Monday is used."
+    )
 
 
 class SessionCardioSerializer(serializers.Serializer):

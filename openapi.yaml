@@ -482,6 +482,133 @@ paths:
                 items:
                   $ref: '#/components/schemas/ExerciseProgressPoint'
           description: ''
+  /api/v1/recurrences/:
+    get:
+      operationId: recurrences_list
+      description: |-
+        Workouts that repeat weekly.
+
+        There is deliberately no update endpoint. Changing a repeat means ending
+        the rule in force at this week and starting a new one, which is delete
+        followed by create; expressing it that way keeps finished weeks resolving
+        through the plan that was actually in place then.
+
+        Listing returns only rules still in force. A closed rule is history: it
+        explains what a past week held, and no screen lists it.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - recurrences
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWorkoutRecurrenceList'
+          description: ''
+    post:
+      operationId: recurrences_create
+      description: |-
+        Workouts that repeat weekly.
+
+        There is deliberately no update endpoint. Changing a repeat means ending
+        the rule in force at this week and starting a new one, which is delete
+        followed by create; expressing it that way keeps finished weeks resolving
+        through the plan that was actually in place then.
+
+        Listing returns only rules still in force. A closed rule is history: it
+        explains what a past week held, and no screen lists it.
+      tags:
+      - recurrences
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkoutRecurrenceRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WorkoutRecurrenceRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WorkoutRecurrenceRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutRecurrence'
+          description: ''
+  /api/v1/recurrences/{id}/:
+    get:
+      operationId: recurrences_retrieve
+      description: |-
+        Workouts that repeat weekly.
+
+        There is deliberately no update endpoint. Changing a repeat means ending
+        the rule in force at this week and starting a new one, which is delete
+        followed by create; expressing it that way keeps finished weeks resolving
+        through the plan that was actually in place then.
+
+        Listing returns only rules still in force. A closed rule is history: it
+        explains what a past week held, and no screen lists it.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout recurrence.
+        required: true
+      tags:
+      - recurrences
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutRecurrence'
+          description: ''
+    delete:
+      operationId: recurrences_destroy
+      description: |-
+        Workouts that repeat weekly.
+
+        There is deliberately no update endpoint. Changing a repeat means ending
+        the rule in force at this week and starting a new one, which is delete
+        followed by create; expressing it that way keeps finished weeks resolving
+        through the plan that was actually in place then.
+
+        Listing returns only rules still in force. A closed rule is history: it
+        explains what a past week held, and no screen lists it.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout recurrence.
+        required: true
+      tags:
+      - recurrences
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/schedules/:
     get:
       operationId: schedules_list
@@ -634,6 +761,39 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/schedules/plan-week/:
+    post:
+      operationId: schedules_plan_week_create
+      description: 'Fill a week in from the user''s weekly repeats and return everything
+        scheduled in it. Safe to call on every load: it only adds days a repeat still
+        owes, and it refuses to plan a week that has already finished, since a past
+        week records what was trained.'
+      tags:
+      - schedules
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanWeekRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlanWeekRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PlanWeekRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/WorkoutSchedule'
+          description: ''
   /api/v1/session-exercises/:
     get:
       operationId: session_exercises_list
@@ -1998,6 +2158,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/WorkoutExercise'
+    PaginatedWorkoutRecurrenceList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutRecurrence'
     PaginatedWorkoutScheduleList:
       type: object
       required:
@@ -2299,6 +2482,16 @@ components:
       - previous_value
       - reps
       - value
+    PlanWeekRequest:
+      type: object
+      description: Which week to fill in from the user's weekly repeats.
+      properties:
+        start:
+          type: string
+          format: date
+          description: Any date in the week. The week's Monday is used.
+      required:
+      - start
     PublicRepbaseUser:
       type: object
       properties:
@@ -2767,6 +2960,24 @@ components:
       description: |-
         * `metric` - Metric (kg/cm)
         * `imperial` - Imperial (lb/in)
+    WeekdayEnum:
+      enum:
+      - 0
+      - 1
+      - 2
+      - 3
+      - 4
+      - 5
+      - 6
+      type: integer
+      description: |-
+        * `0` - Monday
+        * `1` - Tuesday
+        * `2` - Wednesday
+        * `3` - Thursday
+        * `4` - Friday
+        * `5` - Saturday
+        * `6` - Sunday
     WorkoutExercise:
       type: object
       properties:
@@ -2844,6 +3055,79 @@ components:
           maxLength: 300
       required:
       - exercise
+      - workout
+    WorkoutRecurrence:
+      type: object
+      description: |-
+        A workout repeating weekly.
+
+        ``effective_from`` and ``effective_until`` are read-only on purpose. The
+        server always opens a rule at the current week and closes it at the current
+        week, which is what stops a plan reaching backwards into weeks that have
+        already been trained.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        owner:
+          type: integer
+          readOnly: true
+        workout:
+          type: integer
+        workout_name:
+          type: string
+          readOnly: true
+        weekday:
+          allOf:
+          - $ref: '#/components/schemas/WeekdayEnum'
+          minimum: 0
+          maximum: 9223372036854775807
+        effective_from:
+          type: string
+          format: date
+          readOnly: true
+        effective_until:
+          type: string
+          format: date
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - effective_from
+      - effective_until
+      - id
+      - owner
+      - updated_at
+      - weekday
+      - workout
+      - workout_name
+    WorkoutRecurrenceRequest:
+      type: object
+      description: |-
+        A workout repeating weekly.
+
+        ``effective_from`` and ``effective_until`` are read-only on purpose. The
+        server always opens a rule at the current week and closes it at the current
+        week, which is what stops a plan reaching backwards into weeks that have
+        already been trained.
+      properties:
+        workout:
+          type: integer
+        weekday:
+          allOf:
+          - $ref: '#/components/schemas/WeekdayEnum'
+          minimum: 0
+          maximum: 9223372036854775807
+      required:
+      - weekday
       - workout
     WorkoutSchedule:
       type: object

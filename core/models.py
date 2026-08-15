@@ -317,6 +317,15 @@ class WorkoutSchedule(models.Model):
         related_name="schedule_entries",
     )
     scheduled_date = models.DateField(db_index=True)
+    #: The weekly repeat that planned this day, if it was not chosen by hand.
+    #: Kept so ending a repeat clears the days it added and nothing else.
+    source_recurrence = models.ForeignKey(
+        "WorkoutRecurrence",
+        on_delete=models.SET_NULL,
+        related_name="planned_schedules",
+        null=True,
+        blank=True,
+    )
     notes = models.CharField(max_length=300, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -857,3 +866,129 @@ class BodyWeightEntry(models.Model):
 
     def __str__(self):
         return f"{self.owner}: {self.weight_kg} kg"
+
+
+def week_start_for(value):
+    """The Monday of the week containing ``value``.
+
+    Weeks are Monday-first throughout Repbase; the iOS week strip runs Monday
+    to Sunday, so the server has to agree or a rule would land a day out.
+    """
+    return value - timedelta(days=value.weekday())
+
+
+class WorkoutRecurrence(models.Model):
+    """A workout that repeats on the same weekday, week after week.
+
+    A rule covers the half-open range of weeks ``[effective_from,
+    effective_until)``, both Mondays. Changing a plan never rewrites the past:
+    it closes the rule in force at the current week and opens a new one, so
+    weeks that already happened keep resolving through whatever was planned
+    then. A finished week is a record of what was actually trained, and the
+    progress charts read it as such.
+    """
+
+    class Weekday(models.IntegerChoices):
+        MONDAY = 0, "Monday"
+        TUESDAY = 1, "Tuesday"
+        WEDNESDAY = 2, "Wednesday"
+        THURSDAY = 3, "Thursday"
+        FRIDAY = 4, "Friday"
+        SATURDAY = 5, "Saturday"
+        SUNDAY = 6, "Sunday"
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="workout_recurrences",
+    )
+    workout = models.ForeignKey(
+        WorkoutTemplate,
+        on_delete=models.CASCADE,
+        related_name="recurrences",
+    )
+    #: Matches ``date.weekday()``: Monday is 0.
+    weekday = models.PositiveSmallIntegerField(choices=Weekday.choices)
+    #: Monday of the first week this rule applies to. The server always sets
+    #: this to the current week, so a rule can never reach backwards.
+    effective_from = models.DateField(db_index=True)
+    #: Monday of the first week it no longer applies; null while it still runs.
+    effective_until = models.DateField(null=True, blank=True, db_index=True)
+    #: Monday of the latest week already turned into schedule rows. Without
+    #: this, a workout the user deleted from a planned week would reappear the
+    #: next time the week was loaded.
+    materialized_through = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("weekday", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("owner", "workout", "weekday"),
+                condition=models.Q(effective_until__isnull=True),
+                name="unique_open_recurrence_per_weekday",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.get_weekday_display()}s: {self.workout}"
+
+    def covers(self, week_start):
+        """Whether this rule is in force for the week beginning ``week_start``."""
+        if week_start < self.effective_from:
+            return False
+        return self.effective_until is None or week_start < self.effective_until
+
+    def date_in(self, week_start):
+        """The date this rule falls on in the week beginning ``week_start``."""
+        return week_start + timedelta(days=self.weekday)
+
+    def weeks_to_plan(self, week_start, current_week):
+        """Mondays this rule still owes schedule rows for, up to ``week_start``.
+
+        Starts no earlier than the current week, so weeks the user missed stay
+        empty rather than filling in retroactively, and no earlier than the
+        week after the last one already planned, so a deleted workout does not
+        come back.
+        """
+        monday = max(self.effective_from, current_week)
+        if self.materialized_through is not None:
+            monday = max(monday, self.materialized_through + timedelta(days=7))
+        while monday <= week_start:
+            yield monday
+            monday += timedelta(days=7)
+
+
+def plan_recurring_week(owner, week_start, today):
+    """Turn every recurrence in force into schedule rows for one week.
+
+    Returns the schedules created. A week that has already finished is left
+    alone: it is a record of what was trained, not a plan still to fill in.
+    """
+    current_week = week_start_for(today)
+    if week_start < current_week:
+        return []
+
+    created = []
+    recurrences = WorkoutRecurrence.objects.filter(owner=owner).select_related(
+        "workout"
+    )
+    for rule in recurrences:
+        planned_through = rule.materialized_through
+        for monday in rule.weeks_to_plan(week_start, current_week):
+            planned_through = monday
+            if not rule.covers(monday):
+                continue
+            schedule, was_created = WorkoutSchedule.objects.get_or_create(
+                owner=owner,
+                workout=rule.workout,
+                scheduled_date=rule.date_in(monday),
+                defaults={"source_recurrence": rule},
+            )
+            if was_created:
+                created.append(schedule)
+        if planned_through != rule.materialized_through:
+            rule.materialized_through = planned_through
+            rule.save(update_fields=["materialized_through", "updated_at"])
+    return created

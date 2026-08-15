@@ -14,6 +14,7 @@ from .views import (
     SessionExerciseViewSet,
     SetEntryViewSet,
     WorkoutExerciseViewSet,
+    WorkoutRecurrenceViewSet,
     WorkoutScheduleViewSet,
     WorkoutSessionViewSet,
     WorkoutTemplateViewSet,
@@ -26,6 +27,7 @@ router.register("exercises", ExerciseViewSet, basename="exercise")
 router.register("workouts", WorkoutTemplateViewSet)
 router.register("workout-exercises", WorkoutExerciseViewSet)
 router.register("schedules", WorkoutScheduleViewSet)
+router.register("recurrences", WorkoutRecurrenceViewSet)
 router.register("sessions", WorkoutSessionViewSet)
 router.register("session-exercises", SessionExerciseViewSet)
 router.register("set-entries", SetEntryViewSet)

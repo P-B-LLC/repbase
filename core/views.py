@@ -1,3 +1,4 @@
+from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
@@ -10,7 +11,7 @@ from drf_spectacular.utils import (
     extend_schema,
     extend_schema_view,
 )
-from rest_framework import status, viewsets
+from rest_framework import mixins, status, viewsets
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -26,9 +27,12 @@ from .models import (
     SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
+    WorkoutRecurrence,
     WorkoutSchedule,
     WorkoutSession,
     WorkoutTemplate,
+    plan_recurring_week,
+    week_start_for,
 )
 from .permissions import IsCustomExerciseOwnerOrAdmin
 from .serializers import (
@@ -46,7 +50,9 @@ from .serializers import (
     SessionRoutePointSerializer,
     SessionRouteUploadSerializer,
     SetEntrySerializer,
+    PlanWeekSerializer,
     WorkoutExerciseSerializer,
+    WorkoutRecurrenceSerializer,
     WorkoutScheduleSerializer,
     WorkoutSessionSerializer,
     WorkoutTemplateSerializer,
@@ -212,6 +218,97 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(owner=self.owner_profile())
+
+    @extend_schema(
+        request=PlanWeekSerializer,
+        responses={200: WorkoutScheduleSerializer(many=True)},
+        description=(
+            "Fill a week in from the user's weekly repeats and return "
+            "everything scheduled in it. Safe to call on every load: it only "
+            "adds days a repeat still owes, and it refuses to plan a week that "
+            "has already finished, since a past week records what was trained."
+        ),
+    )
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="plan-week",
+        pagination_class=None,
+    )
+    def plan_week(self, request):
+        serializer = PlanWeekSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        owner = self.owner_profile()
+        week_start = week_start_for(serializer.validated_data["start"])
+        plan_recurring_week(owner, week_start, timezone.localdate())
+        schedules = (
+            WorkoutSchedule.objects.filter(
+                owner=owner,
+                scheduled_date__gte=week_start,
+                scheduled_date__lt=week_start + timedelta(days=7),
+            )
+            .select_related("workout")
+            .order_by("scheduled_date", "id")
+        )
+        return Response(WorkoutScheduleSerializer(schedules, many=True).data)
+
+
+class WorkoutRecurrenceViewSet(
+    OwnedViewSetMixin,
+    mixins.CreateModelMixin,
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Workouts that repeat weekly.
+
+    There is deliberately no update endpoint. Changing a repeat means ending
+    the rule in force at this week and starting a new one, which is delete
+    followed by create; expressing it that way keeps finished weeks resolving
+    through the plan that was actually in place then.
+
+    Listing returns only rules still in force. A closed rule is history: it
+    explains what a past week held, and no screen lists it.
+    """
+
+    queryset = WorkoutRecurrence.objects.select_related("owner", "workout")
+    serializer_class = WorkoutRecurrenceSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return self.scope_to_owner(super().get_queryset()).filter(
+            effective_until__isnull=True
+        )
+
+    def perform_create(self, serializer):
+        today = timezone.localdate()
+        recurrence = serializer.save(
+            owner=self.owner_profile(),
+            effective_from=week_start_for(today),
+        )
+        # Claim the current week straight away. The workout is already on the
+        # calendar for the day the user turned this on, so nothing new appears
+        # now; it stops the rule re-adding it if they remove it this week.
+        plan_recurring_week(recurrence.owner, week_start_for(today), today)
+
+    def perform_destroy(self, instance):
+        current_week = week_start_for(timezone.localdate())
+        # Clear only the weeks this rule had run ahead and planned. The current
+        # week is left exactly as it is: those days are on the calendar in
+        # front of the user, and one of them may already have been trained.
+        # Days the user put there by hand are untouched, which is what the
+        # source_recurrence link is for.
+        WorkoutSchedule.objects.filter(
+            source_recurrence=instance,
+            scheduled_date__gte=current_week + timedelta(days=7),
+        ).delete()
+        if instance.materialized_through is None:
+            # Never reached a calendar, so no week depends on it.
+            instance.delete()
+        else:
+            instance.effective_until = current_week
+            instance.save(update_fields=["effective_until", "updated_at"])
 
 
 @extend_schema_view(
