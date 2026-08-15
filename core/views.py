@@ -6,6 +6,7 @@ from django.db.models import Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
     OpenApiParameter,
     extend_schema,
@@ -27,6 +28,8 @@ from .models import (
     SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
+    PlannerCategory,
+    PlannerEntry,
     WorkoutRecurrence,
     WorkoutSchedule,
     WorkoutSession,
@@ -51,6 +54,7 @@ from .serializers import (
     SessionRouteUploadSerializer,
     SetEntrySerializer,
     PlanWeekSerializer,
+    PlannerEntrySerializer,
     WorkoutExerciseSerializer,
     WorkoutRecurrenceSerializer,
     WorkoutScheduleSerializer,
@@ -251,6 +255,59 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             .order_by("scheduled_date", "id")
         )
         return Response(WorkoutScheduleSerializer(schedules, many=True).data)
+
+
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="start",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only entries on or after this date.",
+            ),
+            OpenApiParameter(
+                name="end",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only entries on or before this date.",
+            ),
+            OpenApiParameter(
+                name="category",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                enum=[choice[0] for choice in PlannerCategory.choices],
+                description="Return only entries in this category.",
+            ),
+        ]
+    )
+)
+class PlannerEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+    """Tasks and events on the planner.
+
+    The date range is a filter rather than a required window so the same
+    endpoint draws a month of calendar marks, a week strip, and one day's list.
+    """
+
+    queryset = PlannerEntry.objects.select_related("owner", "workout")
+    serializer_class = PlannerEntrySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = self.scope_to_owner(super().get_queryset())
+        start = self.request.query_params.get("start")
+        end = self.request.query_params.get("end")
+        category = self.request.query_params.get("category")
+        if start:
+            queryset = queryset.filter(scheduled_date__gte=start)
+        if end:
+            queryset = queryset.filter(scheduled_date__lte=end)
+        if category:
+            queryset = queryset.filter(category=category)
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.owner_profile())
 
 
 class WorkoutRecurrenceViewSet(

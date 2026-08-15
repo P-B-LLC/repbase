@@ -992,3 +992,82 @@ def plan_recurring_week(owner, week_start, today):
             rule.materialized_through = planned_through
             rule.save(update_fields=["materialized_through", "updated_at"])
     return created
+
+
+class PlannerCategory(models.TextChoices):
+    """What a planned item is for.
+
+    Deliberately a short, fixed list: the point is to let a day be read at a
+    glance, which a free-text label would not do.
+    """
+
+    HABIT = "habit", "Habit"
+    WORKOUT = "workout", "Workout"
+    ERRAND = "errand", "Errand"
+    STUDY = "study", "Study"
+    SLEEP = "sleep", "Sleep"
+    HEALTH = "health", "Health"
+    WORK = "work", "Work"
+    HOME = "home", "Home"
+    OTHER = "other", "Other"
+
+
+class PlannerEntry(models.Model):
+    """Something the user has planned for a day.
+
+    A **task** is finished or not, and carries a checkbox. An **event** simply
+    happens at a time and is never completed. They share a row because a day is
+    read as one list, and separating them would mean merging two paginated
+    feeds to draw it.
+    """
+
+    class Kind(models.TextChoices):
+        TASK = "task", "Task"
+        EVENT = "event", "Event"
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="planner_entries",
+    )
+    kind = models.CharField(max_length=10, choices=Kind.choices, default=Kind.TASK)
+    title = models.CharField(max_length=150)
+    category = models.CharField(
+        max_length=20,
+        choices=PlannerCategory.choices,
+        default=PlannerCategory.OTHER,
+    )
+    scheduled_date = models.DateField(db_index=True)
+    #: When it needs to be done. Null means the day is enough.
+    scheduled_time = models.TimeField(null=True, blank=True)
+    #: Set when a task is ticked off, cleared when it is unticked. Kept as a
+    #: timestamp rather than a flag so "when did I do this" stays answerable.
+    completed_at = models.DateTimeField(null=True, blank=True)
+    #: A workout task can stand for a workout the user already has, which is
+    #: what connects this page to the workout page. Nullable: most entries have
+    #: nothing to do with training.
+    workout = models.ForeignKey(
+        WorkoutTemplate,
+        on_delete=models.SET_NULL,
+        related_name="planner_entries",
+        null=True,
+        blank=True,
+    )
+    notes = models.CharField(max_length=300, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        # Untimed items first within a day, then by time: a day reads as
+        # "these at some point, these at these hours".
+        ordering = ("scheduled_date", "scheduled_time", "id")
+        indexes = [
+            models.Index(fields=("owner", "scheduled_date")),
+        ]
+
+    def __str__(self):
+        return f"{self.scheduled_date}: {self.title}"
+
+    @property
+    def is_complete(self):
+        return self.completed_at is not None

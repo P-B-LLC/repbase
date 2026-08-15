@@ -452,6 +452,215 @@ paths:
               schema:
                 $ref: '#/components/schemas/RepbaseUser'
           description: ''
+  /api/v1/planner/:
+    get:
+      operationId: planner_list
+      description: |-
+        Tasks and events on the planner.
+
+        The date range is a filter rather than a required window so the same
+        endpoint draws a month of calendar marks, a week strip, and one day's list.
+      parameters:
+      - in: query
+        name: category
+        schema:
+          type: string
+          enum:
+          - errand
+          - habit
+          - health
+          - home
+          - other
+          - sleep
+          - study
+          - work
+          - workout
+        description: Return only entries in this category.
+      - in: query
+        name: end
+        schema:
+          type: string
+          format: date
+        description: Return only entries on or before this date.
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - in: query
+        name: start
+        schema:
+          type: string
+          format: date
+        description: Return only entries on or after this date.
+      tags:
+      - planner
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPlannerEntryList'
+          description: ''
+    post:
+      operationId: planner_create
+      description: |-
+        Tasks and events on the planner.
+
+        The date range is a filter rather than a required window so the same
+        endpoint draws a month of calendar marks, a week strip, and one day's list.
+      tags:
+      - planner
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlannerEntryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlannerEntryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PlannerEntryRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlannerEntry'
+          description: ''
+  /api/v1/planner/{id}/:
+    get:
+      operationId: planner_retrieve
+      description: |-
+        Tasks and events on the planner.
+
+        The date range is a filter rather than a required window so the same
+        endpoint draws a month of calendar marks, a week strip, and one day's list.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this planner entry.
+        required: true
+      tags:
+      - planner
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlannerEntry'
+          description: ''
+    put:
+      operationId: planner_update
+      description: |-
+        Tasks and events on the planner.
+
+        The date range is a filter rather than a required window so the same
+        endpoint draws a month of calendar marks, a week strip, and one day's list.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this planner entry.
+        required: true
+      tags:
+      - planner
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlannerEntryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlannerEntryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PlannerEntryRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlannerEntry'
+          description: ''
+    patch:
+      operationId: planner_partial_update
+      description: |-
+        Tasks and events on the planner.
+
+        The date range is a filter rather than a required window so the same
+        endpoint draws a month of calendar marks, a week strip, and one day's list.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this planner entry.
+        required: true
+      tags:
+      - planner
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedPlannerEntryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedPlannerEntryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedPlannerEntryRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PlannerEntry'
+          description: ''
+    delete:
+      operationId: planner_destroy
+      description: |-
+        Tasks and events on the planner.
+
+        The date range is a filter rather than a required window so the same
+        endpoint draws a month of calendar marks, a week strip, and one day's list.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this planner entry.
+        required: true
+      tags:
+      - planner
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/progress/exercises/{exercise_id}/:
     get:
       operationId: progress_exercises_list
@@ -1888,6 +2097,28 @@ components:
         * `assault_bike` - Assault Bike
         * `ski_erg` - Ski Erg
         * `other` - Other
+    CategoryEnum:
+      enum:
+      - habit
+      - workout
+      - errand
+      - study
+      - sleep
+      - health
+      - work
+      - home
+      - other
+      type: string
+      description: |-
+        * `habit` - Habit
+        * `workout` - Workout
+        * `errand` - Errand
+        * `study` - Study
+        * `sleep` - Sleep
+        * `health` - Health
+        * `work` - Work
+        * `home` - Home
+        * `other` - Other
     Exercise:
       type: object
       properties:
@@ -1953,14 +2184,6 @@ components:
           maxLength: 100
       required:
       - name
-    KindEnum:
-      enum:
-      - heaviest_weight
-      - best_estimated_1rm
-      type: string
-      description: |-
-        * `heaviest_weight` - heaviest_weight
-        * `best_estimated_1rm` - best_estimated_1rm
     LoginRequest:
       type: object
       properties:
@@ -2043,6 +2266,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Exercise'
+    PaginatedPlannerEntryList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlannerEntry'
     PaginatedPublicRepbaseUserList:
       type: object
       required:
@@ -2273,6 +2519,38 @@ components:
         muscle_group:
           type: string
           maxLength: 100
+    PatchedPlannerEntryRequest:
+      type: object
+      description: |-
+        A task or event on the planner.
+
+        ``is_complete`` is what the client writes; ``completed_at`` is the record
+        of when it happened and is read-only. Keeping both means ticking a task off
+        does not throw away the time it was done.
+      properties:
+        kind:
+          $ref: '#/components/schemas/PlannerEntryKindEnum'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 150
+        category:
+          $ref: '#/components/schemas/CategoryEnum'
+        scheduled_date:
+          type: string
+          format: date
+        scheduled_time:
+          type: string
+          format: time
+          nullable: true
+        is_complete:
+          type: boolean
+        workout:
+          type: integer
+          nullable: true
+        notes:
+          type: string
+          maxLength: 300
     PatchedRepbaseUserRequest:
       type: object
       properties:
@@ -2460,7 +2738,7 @@ components:
           readOnly: true
         kind:
           allOf:
-          - $ref: '#/components/schemas/KindEnum'
+          - $ref: '#/components/schemas/PersonalRecordKindEnum'
           readOnly: true
         value:
           type: number
@@ -2482,6 +2760,14 @@ components:
       - previous_value
       - reps
       - value
+    PersonalRecordKindEnum:
+      enum:
+      - heaviest_weight
+      - best_estimated_1rm
+      type: string
+      description: |-
+        * `heaviest_weight` - heaviest_weight
+        * `best_estimated_1rm` - best_estimated_1rm
     PlanWeekRequest:
       type: object
       description: Which week to fill in from the user's weekly repeats.
@@ -2492,6 +2778,112 @@ components:
           description: Any date in the week. The week's Monday is used.
       required:
       - start
+    PlannerEntry:
+      type: object
+      description: |-
+        A task or event on the planner.
+
+        ``is_complete`` is what the client writes; ``completed_at`` is the record
+        of when it happened and is read-only. Keeping both means ticking a task off
+        does not throw away the time it was done.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        owner:
+          type: integer
+          readOnly: true
+        kind:
+          $ref: '#/components/schemas/PlannerEntryKindEnum'
+        title:
+          type: string
+          maxLength: 150
+        category:
+          $ref: '#/components/schemas/CategoryEnum'
+        scheduled_date:
+          type: string
+          format: date
+        scheduled_time:
+          type: string
+          format: time
+          nullable: true
+        is_complete:
+          type: boolean
+        completed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        workout:
+          type: integer
+          nullable: true
+        workout_name:
+          type: string
+          readOnly: true
+          nullable: true
+        notes:
+          type: string
+          maxLength: 300
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - completed_at
+      - created_at
+      - id
+      - owner
+      - scheduled_date
+      - title
+      - updated_at
+      - workout_name
+    PlannerEntryKindEnum:
+      enum:
+      - task
+      - event
+      type: string
+      description: |-
+        * `task` - Task
+        * `event` - Event
+    PlannerEntryRequest:
+      type: object
+      description: |-
+        A task or event on the planner.
+
+        ``is_complete`` is what the client writes; ``completed_at`` is the record
+        of when it happened and is read-only. Keeping both means ticking a task off
+        does not throw away the time it was done.
+      properties:
+        kind:
+          $ref: '#/components/schemas/PlannerEntryKindEnum'
+        title:
+          type: string
+          minLength: 1
+          maxLength: 150
+        category:
+          $ref: '#/components/schemas/CategoryEnum'
+        scheduled_date:
+          type: string
+          format: date
+        scheduled_time:
+          type: string
+          format: time
+          nullable: true
+        is_complete:
+          type: boolean
+        workout:
+          type: integer
+          nullable: true
+        notes:
+          type: string
+          maxLength: 300
+      required:
+      - scheduled_date
+      - title
     PublicRepbaseUser:
       type: object
       properties:

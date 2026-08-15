@@ -12,6 +12,7 @@ from .models import (
     SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
+    PlannerEntry,
     WorkoutRecurrence,
     WorkoutSchedule,
     WorkoutSession,
@@ -278,6 +279,97 @@ class WorkoutScheduleSerializer(serializers.ModelSerializer):
         if value.owner_id != self.context["request"].user.repbase_profile.id:
             raise serializers.ValidationError("Workout does not belong to this user.")
         return value
+
+
+class PlannerEntrySerializer(serializers.ModelSerializer):
+    """A task or event on the planner.
+
+    ``is_complete`` is what the client writes; ``completed_at`` is the record
+    of when it happened and is read-only. Keeping both means ticking a task off
+    does not throw away the time it was done.
+    """
+
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    # Explicitly nullable: most entries have no workout, and without this the
+    # schema promises a string where the API sends null, which makes every
+    # ordinary task fail to decode in a generated client.
+    workout_name = serializers.CharField(
+        source="workout.name", read_only=True, allow_null=True, default=None
+    )
+    is_complete = serializers.BooleanField(required=False)
+
+    class Meta:
+        model = PlannerEntry
+        fields = [
+            "id",
+            "owner",
+            "kind",
+            "title",
+            "category",
+            "scheduled_date",
+            "scheduled_time",
+            "is_complete",
+            "completed_at",
+            "workout",
+            "workout_name",
+            "notes",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "owner",
+            "completed_at",
+            "workout_name",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_title(self, value):
+        title = value.strip()
+        if not title:
+            raise serializers.ValidationError("Give the task a name.")
+        return title
+
+    def validate_workout(self, value):
+        if value is None:
+            return value
+        if value.owner_id != self.context["request"].user.repbase_profile.id:
+            raise serializers.ValidationError("Workout does not belong to this user.")
+        return value
+
+    def validate(self, attrs):
+        # An event happens at a time; it is not something to tick off. Letting
+        # one be "completed" would put a checkbox on a birthday.
+        kind = attrs.get("kind", getattr(self.instance, "kind", None))
+        if kind == PlannerEntry.Kind.EVENT and attrs.get("is_complete"):
+            raise serializers.ValidationError(
+                {"is_complete": "An event happens rather than being completed."}
+            )
+        return attrs
+
+    def _apply_completion(self, instance, is_complete):
+        if is_complete and instance.completed_at is None:
+            instance.completed_at = timezone.now()
+        elif not is_complete:
+            instance.completed_at = None
+
+    def create(self, validated_data):
+        is_complete = validated_data.pop("is_complete", False)
+        instance = PlannerEntry(**validated_data)
+        self._apply_completion(instance, is_complete)
+        instance.save()
+        return instance
+
+    def update(self, instance, validated_data):
+        has_completion = "is_complete" in validated_data
+        is_complete = validated_data.pop("is_complete", False)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        if has_completion:
+            self._apply_completion(instance, is_complete)
+        instance.save()
+        return instance
 
 
 class WorkoutRecurrenceSerializer(serializers.ModelSerializer):

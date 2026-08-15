@@ -13,6 +13,7 @@ from .views import (
     RotateTokenView,
     SessionExerciseViewSet,
     SetEntryViewSet,
+    PlannerEntryViewSet,
     WorkoutExerciseViewSet,
     WorkoutRecurrenceViewSet,
     WorkoutScheduleViewSet,
@@ -28,6 +29,7 @@ router.register("workouts", WorkoutTemplateViewSet)
 router.register("workout-exercises", WorkoutExerciseViewSet)
 router.register("schedules", WorkoutScheduleViewSet)
 router.register("recurrences", WorkoutRecurrenceViewSet)
+router.register("planner", PlannerEntryViewSet)
 router.register("sessions", WorkoutSessionViewSet)
 router.register("session-exercises", SessionExerciseViewSet)
 router.register("set-entries", SetEntryViewSet)
