@@ -128,6 +128,17 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Uploaded profile photos. Served by Django only while DEBUG is on; a real
+# deployment puts a web server or object store in front of this.
+# Django refuses a request body larger than this before any view sees it, and
+# answers with HTML rather than the JSON the app expects. The default of 2.5 MB
+# is below a 5 MB photo once base64 has added a third, so the profile photo
+# limit would never have been the one doing the refusing.
+DATA_UPLOAD_MAX_MEMORY_SIZE = 8 * 1024 * 1024
+
+MEDIA_URL = 'media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 
 # API
 

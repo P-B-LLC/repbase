@@ -8,6 +8,7 @@ from .views import (
     GymViewSet,
     LoginView,
     LogoutView,
+    MePhotoView,
     MeView,
     RegisterView,
     RepbaseUserViewSet,
@@ -43,6 +44,7 @@ urlpatterns = [
     path("auth/rotate-token/", RotateTokenView.as_view(), name="rotate-token"),
     path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("me/", MeView.as_view(), name="me"),
+    path("me/photo/", MePhotoView.as_view(), name="me-photo"),
     path(
         "progress/exercises/<int:exercise_id>/",
         ExerciseProgressView.as_view(),

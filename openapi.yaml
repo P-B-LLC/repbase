@@ -718,6 +718,49 @@ paths:
               schema:
                 $ref: '#/components/schemas/RepbaseUser'
           description: ''
+  /api/v1/me/photo/:
+    put:
+      operationId: me_photo_update
+      description: Replace the profile photo. Any previous file is deleted.
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePhotoUploadRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfilePhotoUploadRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfilePhotoUploadRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepbaseUser'
+          description: ''
+    delete:
+      operationId: me_photo_destroy
+      description: Remove the profile photo.
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepbaseUser'
+          description: ''
   /api/v1/planner/:
     get:
       operationId: planner_list
@@ -2265,9 +2308,6 @@ components:
       required:
       - token
       - user
-    BlankEnum:
-      enum:
-      - ''
     BodyWeightEntry:
       type: object
       properties:
@@ -2369,6 +2409,46 @@ components:
         * `meeting` - Meeting
         * `travel` - Travel
         * `social` - Social
+        * `other` - Other
+    ContentTypeEnum:
+      enum:
+      - image/heic
+      - image/jpeg
+      - image/png
+      - image/webp
+      type: string
+      description: |-
+        * `image/heic` - image/heic
+        * `image/jpeg` - image/jpeg
+        * `image/png` - image/png
+        * `image/webp` - image/webp
+    DisciplinesEnum:
+      enum:
+      - powerlifting
+      - bodybuilding
+      - crossfit
+      - weightlifting
+      - rock_climbing
+      - triathlon
+      - running
+      - cycling
+      - swimming
+      - calisthenics
+      - general_fitness
+      - other
+      type: string
+      description: |-
+        * `powerlifting` - Powerlifting
+        * `bodybuilding` - Bodybuilding
+        * `crossfit` - CrossFit
+        * `weightlifting` - Olympic weightlifting
+        * `rock_climbing` - Rock climbing
+        * `triathlon` - Triathlon
+        * `running` - Running
+        * `cycling` - Cycling
+        * `swimming` - Swimming
+        * `calisthenics` - Calisthenics
+        * `general_fitness` - General fitness
         * `other` - Other
     Exercise:
       type: object
@@ -2933,21 +3013,21 @@ components:
           nullable: true
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
-        profile_photo_url:
-          oneOf:
-          - type: string
-            format: uri
-            maxLength: 200
-          - type: string
-            maxLength: 0
-        training_style:
-          oneOf:
-          - $ref: '#/components/schemas/TrainingStyleEnum'
-          - $ref: '#/components/schemas/BlankEnum'
+        bio:
+          type: string
+          maxLength: 300
+        disciplines:
+          type: array
+          items:
+            $ref: '#/components/schemas/DisciplinesEnum'
         gym:
           type: integer
           nullable: true
-        is_body_metrics_public:
+        shows_height:
+          type: boolean
+        shows_weight:
+          type: boolean
+        shows_target_weight:
           type: boolean
     PatchedSessionExerciseRequest:
       type: object
@@ -3225,6 +3305,24 @@ components:
       required:
       - scheduled_date
       - title
+    ProfilePhotoUploadRequest:
+      type: object
+      description: |-
+        A profile photo sent as base64.
+
+        Base64 in JSON rather than multipart: every other call this API takes is
+        JSON, and keeping it that way means the generated client needs no separate
+        upload path.
+      properties:
+        content_type:
+          $ref: '#/components/schemas/ContentTypeEnum'
+        image_base64:
+          type: string
+          minLength: 1
+          description: 'The image bytes, base64 encoded, without a data: prefix.'
+      required:
+      - content_type
+      - image_base64
     PublicRepbaseUser:
       type: object
       properties:
@@ -3240,17 +3338,18 @@ components:
         last_name:
           type: string
           readOnly: true
+        bio:
+          type: string
+          maxLength: 300
         profile_photo_url:
-          oneOf:
-          - type: string
-            format: uri
-            maxLength: 200
-          - type: string
-            maxLength: 0
-        training_style:
-          oneOf:
-          - $ref: '#/components/schemas/TrainingStyleEnum'
-          - $ref: '#/components/schemas/BlankEnum'
+          type: string
+          nullable: true
+          readOnly: true
+        disciplines:
+          type: array
+          items:
+            type: string
+          readOnly: true
         gym:
           type: integer
           nullable: true
@@ -3278,7 +3377,11 @@ components:
           pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
           nullable: true
           readOnly: true
-        is_body_metrics_public:
+        shows_height:
+          type: boolean
+        shows_weight:
+          type: boolean
+        shows_target_weight:
           type: boolean
         created_at:
           type: string
@@ -3286,12 +3389,14 @@ components:
           readOnly: true
       required:
       - created_at
+      - disciplines
       - first_name
       - gym_city
       - gym_name
       - height_cm
       - id
       - last_name
+      - profile_photo_url
       - target_weight_kg
       - username
       - weight_kg
@@ -3364,17 +3469,17 @@ components:
           nullable: true
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
+        bio:
+          type: string
+          maxLength: 300
         profile_photo_url:
-          oneOf:
-          - type: string
-            format: uri
-            maxLength: 200
-          - type: string
-            maxLength: 0
-        training_style:
-          oneOf:
-          - $ref: '#/components/schemas/TrainingStyleEnum'
-          - $ref: '#/components/schemas/BlankEnum'
+          type: string
+          nullable: true
+          readOnly: true
+        disciplines:
+          type: array
+          items:
+            $ref: '#/components/schemas/DisciplinesEnum'
         gym:
           type: integer
           nullable: true
@@ -3386,7 +3491,11 @@ components:
           type: string
           readOnly: true
           nullable: true
-        is_body_metrics_public:
+        shows_height:
+          type: boolean
+        shows_weight:
+          type: boolean
+        shows_target_weight:
           type: boolean
         created_at:
           type: string
@@ -3404,6 +3513,7 @@ components:
       - gym_name
       - id
       - last_name
+      - profile_photo_url
       - updated_at
       - username
     RepbaseUserRequest:
@@ -3447,21 +3557,21 @@ components:
           nullable: true
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
-        profile_photo_url:
-          oneOf:
-          - type: string
-            format: uri
-            maxLength: 200
-          - type: string
-            maxLength: 0
-        training_style:
-          oneOf:
-          - $ref: '#/components/schemas/TrainingStyleEnum'
-          - $ref: '#/components/schemas/BlankEnum'
+        bio:
+          type: string
+          maxLength: 300
+        disciplines:
+          type: array
+          items:
+            $ref: '#/components/schemas/DisciplinesEnum'
         gym:
           type: integer
           nullable: true
-        is_body_metrics_public:
+        shows_height:
+          type: boolean
+        shows_weight:
+          type: boolean
+        shows_target_weight:
           type: boolean
       required:
       - email
@@ -3714,34 +3824,6 @@ components:
         * `planned` - Planned
         * `active` - Active
         * `completed` - Completed
-    TrainingStyleEnum:
-      enum:
-      - powerlifting
-      - bodybuilding
-      - crossfit
-      - weightlifting
-      - rock_climbing
-      - triathlon
-      - running
-      - cycling
-      - swimming
-      - calisthenics
-      - general_fitness
-      - other
-      type: string
-      description: |-
-        * `powerlifting` - Powerlifting
-        * `bodybuilding` - Bodybuilding
-        * `crossfit` - CrossFit
-        * `weightlifting` - Olympic weightlifting
-        * `rock_climbing` - Rock climbing
-        * `triathlon` - Triathlon
-        * `running` - Running
-        * `cycling` - Cycling
-        * `swimming` - Swimming
-        * `calisthenics` - Calisthenics
-        * `general_fitness` - General fitness
-        * `other` - Other
     UnitPreferenceEnum:
       enum:
       - metric

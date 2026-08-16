@@ -57,6 +57,7 @@ from .serializers import (
     SessionRouteUploadSerializer,
     SetEntrySerializer,
     GymSerializer,
+    ProfilePhotoUploadSerializer,
     PlanWeekSerializer,
     PlannerEntrySerializer,
     WorkoutExerciseSerializer,
@@ -154,6 +155,36 @@ class MeView(RetrieveUpdateAPIView):
 
     def get_object(self):
         return profile_for(self.request.user)
+
+
+class MePhotoView(APIView):
+    """The signed-in user's profile photo."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=ProfilePhotoUploadSerializer,
+        responses={200: RepbaseUserSerializer},
+        description="Replace the profile photo. Any previous file is deleted.",
+    )
+    def put(self, request):
+        serializer = ProfilePhotoUploadSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profile = serializer.save_to(profile_for(request.user))
+        return Response(
+            RepbaseUserSerializer(profile, context={"request": request}).data
+        )
+
+    @extend_schema(
+        responses={200: RepbaseUserSerializer},
+        description="Remove the profile photo.",
+    )
+    def delete(self, request):
+        profile = profile_for(request.user)
+        profile.profile_photo.delete(save=True)
+        return Response(
+            RepbaseUserSerializer(profile, context={"request": request}).data
+        )
 
 
 class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):

@@ -1,4 +1,6 @@
 import math
+import pathlib
+import uuid
 from datetime import timedelta
 from decimal import Decimal
 
@@ -120,6 +122,17 @@ def haversine_km(lat1, lon1, lat2, lon2):
     return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(a))
 
 
+def profile_photo_path(instance, filename):
+    """Where an uploaded profile photo lives.
+
+    Named from the profile id and a random suffix rather than the uploaded
+    filename, which is chosen by the client and would otherwise let one user
+    overwrite another's file or leak whatever they happened to call it.
+    """
+    suffix = pathlib.Path(filename).suffix.lower() or ".jpg"
+    return f"profile-photos/{instance.pk or 'new'}-{uuid.uuid4().hex}{suffix}"
+
+
 class RepbaseUser(models.Model):
     class UnitPreference(models.TextChoices):
         METRIC = "metric", "Metric (kg/cm)"
@@ -172,12 +185,16 @@ class RepbaseUser(models.Model):
         choices=UnitPreference.choices,
         default=UnitPreference.METRIC,
     )
-    profile_photo_url = models.URLField(blank=True)
-    training_style = models.CharField(
-        max_length=20,
-        choices=TrainingStyle.choices,
+    #: The uploaded file. Replaces a URL field that nothing could ever set,
+    #: since the app had no way to host an image.
+    profile_photo = models.ImageField(
+        upload_to=profile_photo_path,
         blank=True,
+        null=True,
     )
+    #: Free text the user writes about themselves. Bounded so a profile stays
+    #: something you can read at a glance.
+    bio = models.CharField(max_length=300, blank=True)
     #: Set when the user joins one. Null means they have not said where they
     #: train, which is different from having no gym.
     gym = models.ForeignKey(
@@ -187,7 +204,11 @@ class RepbaseUser(models.Model):
         null=True,
         blank=True,
     )
-    is_body_metrics_public = models.BooleanField(default=False)
+    #: Each measurement is its own decision. A single flag forced height,
+    #: weight and goal weight to be shared or withheld together.
+    shows_height = models.BooleanField(default=False)
+    shows_weight = models.BooleanField(default=False)
+    shows_target_weight = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1215,3 +1236,35 @@ class Gym(models.Model):
     @property
     def member_count(self):
         return self.members.count()
+
+
+class UserDiscipline(models.Model):
+    """One athlete type a person identifies with.
+
+    A row each rather than a list on the profile: "who else here climbs" stays
+    a question the database can answer on any backend, which a JSON list cannot
+    on SQLite.
+    """
+
+    profile = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="disciplines",
+    )
+    discipline = models.CharField(
+        max_length=20,
+        choices=RepbaseUser.TrainingStyle.choices,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("discipline",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("profile", "discipline"),
+                name="unique_discipline_per_profile",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.profile}: {self.get_discipline_display()}"

@@ -1,4 +1,9 @@
+import base64
+import binascii
+import uuid
+
 from django.contrib.auth import authenticate, get_user_model, password_validation
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
@@ -16,6 +21,7 @@ from .models import (
     WorkoutExercise,
     EVENT_CATEGORIES,
     Gym,
+    UserDiscipline,
     PlannerEntry,
     TASK_CATEGORIES,
     WorkoutRecurrence,
@@ -27,6 +33,64 @@ from .models import (
 
 
 User = get_user_model()
+
+
+#: Roughly five megabytes once decoded. A profile photo has no business
+#: being larger, and without a ceiling one request can exhaust memory.
+MAX_PROFILE_PHOTO_BYTES = 5 * 1024 * 1024
+
+ALLOWED_PHOTO_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/heic": ".heic",
+    "image/webp": ".webp",
+}
+
+
+class ProfilePhotoUploadSerializer(serializers.Serializer):
+    """A profile photo sent as base64.
+
+    Base64 in JSON rather than multipart: every other call this API takes is
+    JSON, and keeping it that way means the generated client needs no separate
+    upload path.
+    """
+
+    content_type = serializers.ChoiceField(choices=sorted(ALLOWED_PHOTO_TYPES))
+    image_base64 = serializers.CharField(
+        help_text="The image bytes, base64 encoded, without a data: prefix."
+    )
+
+    def validate(self, attrs):
+        raw = attrs["image_base64"]
+        # Tolerate a data: URL, since it is the obvious thing to send.
+        if raw.startswith("data:"):
+            _, _, raw = raw.partition(",")
+        try:
+            decoded = base64.b64decode(raw, validate=True)
+        except (binascii.Error, ValueError):
+            raise serializers.ValidationError(
+                {"image_base64": "This is not valid base64."}
+            )
+        if not decoded:
+            raise serializers.ValidationError({"image_base64": "The image is empty."})
+        if len(decoded) > MAX_PROFILE_PHOTO_BYTES:
+            raise serializers.ValidationError(
+                {"image_base64": "That image is larger than 5 MB."}
+            )
+        attrs["decoded"] = decoded
+        return attrs
+
+    def save_to(self, profile):
+        extension = ALLOWED_PHOTO_TYPES[self.validated_data["content_type"]]
+        # Replaced, not accumulated: the previous file would otherwise sit on
+        # disk forever with nothing pointing at it.
+        profile.profile_photo.delete(save=False)
+        profile.profile_photo.save(
+            f"{uuid.uuid4().hex}{extension}",
+            ContentFile(self.validated_data["decoded"]),
+            save=True,
+        )
+        return profile
 
 
 class GymSerializer(serializers.ModelSerializer):
@@ -81,6 +145,53 @@ class GymSerializer(serializers.ModelSerializer):
         return attrs
 
 
+def profile_photo_url_for(profile, request):
+    """The absolute URL of an uploaded photo, or null when there is none.
+
+    Absolute because the app talks to the API from a different origin than the
+    one serving the file, and a relative path would resolve against the app.
+    """
+    if not profile.profile_photo:
+        return None
+    url = profile.profile_photo.url
+    return request.build_absolute_uri(url) if request else url
+
+
+class DisciplineListField(serializers.ListField):
+    """A list of disciplines that reads a reverse relation and writes a list.
+
+    Read and write rather than write-only: dropping it from the response would
+    drop it from the schema, and so from every generated client.
+    """
+
+    def to_representation(self, value):
+        if hasattr(value, "all"):
+            return [row.discipline for row in value.all()]
+        return super().to_representation(value)
+
+
+def disciplines_for(profile):
+    return [row.discipline for row in profile.disciplines.all()]
+
+
+def replace_disciplines(profile, disciplines):
+    """Sets the profile's disciplines to exactly this list.
+
+    Replaced wholesale rather than merged: the app sends the complete set the
+    user selected, so anything missing from it was deselected.
+    """
+    wanted = list(dict.fromkeys(disciplines))
+    profile.disciplines.exclude(discipline__in=wanted).delete()
+    existing = set(profile.disciplines.values_list("discipline", flat=True))
+    UserDiscipline.objects.bulk_create(
+        [
+            UserDiscipline(profile=profile, discipline=discipline)
+            for discipline in wanted
+            if discipline not in existing
+        ]
+    )
+
+
 #: Renders a Decimal the way DecimalField does, so a measurement has the same
 #: shape here as everywhere else in the API. Deliberately not a class
 #: attribute: DRF collects those as declared fields.
@@ -100,6 +211,8 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     height_cm = serializers.SerializerMethodField()
     weight_kg = serializers.SerializerMethodField()
     target_weight_kg = serializers.SerializerMethodField()
+    profile_photo_url = serializers.SerializerMethodField()
+    disciplines = serializers.SerializerMethodField()
 
     class Meta:
         model = RepbaseUser
@@ -108,17 +221,28 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
             "username",
             "first_name",
             "last_name",
+            "bio",
             "profile_photo_url",
-            "training_style",
+            "disciplines",
             "gym",
             "gym_name",
             "gym_city",
             "height_cm",
             "weight_kg",
             "target_weight_kg",
-            "is_body_metrics_public",
+            "shows_height",
+            "shows_weight",
+            "shows_target_weight",
             "created_at",
         ]
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_profile_photo_url(self, profile):
+        return profile_photo_url_for(profile, self.context.get("request"))
+
+    @extend_schema_field(serializers.ListField(child=serializers.CharField()))
+    def get_disciplines(self, profile):
+        return disciplines_for(profile)
 
     # `is_body_metrics_public` had nothing reading it: the public profile never
     # carried measurements at all, so the switch the user was offered did
@@ -127,10 +251,10 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(serializers.IntegerField(allow_null=True))
     def get_height_cm(self, profile):
-        return profile.height_cm if profile.is_body_metrics_public else None
+        return profile.height_cm if profile.shows_height else None
 
-    def _public_kilograms(self, profile, value):
-        if not profile.is_body_metrics_public or value is None:
+    def _public_kilograms(self, profile, shown, value):
+        if not shown or value is None:
             return None
         return PUBLIC_KILOGRAMS.to_representation(value)
 
@@ -138,13 +262,15 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
         max_digits=6, decimal_places=2, allow_null=True
     ))
     def get_weight_kg(self, profile):
-        return self._public_kilograms(profile, profile.weight_kg)
+        return self._public_kilograms(profile, profile.shows_weight, profile.weight_kg)
 
     @extend_schema_field(serializers.DecimalField(
         max_digits=6, decimal_places=2, allow_null=True
     ))
     def get_target_weight_kg(self, profile):
-        return self._public_kilograms(profile, profile.target_weight_kg)
+        return self._public_kilograms(
+            profile, profile.shows_target_weight, profile.target_weight_kg
+        )
 
 
 class RepbaseUserSerializer(serializers.ModelSerializer):
@@ -157,6 +283,12 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
     )
     gym_city = serializers.CharField(
         source="gym.city", read_only=True, allow_null=True, default=None
+    )
+    profile_photo_url = serializers.SerializerMethodField()
+    disciplines = DisciplineListField(
+        child=serializers.ChoiceField(choices=RepbaseUser.TrainingStyle.choices),
+        required=False,
+        allow_empty=True,
     )
 
     class Meta:
@@ -172,16 +304,32 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "weight_kg",
             "target_weight_kg",
             "unit_preference",
+            "bio",
             "profile_photo_url",
-            "training_style",
+            "disciplines",
             "gym",
             "gym_name",
             "gym_city",
-            "is_body_metrics_public",
+            "shows_height",
+            "shows_weight",
+            "shows_target_weight",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "gym_name", "gym_city", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "profile_photo_url",
+            "gym_name",
+            "gym_city",
+            "created_at",
+            "updated_at",
+        ]
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_profile_photo_url(self, profile):
+        return profile_photo_url_for(profile, self.context.get("request"))
+
+
 
     def validate_username(self, value):
         queryset = User.objects.filter(username__iexact=value)
@@ -207,11 +355,17 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
     @transaction.atomic
     def update(self, instance, validated_data):
         user_data = validated_data.pop("user", {})
+        # Held aside because disciplines live in their own table, not on the
+        # profile row, so the model serializer cannot assign them.
+        has_disciplines = "disciplines" in validated_data
+        disciplines = validated_data.pop("disciplines", None)
         instance = super().update(instance, validated_data)
         if user_data:
             for field, value in user_data.items():
                 setattr(instance.user, field, value)
             instance.user.save(update_fields=list(user_data))
+        if has_disciplines:
+            replace_disciplines(instance, disciplines or [])
         return instance
 
 
