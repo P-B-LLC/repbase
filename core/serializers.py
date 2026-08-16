@@ -3,6 +3,8 @@ from django.db import transaction
 from django.utils import timezone
 from rest_framework import serializers
 
+from drf_spectacular.utils import extend_schema_field
+
 from .models import (
     CardioMachine,
     BodyWeightEntry,
@@ -13,22 +15,91 @@ from .models import (
     SetEntry,
     WorkoutExercise,
     EVENT_CATEGORIES,
+    Gym,
     PlannerEntry,
     TASK_CATEGORIES,
     WorkoutRecurrence,
     WorkoutSchedule,
     WorkoutSession,
     WorkoutTemplate,
+    normalize_gym_text,
 )
 
 
 User = get_user_model()
 
 
+class GymSerializer(serializers.ModelSerializer):
+    """A gym, and how many people say they train there."""
+
+    member_count = serializers.SerializerMethodField()
+    created_by = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = Gym
+        fields = [
+            "id",
+            "name",
+            "city",
+            "country",
+            "member_count",
+            "created_by",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "member_count", "created_by", "created_at", "updated_at"]
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_member_count(self, gym):
+        # Prefers the list view's annotation so a page of gyms costs one query
+        # rather than one per row, and falls back to the property on the paths
+        # that have no annotation, such as the response to creating one.
+        annotated = getattr(gym, "members_here", None)
+        return annotated if annotated is not None else gym.member_count
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Give the gym a name.")
+        return name
+
+    def validate(self, attrs):
+        # Checked here so a repeat comes back as a 400 naming the field rather
+        # than the unique constraint surfacing as a 500.
+        name = attrs.get("name", getattr(self.instance, "name", ""))
+        city = attrs.get("city", getattr(self.instance, "city", ""))
+        clash = Gym.objects.filter(
+            normalized_name=normalize_gym_text(name),
+            normalized_city=normalize_gym_text(city),
+        )
+        if self.instance:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(
+                {"name": "This gym is already listed. Search for it and join it instead."}
+            )
+        return attrs
+
+
+#: Renders a Decimal the way DecimalField does, so a measurement has the same
+#: shape here as everywhere else in the API. Deliberately not a class
+#: attribute: DRF collects those as declared fields.
+PUBLIC_KILOGRAMS = serializers.DecimalField(max_digits=6, decimal_places=2)
+
+
 class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     username = serializers.CharField(source="user.username", read_only=True)
     first_name = serializers.CharField(source="user.first_name", read_only=True)
     last_name = serializers.CharField(source="user.last_name", read_only=True)
+    gym_name = serializers.CharField(
+        source="gym.name", read_only=True, allow_null=True, default=None
+    )
+    gym_city = serializers.CharField(
+        source="gym.city", read_only=True, allow_null=True, default=None
+    )
+    height_cm = serializers.SerializerMethodField()
+    weight_kg = serializers.SerializerMethodField()
+    target_weight_kg = serializers.SerializerMethodField()
 
     class Meta:
         model = RepbaseUser
@@ -40,8 +111,40 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
             "profile_photo_url",
             "training_style",
             "gym",
+            "gym_name",
+            "gym_city",
+            "height_cm",
+            "weight_kg",
+            "target_weight_kg",
+            "is_body_metrics_public",
             "created_at",
         ]
+
+    # `is_body_metrics_public` had nothing reading it: the public profile never
+    # carried measurements at all, so the switch the user was offered did
+    # nothing. These honour it, and withhold by returning null rather than by
+    # dropping the key, so the shape of the response does not change with it.
+
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
+    def get_height_cm(self, profile):
+        return profile.height_cm if profile.is_body_metrics_public else None
+
+    def _public_kilograms(self, profile, value):
+        if not profile.is_body_metrics_public or value is None:
+            return None
+        return PUBLIC_KILOGRAMS.to_representation(value)
+
+    @extend_schema_field(serializers.DecimalField(
+        max_digits=6, decimal_places=2, allow_null=True
+    ))
+    def get_weight_kg(self, profile):
+        return self._public_kilograms(profile, profile.weight_kg)
+
+    @extend_schema_field(serializers.DecimalField(
+        max_digits=6, decimal_places=2, allow_null=True
+    ))
+    def get_target_weight_kg(self, profile):
+        return self._public_kilograms(profile, profile.target_weight_kg)
 
 
 class RepbaseUserSerializer(serializers.ModelSerializer):
@@ -49,6 +152,12 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(source="user.first_name", max_length=150)
     last_name = serializers.CharField(source="user.last_name", max_length=150)
     email = serializers.EmailField(source="user.email")
+    gym_name = serializers.CharField(
+        source="gym.name", read_only=True, allow_null=True, default=None
+    )
+    gym_city = serializers.CharField(
+        source="gym.city", read_only=True, allow_null=True, default=None
+    )
 
     class Meta:
         model = RepbaseUser
@@ -66,11 +175,13 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "profile_photo_url",
             "training_style",
             "gym",
+            "gym_name",
+            "gym_city",
             "is_body_metrics_public",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "gym_name", "gym_city", "created_at", "updated_at"]
 
     def validate_username(self, value):
         queryset = User.objects.filter(username__iexact=value)

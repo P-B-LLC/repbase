@@ -2,7 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Count, Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
@@ -13,6 +13,7 @@ from drf_spectacular.utils import (
     extend_schema_view,
 )
 from rest_framework import mixins, status, viewsets
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -28,12 +29,14 @@ from .models import (
     SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
+    Gym,
     PlannerCategory,
     PlannerEntry,
     WorkoutRecurrence,
     WorkoutSchedule,
     WorkoutSession,
     WorkoutTemplate,
+    normalize_gym_text,
     plan_recurring_week,
     week_start_for,
 )
@@ -53,6 +56,7 @@ from .serializers import (
     SessionRoutePointSerializer,
     SessionRouteUploadSerializer,
     SetEntrySerializer,
+    GymSerializer,
     PlanWeekSerializer,
     PlannerEntrySerializer,
     WorkoutExerciseSerializer,
@@ -299,6 +303,77 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         ]
     )
 )
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="search",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Match gyms whose name or city contains this, ignoring "
+                    "case, punctuation and extra spaces."
+                ),
+            )
+        ]
+    )
+)
+class GymViewSet(viewsets.ModelViewSet):
+    """Gyms, shared by everyone who trains at them.
+
+    Not owned by anyone: a gym one user adds is exactly the gym the next user
+    should be able to join, which is the whole point of the list. Anyone signed
+    in may add one; nobody may edit or delete somebody else's.
+    """
+
+    queryset = Gym.objects.all()
+    serializer_class = GymSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        # Not named member_count: that is a property on the model, and an
+        # annotation of the same name is assigned onto the instance, which
+        # a property without a setter refuses.
+        queryset = super().get_queryset().annotate(members_here=Count("members"))
+        search = self.request.query_params.get("search")
+        if search:
+            # Matched against the stored keys so "golds" finds "Gold\'s Gym".
+            key = normalize_gym_text(search)
+            if key:
+                queryset = queryset.filter(
+                    Q(normalized_name__contains=key) | Q(normalized_city__contains=key)
+                )
+        return queryset
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=profile_for(self.request.user))
+
+    def _assert_owner(self, instance):
+        owner = profile_for(self.request.user)
+        if instance.created_by_id not in (None, owner.id) and not self.request.user.is_superuser:
+            raise PermissionDenied("Only the person who added this gym can change it.")
+
+    def perform_update(self, serializer):
+        self._assert_owner(serializer.instance)
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        self._assert_owner(instance)
+        if instance.members.exists():
+            raise ValidationError(
+                "People train here, so this gym cannot be removed."
+            )
+        instance.delete()
+
+    @extend_schema(responses={200: PublicRepbaseUserSerializer(many=True)})
+    @action(detail=True, methods=["get"], pagination_class=None)
+    def members(self, request, pk=None):
+        """Who trains here. This is what makes a shared gym worth having."""
+        gym = self.get_object()
+        people = gym.members.select_related("user").order_by("user__username")
+        return Response(PublicRepbaseUserSerializer(people, many=True).data)
+
+
 class PlannerEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     """Tasks and events on the planner.
 

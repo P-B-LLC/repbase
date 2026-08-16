@@ -5,6 +5,7 @@ from .views import (
     BodyWeightEntryViewSet,
     ExerciseProgressView,
     ExerciseViewSet,
+    GymViewSet,
     LoginView,
     LogoutView,
     MeView,
@@ -30,6 +31,7 @@ router.register("workout-exercises", WorkoutExerciseViewSet)
 router.register("schedules", WorkoutScheduleViewSet)
 router.register("recurrences", WorkoutRecurrenceViewSet)
 router.register("planner", PlannerEntryViewSet)
+router.register("gyms", GymViewSet)
 router.register("sessions", WorkoutSessionViewSet)
 router.register("session-exercises", SessionExerciseViewSet)
 router.register("set-entries", SetEntryViewSet)

@@ -126,9 +126,24 @@ class RepbaseUser(models.Model):
         IMPERIAL = "imperial", "Imperial (lb/in)"
 
     class TrainingStyle(models.TextChoices):
+        """What kind of athlete someone is.
+
+        A fixed list rather than free text: it is shown on a public profile and
+        used to find people who train the way you do, neither of which works
+        when everyone spells it differently.
+        """
+
         POWERLIFTING = "powerlifting", "Powerlifting"
         BODYBUILDING = "bodybuilding", "Bodybuilding"
         CROSSFIT = "crossfit", "CrossFit"
+        WEIGHTLIFTING = "weightlifting", "Olympic weightlifting"
+        ROCK_CLIMBING = "rock_climbing", "Rock climbing"
+        TRIATHLON = "triathlon", "Triathlon"
+        RUNNING = "running", "Running"
+        CYCLING = "cycling", "Cycling"
+        SWIMMING = "swimming", "Swimming"
+        CALISTHENICS = "calisthenics", "Calisthenics"
+        GENERAL_FITNESS = "general_fitness", "General fitness"
         OTHER = "other", "Other"
 
     user = models.OneToOneField(
@@ -163,7 +178,15 @@ class RepbaseUser(models.Model):
         choices=TrainingStyle.choices,
         blank=True,
     )
-    gym = models.CharField(max_length=150, blank=True)
+    #: Set when the user joins one. Null means they have not said where they
+    #: train, which is different from having no gym.
+    gym = models.ForeignKey(
+        "Gym",
+        on_delete=models.SET_NULL,
+        related_name="members",
+        null=True,
+        blank=True,
+    )
     is_body_metrics_public = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1116,3 +1139,79 @@ class PlannerEntry(models.Model):
     @property
     def is_complete(self):
         return self.completed_at is not None
+
+
+#: Dropped outright rather than turned into a space, so a possessive matches
+#: the same name written without one.
+GYM_APOSTROPHES = "'\u2019\u02bc`\u00b4"
+
+
+def normalize_gym_text(value):
+    """A gym's match key: casefolded, punctuation dropped, spaces collapsed.
+
+    "Gold's Gym", "Golds Gym" and "GOLDS  GYM" all reduce to the same thing,
+    which is what keeps one gym from being listed six ways. Stored on the row
+    so the database enforces it rather than every caller remembering to.
+
+    Apostrophes vanish while other punctuation becomes a space: replacing them
+    made "Gold's" into "gold s", which then failed to match "Golds" — the very
+    duplicate this is for.
+    """
+    lowered = (value or "").casefold()
+    without_apostrophes = "".join(
+        character for character in lowered if character not in GYM_APOSTROPHES
+    )
+    kept = "".join(character if character.isalnum() or character.isspace() else " "
+                   for character in without_apostrophes)
+    return " ".join(kept.split())
+
+
+class Gym(models.Model):
+    """A place people train, shared between the users who train there.
+
+    Created by users rather than imported: the point is that two people can see
+    they are at the same gym, which only needs the gyms those people actually
+    go to.
+    """
+
+    name = models.CharField(max_length=150)
+    city = models.CharField(max_length=100, blank=True)
+    country = models.CharField(max_length=100, blank=True)
+    #: Match keys, maintained in `save` and unique together, so a near-repeat
+    #: is refused by the database and not merely discouraged in the UI.
+    normalized_name = models.CharField(max_length=150, db_index=True, editable=False)
+    normalized_city = models.CharField(max_length=100, db_index=True, editable=False)
+    #: Who added it. Kept for provenance; the gym outlives them leaving.
+    created_by = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.SET_NULL,
+        related_name="created_gyms",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name", "city")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("normalized_name", "normalized_city"),
+                name="unique_gym_per_city",
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        self.name = (self.name or "").strip()
+        self.city = (self.city or "").strip()
+        self.country = (self.country or "").strip()
+        self.normalized_name = normalize_gym_text(self.name)
+        self.normalized_city = normalize_gym_text(self.city)
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name}, {self.city}" if self.city else self.name
+
+    @property
+    def member_count(self):
+        return self.members.count()

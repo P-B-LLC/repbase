@@ -386,6 +386,272 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/gyms/:
+    get:
+      operationId: gyms_list
+      description: |-
+        Gyms, shared by everyone who trains at them.
+
+        Not owned by anyone: a gym one user adds is exactly the gym the next user
+        should be able to join, which is the whole point of the list. Anyone signed
+        in may add one; nobody may edit or delete somebody else's.
+      parameters:
+      - in: query
+        name: category
+        schema:
+          type: string
+          enum:
+          - appointment
+          - birthday
+          - errand
+          - habit
+          - health
+          - holiday
+          - home
+          - meeting
+          - other
+          - sleep
+          - social
+          - study
+          - travel
+          - work
+          - workout
+        description: Return only entries in this category.
+      - in: query
+        name: end
+        schema:
+          type: string
+          format: date
+        description: Return only entries on or before this date.
+      - in: query
+        name: is_complete
+        schema:
+          type: boolean
+        description: Return only finished tasks, or only unfinished ones. Events are
+          never complete, so this excludes them when true.
+      - in: query
+        name: kind
+        schema:
+          type: string
+          enum:
+          - event
+          - task
+        description: Return only tasks, or only events.
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Match gyms whose name or city contains this, ignoring case, punctuation
+          and extra spaces.
+      - in: query
+        name: start
+        schema:
+          type: string
+          format: date
+        description: Return only entries on or after this date.
+      tags:
+      - gyms
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedGymList'
+          description: ''
+    post:
+      operationId: gyms_create
+      description: |-
+        Gyms, shared by everyone who trains at them.
+
+        Not owned by anyone: a gym one user adds is exactly the gym the next user
+        should be able to join, which is the whole point of the list. Anyone signed
+        in may add one; nobody may edit or delete somebody else's.
+      tags:
+      - gyms
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GymRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GymRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GymRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gym'
+          description: ''
+  /api/v1/gyms/{id}/:
+    get:
+      operationId: gyms_retrieve
+      description: |-
+        Gyms, shared by everyone who trains at them.
+
+        Not owned by anyone: a gym one user adds is exactly the gym the next user
+        should be able to join, which is the whole point of the list. Anyone signed
+        in may add one; nobody may edit or delete somebody else's.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gym.
+        required: true
+      tags:
+      - gyms
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gym'
+          description: ''
+    put:
+      operationId: gyms_update
+      description: |-
+        Gyms, shared by everyone who trains at them.
+
+        Not owned by anyone: a gym one user adds is exactly the gym the next user
+        should be able to join, which is the whole point of the list. Anyone signed
+        in may add one; nobody may edit or delete somebody else's.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gym.
+        required: true
+      tags:
+      - gyms
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GymRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GymRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GymRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gym'
+          description: ''
+    patch:
+      operationId: gyms_partial_update
+      description: |-
+        Gyms, shared by everyone who trains at them.
+
+        Not owned by anyone: a gym one user adds is exactly the gym the next user
+        should be able to join, which is the whole point of the list. Anyone signed
+        in may add one; nobody may edit or delete somebody else's.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gym.
+        required: true
+      tags:
+      - gyms
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedGymRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedGymRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedGymRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gym'
+          description: ''
+    delete:
+      operationId: gyms_destroy
+      description: |-
+        Gyms, shared by everyone who trains at them.
+
+        Not owned by anyone: a gym one user adds is exactly the gym the next user
+        should be able to join, which is the whole point of the list. Anyone signed
+        in may add one; nobody may edit or delete somebody else's.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gym.
+        required: true
+      tags:
+      - gyms
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/gyms/{id}/members/:
+    get:
+      operationId: gyms_members_list
+      description: Who trains here. This is what makes a shared gym worth having.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gym.
+        required: true
+      tags:
+      - gyms
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PublicRepbaseUser'
+          description: ''
   /api/v1/me/:
     get:
       operationId: me_retrieve
@@ -461,59 +727,12 @@ paths:
         The date range is a filter rather than a required window so the same
         endpoint draws a month of calendar marks, a week strip, and one day's list.
       parameters:
-      - in: query
-        name: category
-        schema:
-          type: string
-          enum:
-          - appointment
-          - birthday
-          - errand
-          - habit
-          - health
-          - holiday
-          - home
-          - meeting
-          - other
-          - sleep
-          - social
-          - study
-          - travel
-          - work
-          - workout
-        description: Return only entries in this category.
-      - in: query
-        name: end
-        schema:
-          type: string
-          format: date
-        description: Return only entries on or before this date.
-      - in: query
-        name: is_complete
-        schema:
-          type: boolean
-        description: Return only finished tasks, or only unfinished ones. Events are
-          never complete, so this excludes them when true.
-      - in: query
-        name: kind
-        schema:
-          type: string
-          enum:
-          - event
-          - task
-        description: Return only tasks, or only events.
       - name: page
         required: false
         in: query
         description: A page number within the paginated result set.
         schema:
           type: integer
-      - in: query
-        name: start
-        schema:
-          type: string
-          format: date
-        description: Return only entries on or after this date.
       tags:
       - planner
       security:
@@ -2216,6 +2435,59 @@ components:
           maxLength: 100
       required:
       - name
+    Gym:
+      type: object
+      description: A gym, and how many people say they train there.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 150
+        city:
+          type: string
+          maxLength: 100
+        country:
+          type: string
+          maxLength: 100
+        member_count:
+          type: integer
+          readOnly: true
+        created_by:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - created_by
+      - id
+      - member_count
+      - name
+      - updated_at
+    GymRequest:
+      type: object
+      description: A gym, and how many people say they train there.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        city:
+          type: string
+          maxLength: 100
+        country:
+          type: string
+          maxLength: 100
+      required:
+      - name
     LoginRequest:
       type: object
       properties:
@@ -2298,6 +2570,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Exercise'
+    PaginatedGymList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Gym'
     PaginatedPlannerEntryList:
       type: object
       required:
@@ -2551,6 +2846,20 @@ components:
         muscle_group:
           type: string
           maxLength: 100
+    PatchedGymRequest:
+      type: object
+      description: A gym, and how many people say they train there.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        city:
+          type: string
+          maxLength: 100
+        country:
+          type: string
+          maxLength: 100
     PatchedPlannerEntryRequest:
       type: object
       description: |-
@@ -2636,8 +2945,8 @@ components:
           - $ref: '#/components/schemas/TrainingStyleEnum'
           - $ref: '#/components/schemas/BlankEnum'
         gym:
-          type: string
-          maxLength: 150
+          type: integer
+          nullable: true
         is_body_metrics_public:
           type: boolean
     PatchedSessionExerciseRequest:
@@ -2943,8 +3252,34 @@ components:
           - $ref: '#/components/schemas/TrainingStyleEnum'
           - $ref: '#/components/schemas/BlankEnum'
         gym:
+          type: integer
+          nullable: true
+        gym_name:
           type: string
-          maxLength: 150
+          readOnly: true
+          nullable: true
+        gym_city:
+          type: string
+          readOnly: true
+          nullable: true
+        height_cm:
+          type: integer
+          nullable: true
+          readOnly: true
+        weight_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          nullable: true
+          readOnly: true
+        target_weight_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          nullable: true
+          readOnly: true
+        is_body_metrics_public:
+          type: boolean
         created_at:
           type: string
           format: date-time
@@ -2952,9 +3287,14 @@ components:
       required:
       - created_at
       - first_name
+      - gym_city
+      - gym_name
+      - height_cm
       - id
       - last_name
+      - target_weight_kg
       - username
+      - weight_kg
     RegisterRequest:
       type: object
       properties:
@@ -3036,8 +3376,16 @@ components:
           - $ref: '#/components/schemas/TrainingStyleEnum'
           - $ref: '#/components/schemas/BlankEnum'
         gym:
+          type: integer
+          nullable: true
+        gym_name:
           type: string
-          maxLength: 150
+          readOnly: true
+          nullable: true
+        gym_city:
+          type: string
+          readOnly: true
+          nullable: true
         is_body_metrics_public:
           type: boolean
         created_at:
@@ -3052,6 +3400,8 @@ components:
       - created_at
       - email
       - first_name
+      - gym_city
+      - gym_name
       - id
       - last_name
       - updated_at
@@ -3109,8 +3459,8 @@ components:
           - $ref: '#/components/schemas/TrainingStyleEnum'
           - $ref: '#/components/schemas/BlankEnum'
         gym:
-          type: string
-          maxLength: 150
+          type: integer
+          nullable: true
         is_body_metrics_public:
           type: boolean
       required:
@@ -3369,12 +3719,28 @@ components:
       - powerlifting
       - bodybuilding
       - crossfit
+      - weightlifting
+      - rock_climbing
+      - triathlon
+      - running
+      - cycling
+      - swimming
+      - calisthenics
+      - general_fitness
       - other
       type: string
       description: |-
         * `powerlifting` - Powerlifting
         * `bodybuilding` - Bodybuilding
         * `crossfit` - CrossFit
+        * `weightlifting` - Olympic weightlifting
+        * `rock_climbing` - Rock climbing
+        * `triathlon` - Triathlon
+        * `running` - Running
+        * `cycling` - Cycling
+        * `swimming` - Swimming
+        * `calisthenics` - Calisthenics
+        * `general_fitness` - General fitness
         * `other` - Other
     UnitPreferenceEnum:
       enum:
