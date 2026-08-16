@@ -488,6 +488,20 @@ paths:
           type: string
           format: date
         description: Return only entries on or before this date.
+      - in: query
+        name: is_complete
+        schema:
+          type: boolean
+        description: Return only finished tasks, or only unfinished ones. Events are
+          never complete, so this excludes them when true.
+      - in: query
+        name: kind
+        schema:
+          type: string
+          enum:
+          - event
+          - task
+        description: Return only tasks, or only events.
       - name: page
         required: false
         in: query

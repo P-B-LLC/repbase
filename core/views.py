@@ -279,6 +279,23 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 enum=[choice[0] for choice in PlannerCategory.choices],
                 description="Return only entries in this category.",
             ),
+            OpenApiParameter(
+                name="kind",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                enum=[choice[0] for choice in PlannerEntry.Kind.choices],
+                description="Return only tasks, or only events.",
+            ),
+            OpenApiParameter(
+                name="is_complete",
+                type=bool,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only finished tasks, or only unfinished ones. "
+                    "Events are never complete, so this excludes them when "
+                    "true."
+                ),
+            ),
         ]
     )
 )
@@ -298,12 +315,21 @@ class PlannerEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         start = self.request.query_params.get("start")
         end = self.request.query_params.get("end")
         category = self.request.query_params.get("category")
+        kind = self.request.query_params.get("kind")
+        is_complete = self.request.query_params.get("is_complete")
         if start:
             queryset = queryset.filter(scheduled_date__gte=start)
         if end:
             queryset = queryset.filter(scheduled_date__lte=end)
         if category:
             queryset = queryset.filter(category=category)
+        if kind:
+            queryset = queryset.filter(kind=kind)
+        if is_complete is not None:
+            # Completion is stored as the time it happened, so "finished" is
+            # simply having one.
+            wants_complete = is_complete.lower() in ("true", "1")
+            queryset = queryset.filter(completed_at__isnull=not wants_complete)
         return queryset
 
     def perform_create(self, serializer):
