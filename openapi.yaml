@@ -396,47 +396,6 @@ paths:
         should be able to join, which is the whole point of the list. Anyone signed
         in may add one; nobody may edit or delete somebody else's.
       parameters:
-      - in: query
-        name: category
-        schema:
-          type: string
-          enum:
-          - appointment
-          - birthday
-          - errand
-          - habit
-          - health
-          - holiday
-          - home
-          - meeting
-          - other
-          - sleep
-          - social
-          - study
-          - travel
-          - work
-          - workout
-        description: Return only entries in this category.
-      - in: query
-        name: end
-        schema:
-          type: string
-          format: date
-        description: Return only entries on or before this date.
-      - in: query
-        name: is_complete
-        schema:
-          type: boolean
-        description: Return only finished tasks, or only unfinished ones. Events are
-          never complete, so this excludes them when true.
-      - in: query
-        name: kind
-        schema:
-          type: string
-          enum:
-          - event
-          - task
-        description: Return only tasks, or only events.
       - name: page
         required: false
         in: query
@@ -449,12 +408,6 @@ paths:
           type: string
         description: Match gyms whose name or city contains this, ignoring case, punctuation
           and extra spaces.
-      - in: query
-        name: start
-        schema:
-          type: string
-          format: date
-        description: Return only entries on or after this date.
       tags:
       - gyms
       security:
@@ -770,12 +723,59 @@ paths:
         The date range is a filter rather than a required window so the same
         endpoint draws a month of calendar marks, a week strip, and one day's list.
       parameters:
+      - in: query
+        name: category
+        schema:
+          type: string
+          enum:
+          - appointment
+          - birthday
+          - errand
+          - habit
+          - health
+          - holiday
+          - home
+          - meeting
+          - other
+          - sleep
+          - social
+          - study
+          - travel
+          - work
+          - workout
+        description: Return only entries in this category.
+      - in: query
+        name: end
+        schema:
+          type: string
+          format: date
+        description: Return only entries on or before this date.
+      - in: query
+        name: is_complete
+        schema:
+          type: boolean
+        description: Return only finished tasks, or only unfinished ones. Events are
+          never complete, so this excludes them when true.
+      - in: query
+        name: kind
+        schema:
+          type: string
+          enum:
+          - event
+          - task
+        description: Return only tasks, or only events.
       - name: page
         required: false
         in: query
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: start
+        schema:
+          type: string
+          format: date
+        description: Return only entries on or after this date.
       tags:
       - planner
       security:

@@ -296,48 +296,6 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     list=extend_schema(
         parameters=[
             OpenApiParameter(
-                name="start",
-                type=OpenApiTypes.DATE,
-                location=OpenApiParameter.QUERY,
-                description="Return only entries on or after this date.",
-            ),
-            OpenApiParameter(
-                name="end",
-                type=OpenApiTypes.DATE,
-                location=OpenApiParameter.QUERY,
-                description="Return only entries on or before this date.",
-            ),
-            OpenApiParameter(
-                name="category",
-                type=str,
-                location=OpenApiParameter.QUERY,
-                enum=[choice[0] for choice in PlannerCategory.choices],
-                description="Return only entries in this category.",
-            ),
-            OpenApiParameter(
-                name="kind",
-                type=str,
-                location=OpenApiParameter.QUERY,
-                enum=[choice[0] for choice in PlannerEntry.Kind.choices],
-                description="Return only tasks, or only events.",
-            ),
-            OpenApiParameter(
-                name="is_complete",
-                type=bool,
-                location=OpenApiParameter.QUERY,
-                description=(
-                    "Return only finished tasks, or only unfinished ones. "
-                    "Events are never complete, so this excludes them when "
-                    "true."
-                ),
-            ),
-        ]
-    )
-)
-@extend_schema_view(
-    list=extend_schema(
-        parameters=[
-            OpenApiParameter(
                 name="search",
                 type=str,
                 location=OpenApiParameter.QUERY,
@@ -405,6 +363,48 @@ class GymViewSet(viewsets.ModelViewSet):
         return Response(PublicRepbaseUserSerializer(people, many=True).data)
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="start",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only entries on or after this date.",
+            ),
+            OpenApiParameter(
+                name="end",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only entries on or before this date.",
+            ),
+            OpenApiParameter(
+                name="category",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                enum=[choice[0] for choice in PlannerCategory.choices],
+                description="Return only entries in this category.",
+            ),
+            OpenApiParameter(
+                name="kind",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                enum=[choice[0] for choice in PlannerEntry.Kind.choices],
+                description="Return only tasks, or only events.",
+            ),
+            OpenApiParameter(
+                name="is_complete",
+                type=bool,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only finished tasks, or only unfinished ones. "
+                    "Events are never complete, so this excludes them when "
+                    "true."
+                ),
+            ),
+        ]
+    )
+)
 class PlannerEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     """Tasks and events on the planner.
 
