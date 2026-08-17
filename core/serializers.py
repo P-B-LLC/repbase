@@ -1,6 +1,7 @@
 import base64
 import binascii
 import uuid
+from decimal import Decimal
 
 from django.contrib.auth import authenticate, get_user_model, password_validation
 from django.core.files.base import ContentFile
@@ -20,7 +21,12 @@ from .models import (
     SetEntry,
     WorkoutExercise,
     EVENT_CATEGORIES,
+    FoodEntry,
+    FoodMeal,
     Gym,
+    NutritionGoal,
+    SavedFoodIngredient,
+    SavedFoodMeal,
     UserDiscipline,
     PlannerEntry,
     TASK_CATEGORIES,
@@ -91,6 +97,236 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
             save=True,
         )
         return profile
+
+
+class NutritionGoalSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = NutritionGoal
+        fields = [
+            "calories",
+            "protein_grams",
+            "carbohydrate_grams",
+            "fat_grams",
+            "updated_at",
+        ]
+        read_only_fields = ["updated_at"]
+
+
+class FoodEntrySerializer(serializers.ModelSerializer):
+    """One food. Nutrition is per serving; totals are derived, never stored,
+    so a serving count and its totals cannot drift apart."""
+
+    total_calories = serializers.SerializerMethodField()
+    total_protein_grams = serializers.SerializerMethodField()
+    total_carbohydrate_grams = serializers.SerializerMethodField()
+    total_fat_grams = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FoodEntry
+        fields = [
+            "id",
+            "meal",
+            "name",
+            "servings",
+            "calories",
+            "protein_grams",
+            "carbohydrate_grams",
+            "fat_grams",
+            "total_calories",
+            "total_protein_grams",
+            "total_carbohydrate_grams",
+            "total_fat_grams",
+            "position",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Give the food a name.")
+        return name
+
+    def validate_meal(self, value):
+        if value.owner_id != self.context["request"].user.repbase_profile.id:
+            raise serializers.ValidationError("That meal belongs to someone else.")
+        return value
+
+    def _total(self, entry, field):
+        return NUTRITION_DECIMAL.to_representation(
+            (getattr(entry, field) or Decimal("0")) * (entry.servings or Decimal("0"))
+        )
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_calories(self, entry):
+        return self._total(entry, "calories")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_protein_grams(self, entry):
+        return self._total(entry, "protein_grams")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_carbohydrate_grams(self, entry):
+        return self._total(entry, "carbohydrate_grams")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_fat_grams(self, entry):
+        return self._total(entry, "fat_grams")
+
+
+class FoodMealSerializer(serializers.ModelSerializer):
+    """A meal with its foods nested, so drawing a day is one request rather
+    than one per meal."""
+
+    entries = FoodEntrySerializer(many=True, read_only=True)
+    total_calories = serializers.SerializerMethodField()
+    total_protein_grams = serializers.SerializerMethodField()
+    total_carbohydrate_grams = serializers.SerializerMethodField()
+    total_fat_grams = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FoodMeal
+        fields = [
+            "id",
+            "date",
+            "name",
+            "position",
+            "entries",
+            "total_calories",
+            "total_protein_grams",
+            "total_carbohydrate_grams",
+            "total_fat_grams",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "entries", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Give the meal a name.")
+        return name
+
+    def _total(self, meal, field):
+        total = sum(
+            ((getattr(entry, field) or Decimal("0")) * (entry.servings or Decimal("0")))
+            for entry in meal.entries.all()
+        ) or Decimal("0")
+        return NUTRITION_DECIMAL.to_representation(total)
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_calories(self, meal):
+        return self._total(meal, "calories")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_protein_grams(self, meal):
+        return self._total(meal, "protein_grams")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_carbohydrate_grams(self, meal):
+        return self._total(meal, "carbohydrate_grams")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_fat_grams(self, meal):
+        return self._total(meal, "fat_grams")
+
+
+class SavedFoodIngredientSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = SavedFoodIngredient
+        fields = [
+            "id",
+            "name",
+            "servings",
+            "calories",
+            "protein_grams",
+            "carbohydrate_grams",
+            "fat_grams",
+            "position",
+        ]
+        read_only_fields = ["id"]
+
+
+class SavedFoodMealSerializer(serializers.ModelSerializer):
+    """A reusable meal. Ingredients are written with it in one request: a
+    recipe with no ingredients is not a thing anyone wants to save."""
+
+    ingredients = SavedFoodIngredientSerializer(many=True)
+
+    class Meta:
+        model = SavedFoodMeal
+        fields = ["id", "name", "ingredients", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at", "updated_at"]
+
+    def validate_name(self, value):
+        name = value.strip()
+        if not name:
+            raise serializers.ValidationError("Give the saved meal a name.")
+        return name
+
+    def validate(self, attrs):
+        owner = self.context["request"].user.repbase_profile
+        name = attrs.get("name", getattr(self.instance, "name", ""))
+        clash = SavedFoodMeal.objects.filter(owner=owner, name__iexact=name)
+        if self.instance:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError(
+                {"name": "You already have a saved meal with this name."}
+            )
+        return attrs
+
+    def create(self, validated_data):
+        ingredients = validated_data.pop("ingredients", [])
+        saved = SavedFoodMeal.objects.create(**validated_data)
+        self._replace_ingredients(saved, ingredients)
+        return saved
+
+    def update(self, instance, validated_data):
+        ingredients = validated_data.pop("ingredients", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if ingredients is not None:
+            self._replace_ingredients(instance, ingredients)
+        return instance
+
+    def _replace_ingredients(self, saved, ingredients):
+        # Replaced wholesale: the client sends the recipe as it should now be.
+        saved.ingredients.all().delete()
+        SavedFoodIngredient.objects.bulk_create(
+            [
+                SavedFoodIngredient(
+                    saved_meal=saved,
+                    position=index + 1,
+                    **{k: v for k, v in ingredient.items() if k != "position"},
+                )
+                for index, ingredient in enumerate(ingredients)
+            ]
+        )
+
+
+class ApplySavedMealSerializer(serializers.Serializer):
+    """Where to copy a saved meal's ingredients."""
+
+    meal = serializers.PrimaryKeyRelatedField(queryset=FoodMeal.objects.all())
+
+    def validate_meal(self, value):
+        if value.owner_id != self.context["request"].user.repbase_profile.id:
+            raise serializers.ValidationError("That meal belongs to someone else.")
+        return value
+
+
+class RecentFoodSerializer(serializers.Serializer):
+    """A food the user has logged before, for the picker."""
+
+    name = serializers.CharField()
+    servings = serializers.DecimalField(max_digits=6, decimal_places=2)
+    calories = serializers.DecimalField(max_digits=8, decimal_places=2)
+    protein_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
+    carbohydrate_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
+    fat_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
 
 
 class GymSerializer(serializers.ModelSerializer):
@@ -196,6 +432,10 @@ def replace_disciplines(profile, disciplines):
 #: shape here as everywhere else in the API. Deliberately not a class
 #: attribute: DRF collects those as declared fields.
 PUBLIC_KILOGRAMS = serializers.DecimalField(max_digits=6, decimal_places=2)
+
+#: Nutrition totals are derived, so they need rendering the same way a
+#: DecimalField would render a stored one: as a string, not a JSON number.
+NUTRITION_DECIMAL = serializers.DecimalField(max_digits=10, decimal_places=2)
 
 
 class PublicRepbaseUserSerializer(serializers.ModelSerializer):

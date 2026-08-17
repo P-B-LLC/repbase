@@ -386,6 +386,619 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/food/entries/:
+    get:
+      operationId: food_entries_list
+      description: Foods inside meals. Ownership is the meal's owner, one step away.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedFoodEntryList'
+          description: ''
+    post:
+      operationId: food_entries_create
+      description: Foods inside meals. Ownership is the meal's owner, one step away.
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FoodEntryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/FoodEntryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FoodEntryRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodEntry'
+          description: ''
+  /api/v1/food/entries/{id}/:
+    get:
+      operationId: food_entries_retrieve
+      description: Foods inside meals. Ownership is the meal's owner, one step away.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this food entry.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodEntry'
+          description: ''
+    put:
+      operationId: food_entries_update
+      description: Foods inside meals. Ownership is the meal's owner, one step away.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this food entry.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FoodEntryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/FoodEntryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FoodEntryRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodEntry'
+          description: ''
+    patch:
+      operationId: food_entries_partial_update
+      description: Foods inside meals. Ownership is the meal's owner, one step away.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this food entry.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedFoodEntryRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedFoodEntryRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedFoodEntryRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodEntry'
+          description: ''
+    delete:
+      operationId: food_entries_destroy
+      description: Foods inside meals. Ownership is the meal's owner, one step away.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this food entry.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/food/goals/:
+    get:
+      operationId: food_goals_retrieve
+      description: The signed-in user's daily targets. A singleton, so no list or
+        id.
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NutritionGoal'
+          description: ''
+    patch:
+      operationId: food_goals_partial_update
+      description: The signed-in user's daily targets. A singleton, so no list or
+        id.
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedNutritionGoalRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedNutritionGoalRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedNutritionGoalRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NutritionGoal'
+          description: ''
+  /api/v1/food/meals/:
+    get:
+      operationId: food_meals_list
+      description: |-
+        Meals, with their foods nested on read.
+
+        A day is drawn from one request rather than one per meal, which is why the
+        entries come back inside the meal instead of behind another call.
+      parameters:
+      - in: query
+        name: end
+        schema:
+          type: string
+          format: date
+        description: Return only meals on or before this date.
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - in: query
+        name: start
+        schema:
+          type: string
+          format: date
+        description: Return only meals on or after this date.
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedFoodMealList'
+          description: ''
+    post:
+      operationId: food_meals_create
+      description: |-
+        Meals, with their foods nested on read.
+
+        A day is drawn from one request rather than one per meal, which is why the
+        entries come back inside the meal instead of behind another call.
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FoodMealRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/FoodMealRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FoodMealRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodMeal'
+          description: ''
+  /api/v1/food/meals/{id}/:
+    get:
+      operationId: food_meals_retrieve
+      description: |-
+        Meals, with their foods nested on read.
+
+        A day is drawn from one request rather than one per meal, which is why the
+        entries come back inside the meal instead of behind another call.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this food meal.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodMeal'
+          description: ''
+    put:
+      operationId: food_meals_update
+      description: |-
+        Meals, with their foods nested on read.
+
+        A day is drawn from one request rather than one per meal, which is why the
+        entries come back inside the meal instead of behind another call.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this food meal.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FoodMealRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/FoodMealRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FoodMealRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodMeal'
+          description: ''
+    patch:
+      operationId: food_meals_partial_update
+      description: |-
+        Meals, with their foods nested on read.
+
+        A day is drawn from one request rather than one per meal, which is why the
+        entries come back inside the meal instead of behind another call.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this food meal.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedFoodMealRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedFoodMealRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedFoodMealRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodMeal'
+          description: ''
+    delete:
+      operationId: food_meals_destroy
+      description: |-
+        Meals, with their foods nested on read.
+
+        A day is drawn from one request rather than one per meal, which is why the
+        entries come back inside the meal instead of behind another call.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this food meal.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/food/meals/recent-foods/:
+    get:
+      operationId: food_meals_recent_foods_list
+      description: |-
+        Foods this person has logged before, most recent first.
+
+        One row per distinct name: the picker offers a food to reuse, and the
+        same yoghurt logged nine times is one choice, not nine.
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RecentFood'
+          description: ''
+  /api/v1/food/saved-meals/:
+    get:
+      operationId: food_saved_meals_list
+      description: Meals kept to reuse.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSavedFoodMealList'
+          description: ''
+    post:
+      operationId: food_saved_meals_create
+      description: Meals kept to reuse.
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavedFoodMealRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SavedFoodMealRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SavedFoodMealRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFoodMeal'
+          description: ''
+  /api/v1/food/saved-meals/{id}/:
+    get:
+      operationId: food_saved_meals_retrieve
+      description: Meals kept to reuse.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this saved food meal.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFoodMeal'
+          description: ''
+    put:
+      operationId: food_saved_meals_update
+      description: Meals kept to reuse.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this saved food meal.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavedFoodMealRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SavedFoodMealRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SavedFoodMealRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFoodMeal'
+          description: ''
+    patch:
+      operationId: food_saved_meals_partial_update
+      description: Meals kept to reuse.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this saved food meal.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedSavedFoodMealRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedSavedFoodMealRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedSavedFoodMealRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedFoodMeal'
+          description: ''
+    delete:
+      operationId: food_saved_meals_destroy
+      description: Meals kept to reuse.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this saved food meal.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/food/saved-meals/{id}/apply/:
+    post:
+      operationId: food_saved_meals_apply_create
+      description: Copy this saved meal's ingredients into a meal on a day. The ingredients
+        are copied, not linked, so editing one afterwards does not change the recipe
+        it came from.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this saved food meal.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApplySavedMealRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ApplySavedMealRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ApplySavedMealRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FoodMeal'
+          description: ''
   /api/v1/gyms/:
     get:
       operationId: gyms_list
@@ -2295,6 +2908,14 @@ paths:
           description: No response body
 components:
   schemas:
+    ApplySavedMealRequest:
+      type: object
+      description: Where to copy a saved meal's ingredients.
+      properties:
+        meal:
+          type: integer
+      required:
+      - meal
     AuthResponse:
       type: object
       properties:
@@ -2515,6 +3136,208 @@ components:
           maxLength: 100
       required:
       - name
+    FoodEntry:
+      type: object
+      description: |-
+        One food. Nutrition is per serving; totals are derived, never stored,
+        so a serving count and its totals cannot drift apart.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        meal:
+          type: integer
+        name:
+          type: string
+          maxLength: 150
+        servings:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        total_calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - meal
+      - name
+      - total_calories
+      - total_carbohydrate_grams
+      - total_fat_grams
+      - total_protein_grams
+      - updated_at
+    FoodEntryRequest:
+      type: object
+      description: |-
+        One food. Nutrition is per serving; totals are derived, never stored,
+        so a serving count and its totals cannot drift apart.
+      properties:
+        meal:
+          type: integer
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        servings:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+      required:
+      - meal
+      - name
+    FoodMeal:
+      type: object
+      description: |-
+        A meal with its foods nested, so drawing a day is one request rather
+        than one per meal.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        date:
+          type: string
+          format: date
+        name:
+          type: string
+          maxLength: 100
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/FoodEntry'
+          readOnly: true
+        total_calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - date
+      - entries
+      - id
+      - name
+      - total_calories
+      - total_carbohydrate_grams
+      - total_fat_grams
+      - total_protein_grams
+      - updated_at
+    FoodMealRequest:
+      type: object
+      description: |-
+        A meal with its foods nested, so drawing a day is one request rather
+        than one per meal.
+      properties:
+        date:
+          type: string
+          format: date
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+      required:
+      - date
+      - name
     Gym:
       type: object
       description: A gym, and how many people say they train there.
@@ -2604,6 +3427,31 @@ components:
     NullEnum:
       enum:
       - null
+    NutritionGoal:
+      type: object
+      properties:
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - updated_at
     PaginatedBodyWeightEntryList:
       type: object
       required:
@@ -2650,6 +3498,52 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Exercise'
+    PaginatedFoodEntryList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/FoodEntry'
+    PaginatedFoodMealList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/FoodMeal'
     PaginatedGymList:
       type: object
       required:
@@ -2719,6 +3613,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PublicRepbaseUser'
+    PaginatedSavedFoodMealList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SavedFoodMeal'
     PaginatedSessionExerciseList:
       type: object
       required:
@@ -2926,6 +3843,61 @@ components:
         muscle_group:
           type: string
           maxLength: 100
+    PatchedFoodEntryRequest:
+      type: object
+      description: |-
+        One food. Nutrition is per serving; totals are derived, never stored,
+        so a serving count and its totals cannot drift apart.
+      properties:
+        meal:
+          type: integer
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        servings:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+    PatchedFoodMealRequest:
+      type: object
+      description: |-
+        A meal with its foods nested, so drawing a day is one request rather
+        than one per meal.
+      properties:
+        date:
+          type: string
+          format: date
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
     PatchedGymRequest:
       type: object
       description: A gym, and how many people say they train there.
@@ -2940,6 +3912,25 @@ components:
         country:
           type: string
           maxLength: 100
+    PatchedNutritionGoalRequest:
+      type: object
+      properties:
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
     PatchedPlannerEntryRequest:
       type: object
       description: |-
@@ -3029,6 +4020,20 @@ components:
           type: boolean
         shows_target_weight:
           type: boolean
+    PatchedSavedFoodMealRequest:
+      type: object
+      description: |-
+        A reusable meal. Ingredients are written with it in one request: a
+        recipe with no ingredients is not a thing anyone wants to save.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        ingredients:
+          type: array
+          items:
+            $ref: '#/components/schemas/SavedFoodIngredientRequest'
     PatchedSessionExerciseRequest:
       type: object
       properties:
@@ -3400,6 +4405,39 @@ components:
       - target_weight_kg
       - username
       - weight_kg
+    RecentFood:
+      type: object
+      description: A food the user has logged before, for the picker.
+      properties:
+        name:
+          type: string
+        servings:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+      required:
+      - calories
+      - carbohydrate_grams
+      - fat_grams
+      - name
+      - protein_grams
+      - servings
     RegisterRequest:
       type: object
       properties:
@@ -3578,6 +4616,124 @@ components:
       - first_name
       - last_name
       - username
+    SavedFoodIngredient:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 150
+        servings:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+      required:
+      - id
+      - name
+    SavedFoodIngredientRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        servings:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+      required:
+      - name
+    SavedFoodMeal:
+      type: object
+      description: |-
+        A reusable meal. Ingredients are written with it in one request: a
+        recipe with no ingredients is not a thing anyone wants to save.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 150
+        ingredients:
+          type: array
+          items:
+            $ref: '#/components/schemas/SavedFoodIngredient'
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - ingredients
+      - name
+      - updated_at
+    SavedFoodMealRequest:
+      type: object
+      description: |-
+        A reusable meal. Ingredients are written with it in one request: a
+        recipe with no ingredients is not a thing anyone wants to save.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        ingredients:
+          type: array
+          items:
+            $ref: '#/components/schemas/SavedFoodIngredientRequest'
+      required:
+      - ingredients
+      - name
     SessionCardioRequest:
       type: object
       description: A cardio finisher performed after a session's exercises.

@@ -5,7 +5,11 @@ from .views import (
     BodyWeightEntryViewSet,
     ExerciseProgressView,
     ExerciseViewSet,
+    FoodEntryViewSet,
+    FoodMealViewSet,
     GymViewSet,
+    NutritionGoalView,
+    SavedFoodMealViewSet,
     LoginView,
     LogoutView,
     MePhotoView,
@@ -33,6 +37,9 @@ router.register("schedules", WorkoutScheduleViewSet)
 router.register("recurrences", WorkoutRecurrenceViewSet)
 router.register("planner", PlannerEntryViewSet)
 router.register("gyms", GymViewSet)
+router.register("food/meals", FoodMealViewSet)
+router.register("food/entries", FoodEntryViewSet)
+router.register("food/saved-meals", SavedFoodMealViewSet)
 router.register("sessions", WorkoutSessionViewSet)
 router.register("session-exercises", SessionExerciseViewSet)
 router.register("set-entries", SetEntryViewSet)
@@ -45,6 +52,7 @@ urlpatterns = [
     path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("me/", MeView.as_view(), name="me"),
     path("me/photo/", MePhotoView.as_view(), name="me-photo"),
+    path("food/goals/", NutritionGoalView.as_view(), name="nutrition-goals"),
     path(
         "progress/exercises/<int:exercise_id>/",
         ExerciseProgressView.as_view(),

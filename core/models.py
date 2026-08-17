@@ -1268,3 +1268,150 @@ class UserDiscipline(models.Model):
 
     def __str__(self):
         return f"{self.profile}: {self.get_discipline_display()}"
+
+
+#: Nutrition is stored to two decimal places, like every other measurement in
+#: Repbase, and travels as a decimal string so it does not round through a
+#: binary float on the way to the app.
+NUTRITION_FIELD = dict(max_digits=8, decimal_places=2, validators=[MinValueValidator(0)])
+
+
+class NutritionGoal(models.Model):
+    """What someone is aiming for in a day. One row per person."""
+
+    owner = models.OneToOneField(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="nutrition_goal",
+    )
+    calories = models.DecimalField(default=Decimal("2000"), **NUTRITION_FIELD)
+    protein_grams = models.DecimalField(default=Decimal("150"), **NUTRITION_FIELD)
+    carbohydrate_grams = models.DecimalField(default=Decimal("200"), **NUTRITION_FIELD)
+    fat_grams = models.DecimalField(default=Decimal("70"), **NUTRITION_FIELD)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.owner}: {self.calories} kcal"
+
+
+class FoodMeal(models.Model):
+    """One meal on one day.
+
+    Meals are numbered rather than named breakfast/lunch/dinner, because people
+    do not all eat on that schedule. `position` is what orders them; it is
+    deliberately not unique per day, since deleting the second of four meals
+    would otherwise have to renumber the rest inside the same transaction or
+    fail.
+    """
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="food_meals",
+    )
+    date = models.DateField(db_index=True)
+    name = models.CharField(max_length=100)
+    position = models.PositiveSmallIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("date", "position", "id")
+        indexes = [models.Index(fields=("owner", "date"))]
+
+    def __str__(self):
+        return f"{self.date}: {self.name}"
+
+
+class FoodEntry(models.Model):
+    """One food inside a meal.
+
+    Nutrition is held per serving with a separate serving count, so editing
+    "two portions" to "three" does not require rescaling four numbers by hand
+    and rounding each of them.
+    """
+
+    meal = models.ForeignKey(
+        FoodMeal,
+        on_delete=models.CASCADE,
+        related_name="entries",
+    )
+    name = models.CharField(max_length=150)
+    servings = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=Decimal("1"),
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    carbohydrate_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    fat_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    position = models.PositiveSmallIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("position", "id")
+
+    def __str__(self):
+        return f"{self.name} x{self.servings}"
+
+
+class SavedFoodMeal(models.Model):
+    """A meal kept to reuse, with its ingredients.
+
+    Separate from `FoodMeal`: a saved meal belongs to no day and is a template
+    the user applies, so deleting the Tuesday it came from must not take it.
+    """
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="saved_food_meals",
+    )
+    name = models.CharField(max_length=150)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("owner", "name"),
+                name="unique_saved_meal_name_per_owner",
+            )
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class SavedFoodIngredient(models.Model):
+    """One food inside a saved meal. Mirrors FoodEntry so applying one is a
+    straight copy rather than a translation."""
+
+    saved_meal = models.ForeignKey(
+        SavedFoodMeal,
+        on_delete=models.CASCADE,
+        related_name="ingredients",
+    )
+    name = models.CharField(max_length=150)
+    servings = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=Decimal("1"),
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    carbohydrate_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    fat_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    position = models.PositiveSmallIntegerField(default=1)
+
+    class Meta:
+        ordering = ("position", "id")
+
+    def __str__(self):
+        return f"{self.name} x{self.servings}"

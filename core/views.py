@@ -29,8 +29,12 @@ from .models import (
     SessionRoutePoint,
     SetEntry,
     WorkoutExercise,
+    FoodEntry,
+    FoodMeal,
     Gym,
+    NutritionGoal,
     PlannerCategory,
+    SavedFoodMeal,
     PlannerEntry,
     WorkoutRecurrence,
     WorkoutSchedule,
@@ -56,8 +60,14 @@ from .serializers import (
     SessionRoutePointSerializer,
     SessionRouteUploadSerializer,
     SetEntrySerializer,
+    ApplySavedMealSerializer,
+    FoodEntrySerializer,
+    FoodMealSerializer,
     GymSerializer,
+    NutritionGoalSerializer,
     ProfilePhotoUploadSerializer,
+    RecentFoodSerializer,
+    SavedFoodMealSerializer,
     PlanWeekSerializer,
     PlannerEntrySerializer,
     WorkoutExerciseSerializer,
@@ -295,6 +305,174 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             .order_by("scheduled_date", "id")
         )
         return Response(WorkoutScheduleSerializer(schedules, many=True).data)
+
+
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="start",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only meals on or after this date.",
+            ),
+            OpenApiParameter(
+                name="end",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only meals on or before this date.",
+            ),
+        ]
+    )
+)
+class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+    """Meals, with their foods nested on read.
+
+    A day is drawn from one request rather than one per meal, which is why the
+    entries come back inside the meal instead of behind another call.
+    """
+
+    queryset = FoodMeal.objects.prefetch_related("entries").select_related("owner")
+    serializer_class = FoodMealSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = self.scope_to_owner(super().get_queryset())
+        start = self.request.query_params.get("start")
+        end = self.request.query_params.get("end")
+        if start:
+            queryset = queryset.filter(date__gte=start)
+        if end:
+            queryset = queryset.filter(date__lte=end)
+        return queryset
+
+    def perform_create(self, serializer):
+        owner = self.owner_profile()
+        # Numbered after whatever is already on that day, so a new meal lands
+        # at the end rather than colliding with an existing position.
+        date = serializer.validated_data.get("date")
+        used = FoodMeal.objects.filter(owner=owner, date=date).count()
+        serializer.save(owner=owner, position=used + 1)
+
+    @extend_schema(responses={200: RecentFoodSerializer(many=True)})
+    @action(detail=False, methods=["get"], url_path="recent-foods", pagination_class=None)
+    def recent_foods(self, request):
+        """Foods this person has logged before, most recent first.
+
+        One row per distinct name: the picker offers a food to reuse, and the
+        same yoghurt logged nine times is one choice, not nine.
+        """
+        entries = (
+            FoodEntry.objects
+            .filter(meal__owner=self.owner_profile())
+            .order_by("-created_at")
+        )
+        seen = set()
+        recent = []
+        for entry in entries:
+            key = entry.name.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            recent.append(entry)
+            # Stated rather than silent: the picker searches this list, so its
+            # length is part of the contract.
+            if len(recent) >= 100:
+                break
+        return Response(RecentFoodSerializer(recent, many=True).data)
+
+
+class FoodEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+    """Foods inside meals. Ownership is the meal's owner, one step away."""
+
+    queryset = FoodEntry.objects.select_related("meal", "meal__owner")
+    serializer_class = FoodEntrySerializer
+    permission_classes = [IsAuthenticated]
+    owner_lookup = "meal__owner"
+
+    def get_queryset(self):
+        queryset = self.scope_to_owner(super().get_queryset())
+        meal = self.request.query_params.get("meal")
+        return queryset.filter(meal_id=meal) if meal else queryset
+
+    def perform_create(self, serializer):
+        meal = serializer.validated_data["meal"]
+        used = meal.entries.count()
+        serializer.save(position=used + 1)
+
+
+class NutritionGoalView(APIView):
+    """The signed-in user's daily targets. A singleton, so no list or id."""
+
+    permission_classes = [IsAuthenticated]
+
+    def _goal(self, request):
+        # Created on first read with the documented defaults, so the app never
+        # has to handle "no goals yet" as a separate state.
+        goal, _ = NutritionGoal.objects.get_or_create(
+            owner=profile_for(request.user)
+        )
+        return goal
+
+    @extend_schema(responses={200: NutritionGoalSerializer})
+    def get(self, request):
+        return Response(NutritionGoalSerializer(self._goal(request)).data)
+
+    @extend_schema(request=NutritionGoalSerializer, responses={200: NutritionGoalSerializer})
+    def patch(self, request):
+        serializer = NutritionGoalSerializer(
+            self._goal(request), data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class SavedFoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+    """Meals kept to reuse."""
+
+    queryset = SavedFoodMeal.objects.prefetch_related("ingredients").select_related("owner")
+    serializer_class = SavedFoodMealSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return self.scope_to_owner(super().get_queryset())
+
+    def perform_create(self, serializer):
+        serializer.save(owner=self.owner_profile())
+
+    @extend_schema(
+        request=ApplySavedMealSerializer,
+        responses={200: FoodMealSerializer},
+        description=(
+            "Copy this saved meal's ingredients into a meal on a day. The "
+            "ingredients are copied, not linked, so editing one afterwards "
+            "does not change the recipe it came from."
+        ),
+    )
+    @action(detail=True, methods=["post"])
+    def apply(self, request, pk=None):
+        saved = self.get_object()
+        serializer = ApplySavedMealSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        meal = serializer.validated_data["meal"]
+
+        used = meal.entries.count()
+        FoodEntry.objects.bulk_create([
+            FoodEntry(
+                meal=meal,
+                name=ingredient.name,
+                servings=ingredient.servings,
+                calories=ingredient.calories,
+                protein_grams=ingredient.protein_grams,
+                carbohydrate_grams=ingredient.carbohydrate_grams,
+                fat_grams=ingredient.fat_grams,
+                position=used + offset + 1,
+            )
+            for offset, ingredient in enumerate(saved.ingredients.all())
+        ])
+        meal.refresh_from_db()
+        return Response(FoodMealSerializer(meal).data)
 
 
 @extend_schema_view(
