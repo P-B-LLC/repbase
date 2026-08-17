@@ -19,7 +19,7 @@ from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rest_framework.generics import RetrieveUpdateAPIView
+from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from .models import (
     BodyWeightEntry,
@@ -149,12 +149,17 @@ class LogoutView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-class MeView(RetrieveUpdateAPIView):
+class MeView(RetrieveUpdateDestroyAPIView):
     serializer_class = RepbaseUserSerializer
     permission_classes = [IsAuthenticated]
 
     def get_object(self):
         return profile_for(self.request.user)
+
+    def perform_destroy(self, instance):
+        # Deleting the auth user cascades through the Repbase profile and every
+        # account-owned resource. It also invalidates all authentication tokens.
+        self.request.user.delete()
 
 
 class MePhotoView(APIView):

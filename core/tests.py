@@ -87,6 +87,17 @@ class RepbaseAPITestCase(APITestCase):
         self.assertEqual(profile.gym, "Repbase Gym")
         self.assertEqual(profile.target_weight_kg, Decimal("75.00"))
 
+    def test_me_endpoint_deletes_account_and_token(self):
+        user, _, token = self.create_account("delete-me")
+        token_key = token.key
+        self.authenticate(token)
+
+        response = self.client.delete("/api/v1/me/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertFalse(User.objects.filter(pk=user.pk).exists())
+        self.assertFalse(Token.objects.filter(key=token_key).exists())
+
     def test_sessions_are_scoped_to_the_authenticated_owner(self):
         _, first_profile, first_token = self.create_account("alice")
         _, second_profile, _ = self.create_account("bob")
