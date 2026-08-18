@@ -320,6 +320,23 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
         return self.get_paginated_response(self.get_serializer(people, many=True).data)
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="name",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only exercises with this exact name, matched "
+                    "without regard to case or surrounding space. Lets a "
+                    "client resolve one exercise instead of reading every "
+                    "page of the catalogue to find it."
+                ),
+            ),
+        ]
+    )
+)
 class ExerciseViewSet(viewsets.ModelViewSet):
     queryset = Exercise.objects.all()
     serializer_class = ExerciseSerializer
@@ -327,10 +344,18 @@ class ExerciseViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset().select_related("created_by")
-        if self.request.user.is_superuser:
-            return queryset
-        profile = profile_for(self.request.user)
-        return queryset.filter(Q(created_by__isnull=True) | Q(created_by=profile))
+        if not self.request.user.is_superuser:
+            profile = profile_for(self.request.user)
+            queryset = queryset.filter(
+                Q(created_by__isnull=True) | Q(created_by=profile)
+            )
+        # Matched the way the app matches names: ignoring case and surrounding
+        # space. Without this a client reads the whole catalogue to find one
+        # row, on every workout save.
+        name = self.request.query_params.get("name")
+        if name:
+            queryset = queryset.filter(name__iexact=name.strip())
+        return queryset
 
     def perform_create(self, serializer):
         serializer.save(created_by=profile_for(self.request.user))
@@ -1051,6 +1076,23 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return Response(self.get_serializer(session).data)
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="session",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only the exercises belonging to this session. "
+                    "The filter already worked; undeclared, a client had to "
+                    "read every session-exercise row it owns in order to "
+                    "open one session."
+                ),
+            ),
+        ]
+    )
+)
 class SessionExerciseViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = SessionExercise.objects.select_related("session", "exercise")
     serializer_class = SessionExerciseSerializer
