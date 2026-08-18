@@ -33,6 +33,7 @@ from .models import (
     FoodMeal,
     Gym,
     NutritionGoal,
+    DEFAULT_FOOD_MEAL_COUNT,
     PlannerCategory,
     SavedFoodMeal,
     PlannerEntry,
@@ -48,6 +49,7 @@ from .models import (
     PostPlannerEntry,
     PostWorkout,
     PostWorkoutExercise,
+    food_meals_for_day,
     normalize_gym_text,
     plan_recurring_week,
     week_start_for,
@@ -69,6 +71,7 @@ from .serializers import (
     SessionRouteUploadSerializer,
     SetEntrySerializer,
     ApplySavedMealSerializer,
+    EnsureFoodDaySerializer,
     FoodEntrySerializer,
     FoodMealSerializer,
     GymSerializer,
@@ -490,6 +493,38 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 break
         return Response(RecentFoodSerializer(recent, many=True).data)
 
+    @extend_schema(
+        request=EnsureFoodDaySerializer,
+        responses={200: FoodMealSerializer(many=True)},
+        description=(
+            "Open a day and get its meals, creating the day's empty meal slots "
+            "the first time. Safe to call every time a day is shown: it only "
+            "adds slots a day is short of, so opening the same day twice does "
+            "not double them."
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="ensure-day", pagination_class=None)
+    def ensure_day(self, request):
+        """The meals on a day, with the empty ones a day starts with.
+
+        A POST rather than something the day's GET does on the side: this
+        writes rows, and a read that quietly created them would fill the
+        database with days somebody scrolled past.
+
+        The slots are laid down only on a day that has none. A day someone has
+        already edited keeps exactly what they left on it - deleting a meal and
+        coming back tomorrow must not quietly restore it, which is what topping
+        every day up to four would do.
+        """
+        serializer = EnsureFoodDaySerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        owner = self.owner_profile()
+        date = serializer.validated_data["date"]
+        meals = food_meals_for_day(owner, date)
+        if not meals:
+            meals = food_meals_for_day(owner, date, at_least=DEFAULT_FOOD_MEAL_COUNT)
+        return Response(FoodMealSerializer(meals, many=True).data)
+
 
 class FoodEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     """Foods inside meals. Ownership is the meal's owner, one step away."""
@@ -552,36 +587,61 @@ class SavedFoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     @extend_schema(
         request=ApplySavedMealSerializer,
-        responses={200: FoodMealSerializer},
+        responses={200: FoodMealSerializer(many=True)},
         description=(
-            "Copy this saved meal's ingredients into a meal on a day. The "
-            "ingredients are copied, not linked, so editing one afterwards "
-            "does not change the recipe it came from."
+            "Copy this saved meal's ingredients into the same numbered meal on "
+            "each of several days, creating any meal that is not there yet. The "
+            "ingredients are copied, not linked, so editing one afterwards does "
+            "not change the recipe it came from, and deleting the recipe does "
+            "not empty the days it was applied to."
         ),
     )
-    @action(detail=True, methods=["post"])
+    @action(detail=True, methods=["post"], pagination_class=None)
     def apply(self, request, pk=None):
-        saved = self.get_object()
-        serializer = ApplySavedMealSerializer(data=request.data, context={"request": request})
-        serializer.is_valid(raise_exception=True)
-        meal = serializer.validated_data["meal"]
+        """Copy a saved meal onto every day named, in one transaction.
 
-        used = meal.entries.count()
-        FoodEntry.objects.bulk_create([
-            FoodEntry(
-                meal=meal,
-                name=ingredient.name,
-                servings=ingredient.servings,
-                calories=ingredient.calories,
-                protein_grams=ingredient.protein_grams,
-                carbohydrate_grams=ingredient.carbohydrate_grams,
-                fat_grams=ingredient.fat_grams,
-                position=used + offset + 1,
-            )
-            for offset, ingredient in enumerate(saved.ingredients.all())
-        ])
-        meal.refresh_from_db()
-        return Response(FoodMealSerializer(meal).data)
+        All the days or none of them. Half of a week's meal prep applied, with
+        no way to tell which half, is worse than a refusal the user can repeat.
+
+        Repeated dates are collapsed. The same day sent twice reads as a client
+        retrying rather than as a request for two helpings, and the latter is
+        what an unfiltered loop would silently produce.
+        """
+        saved = self.get_object()
+        serializer = ApplySavedMealSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        owner = self.owner_profile()
+        position = serializer.validated_data["position"]
+        ingredients = list(saved.ingredients.all())
+        dates = list(dict.fromkeys(serializer.validated_data["dates"]))
+
+        touched = []
+        with transaction.atomic():
+            for date in dates:
+                meal = food_meals_for_day(owner, date, at_least=position)[position - 1]
+                used = meal.entries.count()
+                FoodEntry.objects.bulk_create([
+                    FoodEntry(
+                        meal=meal,
+                        name=ingredient.name,
+                        servings=ingredient.servings,
+                        calories=ingredient.calories,
+                        protein_grams=ingredient.protein_grams,
+                        carbohydrate_grams=ingredient.carbohydrate_grams,
+                        fat_grams=ingredient.fat_grams,
+                        position=used + offset + 1,
+                    )
+                    for offset, ingredient in enumerate(ingredients)
+                ])
+                touched.append(meal.pk)
+
+        meals = (
+            FoodMeal.objects.filter(pk__in=touched)
+            .prefetch_related("entries")
+            .order_by("date", "position", "id")
+        )
+        return Response(FoodMealSerializer(meals, many=True).data)
 
 
 @extend_schema_view(

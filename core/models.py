@@ -1821,3 +1821,51 @@ class PostPlannerEntry(models.Model):
 
     def __str__(self):
         return f"{self.scheduled_date}: {self.title}"
+
+
+#: What a day starts with when someone first opens it. Four is what the app has
+#: always drawn, and it lives here now rather than there: the screens are meant
+#: to show what the server holds, and a slot drawn only by the client is a row
+#: the server does not have.
+DEFAULT_FOOD_MEAL_COUNT = 4
+
+#: A ceiling on how many meals one day can be made to hold. Without it, asking
+#: to apply a saved meal at position 900 would quietly create 900 rows.
+MAX_FOOD_MEALS_PER_DAY = 12
+
+
+def food_meals_for_day(owner, date, at_least=0):
+    """The meals on one day, creating any missing up to `at_least`.
+
+    A day is not a row of its own; it is however many meals sit on that date.
+    This is what gives a freshly opened day the empty slots to log into, and it
+    is idempotent, so opening the same day twice does not double them.
+
+    New meals are numbered up from the highest position already there rather
+    than from the count, because positions are deliberately not unique per day
+    and a deleted middle meal would otherwise make the next one collide with a
+    position still in use.
+    """
+    def current():
+        return list(
+            FoodMeal.objects.filter(owner=owner, date=date)
+            .prefetch_related("entries")
+            .order_by("position", "id")
+        )
+
+    meals = current()
+    wanted = min(max(at_least, 0), MAX_FOOD_MEALS_PER_DAY)
+    if len(meals) >= wanted:
+        return meals
+
+    next_position = max((meal.position for meal in meals), default=0) + 1
+    FoodMeal.objects.bulk_create([
+        FoodMeal(
+            owner=owner,
+            date=date,
+            name=f"Meal {next_position + offset}",
+            position=next_position + offset,
+        )
+        for offset in range(wanted - len(meals))
+    ])
+    return current()

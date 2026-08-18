@@ -782,6 +782,38 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/food/meals/ensure-day/:
+    post:
+      operationId: food_meals_ensure_day_create
+      description: 'Open a day and get its meals, creating the day''s empty meal slots
+        the first time. Safe to call every time a day is shown: it only adds slots
+        a day is short of, so opening the same day twice does not double them.'
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnsureFoodDayRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/EnsureFoodDayRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/EnsureFoodDayRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FoodMeal'
+          description: ''
   /api/v1/food/meals/recent-foods/:
     get:
       operationId: food_meals_recent_foods_list
@@ -965,9 +997,11 @@ paths:
   /api/v1/food/saved-meals/{id}/apply/:
     post:
       operationId: food_saved_meals_apply_create
-      description: Copy this saved meal's ingredients into a meal on a day. The ingredients
+      description: Copy this saved meal's ingredients into the same numbered meal
+        on each of several days, creating any meal that is not there yet. The ingredients
         are copied, not linked, so editing one afterwards does not change the recipe
-        it came from.
+        it came from, and deleting the recipe does not empty the days it was applied
+        to.
       parameters:
       - in: path
         name: id
@@ -997,7 +1031,9 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FoodMeal'
+                type: array
+                items:
+                  $ref: '#/components/schemas/FoodMeal'
           description: ''
   /api/v1/gyms/:
     get:
@@ -3322,12 +3358,32 @@ components:
   schemas:
     ApplySavedMealRequest:
       type: object
-      description: Where to copy a saved meal's ingredients.
+      description: |-
+        Which days to copy a saved meal into, and which meal on each of them.
+
+        Days rather than a meal id: the screen that applies a saved meal asks for a
+        set of dates and a meal number, and a day the user picked may not have that
+        many meals on it yet. Naming an existing meal could not express "meal two on
+        each of these three days" without the client first creating whichever meals
+        it guessed were missing.
+
+        `position` is the meal's place in the day counting from one, not its
+        `position` column: a day whose second meal was deleted still has a second
+        meal, and it is the one now sitting where that one was.
       properties:
-        meal:
+        dates:
+          type: array
+          items:
+            type: string
+            format: date
+          maxItems: 31
+        position:
           type: integer
+          maximum: 12
+          minimum: 1
       required:
-      - meal
+      - dates
+      - position
     AuthResponse:
       type: object
       properties:
@@ -3565,6 +3621,15 @@ components:
         * `calisthenics` - Calisthenics
         * `general_fitness` - General fitness
         * `other` - Other
+    EnsureFoodDayRequest:
+      type: object
+      description: The day to open.
+      properties:
+        date:
+          type: string
+          format: date
+      required:
+      - date
     Exercise:
       type: object
       properties:

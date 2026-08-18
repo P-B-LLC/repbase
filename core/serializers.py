@@ -34,6 +34,7 @@ from .models import (
     WorkoutSchedule,
     WorkoutSession,
     WorkoutTemplate,
+    MAX_FOOD_MEALS_PER_DAY,
     Block,
     Follow,
     Post,
@@ -316,14 +317,31 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
 
 class ApplySavedMealSerializer(serializers.Serializer):
-    """Where to copy a saved meal's ingredients."""
+    """Which days to copy a saved meal into, and which meal on each of them.
 
-    meal = serializers.PrimaryKeyRelatedField(queryset=FoodMeal.objects.all())
+    Days rather than a meal id: the screen that applies a saved meal asks for a
+    set of dates and a meal number, and a day the user picked may not have that
+    many meals on it yet. Naming an existing meal could not express "meal two on
+    each of these three days" without the client first creating whichever meals
+    it guessed were missing.
 
-    def validate_meal(self, value):
-        if value.owner_id != self.context["request"].user.repbase_profile.id:
-            raise serializers.ValidationError("That meal belongs to someone else.")
-        return value
+    `position` is the meal's place in the day counting from one, not its
+    `position` column: a day whose second meal was deleted still has a second
+    meal, and it is the one now sitting where that one was.
+    """
+
+    dates = serializers.ListField(
+        child=serializers.DateField(),
+        allow_empty=False,
+        max_length=31,
+    )
+    position = serializers.IntegerField(min_value=1, max_value=MAX_FOOD_MEALS_PER_DAY)
+
+
+class EnsureFoodDaySerializer(serializers.Serializer):
+    """The day to open."""
+
+    date = serializers.DateField()
 
 
 class RecentFoodSerializer(serializers.Serializer):
