@@ -1510,6 +1510,17 @@ class Block(models.Model):
         return f"{self.blocker} blocks {self.blocked}"
 
 
+def post_photo_path(instance, filename):
+    """Where a photo attached to a post lives.
+
+    Named from the post id and a random suffix rather than the uploaded
+    filename, which is chosen by the client and would otherwise let one
+    author overwrite another's file.
+    """
+    suffix = pathlib.Path(filename).suffix.lower() or ".jpg"
+    return f"post-photos/{instance.pk or 'new'}-{uuid.uuid4().hex}{suffix}"
+
+
 class Post(models.Model):
     """Something a user has chosen to show other people.
 
@@ -1540,6 +1551,16 @@ class Post(models.Model):
     )
     kind = models.CharField(max_length=20, choices=Kind.choices)
     caption = models.CharField(max_length=300, blank=True)
+    #: A photo the author chose to attach, if any.
+    #:
+    #: Deliberately separate from the snapshot beside it. The snapshot is
+    #: what the server measured and no client may write; this is what the
+    #: author wanted shown, and carries no claim about what was done.
+    image = models.ImageField(
+        upload_to=post_photo_path,
+        blank=True,
+        null=True,
+    )
     visibility = models.CharField(
         max_length=20,
         choices=Visibility.choices,

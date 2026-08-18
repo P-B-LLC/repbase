@@ -62,6 +62,28 @@ ALLOWED_PHOTO_TYPES = {
 }
 
 
+def decode_uploaded_image(raw, field="image_base64"):
+    """The bytes behind a base64 image, or a validation error saying why not.
+
+    Shared so a post's photo is refused for the same reasons, in the same
+    words, as a profile's.
+    """
+    # Tolerate a data: URL, since it is the obvious thing to send.
+    if raw.startswith("data:"):
+        _, _, raw = raw.partition(",")
+    try:
+        decoded = base64.b64decode(raw, validate=True)
+    except (binascii.Error, ValueError):
+        raise serializers.ValidationError({field: "This is not valid base64."})
+    if not decoded:
+        raise serializers.ValidationError({field: "The image is empty."})
+    if len(decoded) > MAX_PROFILE_PHOTO_BYTES:
+        raise serializers.ValidationError(
+            {field: "That image is larger than 5 MB."}
+        )
+    return decoded
+
+
 class ProfilePhotoUploadSerializer(serializers.Serializer):
     """A profile photo sent as base64.
 
@@ -1491,6 +1513,7 @@ class PostSerializer(serializers.ModelSerializer):
     planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
     source_id = serializers.SerializerMethodField()
     viewer_follows_author = serializers.SerializerMethodField()
+    image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -1498,6 +1521,7 @@ class PostSerializer(serializers.ModelSerializer):
             "id",
             "author",
             "kind",
+            "image_url",
             "caption",
             "visibility",
             "workout",
@@ -1522,6 +1546,19 @@ class PostSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_image_url(self, post):
+        """The absolute URL of an attached photo, or null when there is none.
+
+        Absolute for the reason a profile photo's is: the app talks to the
+        API from a different origin than the one serving the file.
+        """
+        if not post.image:
+            return None
+        request = self.context.get("request")
+        url = post.image.url
+        return request.build_absolute_uri(url) if request else url
 
     @extend_schema_field(serializers.IntegerField(allow_null=True))
     def get_source_id(self, post):
@@ -1591,9 +1628,38 @@ class CreatePostSerializer(serializers.Serializer):
         required=False,
         default=Post.Visibility.PUBLIC,
     )
+    #: An optional photo, sent the way a profile photo is: base64 in JSON,
+    #: so the generated client still needs no multipart path.
+    #:
+    #: Carried on the create rather than uploaded afterwards. A post is made
+    #: once, and a second request to attach the photo can fail on its own,
+    #: which would publish a post without the picture its caption is about.
+    content_type = serializers.ChoiceField(
+        choices=sorted(ALLOWED_PHOTO_TYPES),
+        required=False,
+    )
+    image_base64 = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="The image bytes, base64 encoded, without a data: prefix.",
+    )
 
     def validate_caption(self, value):
         return value.strip()
+
+    def validate(self, attrs):
+        # Only the photo is resolved here. See the note below on source_id.
+        raw = attrs.get("image_base64") or ""
+        if not raw:
+            attrs.pop("image_base64", None)
+            attrs.pop("content_type", None)
+            return attrs
+        if not attrs.get("content_type"):
+            raise serializers.ValidationError(
+                {"content_type": "Required when sending an image."}
+            )
+        attrs["decoded_image"] = decode_uploaded_image(raw)
+        return attrs
 
     # There is deliberately no `validate` resolving `source_id` here. Which
     # table the id belongs to depends on `kind`, so the lookup has to happen

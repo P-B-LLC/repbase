@@ -238,6 +238,13 @@ paths:
     get:
       operationId: exercises_list
       parameters:
+      - in: query
+        name: name
+        schema:
+          type: string
+        description: Return only exercises with this exact name, matched without regard
+          to case or surrounding space. Lets a client resolve one exercise instead
+          of reading every page of the catalogue to find it.
       - name: page
         required: false
         in: query
@@ -1954,6 +1961,13 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: session
+        schema:
+          type: integer
+        description: Return only the exercises belonging to this session. The filter
+          already worked; undeclared, a client had to read every session-exercise
+          row it owns in order to open one session.
       tags:
       - session-exercises
       security:
@@ -3590,6 +3604,11 @@ components:
           allOf:
           - $ref: '#/components/schemas/VisibilityEnum'
           default: public
+        content_type:
+          $ref: '#/components/schemas/ContentTypeEnum'
+        image_base64:
+          type: string
+          description: 'The image bytes, base64 encoded, without a data: prefix.'
       required:
       - kind
       - source_id
@@ -4953,6 +4972,10 @@ components:
         kind:
           type: string
           readOnly: true
+        image_url:
+          type: string
+          nullable: true
+          readOnly: true
         caption:
           type: string
           readOnly: true
@@ -4994,6 +5017,7 @@ components:
       - caption
       - created_at
       - id
+      - image_url
       - kind
       - meal
       - planner

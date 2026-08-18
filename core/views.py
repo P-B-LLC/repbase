@@ -1,6 +1,8 @@
+import uuid
 from datetime import timedelta
 from decimal import Decimal
 
+from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Count, Exists, OuterRef, Q
 from django.http import JsonResponse
@@ -56,6 +58,7 @@ from .models import (
 )
 from .permissions import IsCustomExerciseOwnerOrAdmin
 from .serializers import (
+    ALLOWED_PHOTO_TYPES,
     AuthResponseSerializer,
     BodyWeightEntrySerializer,
     ExerciseProgressPointSerializer,
@@ -1611,6 +1614,17 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             payload.validated_data.get("caption", ""),
             payload.validated_data.get("visibility", Post.Visibility.PUBLIC),
         )
+        # Saved after the row exists, because the upload path is named from
+        # its id. Done before the card is read back, so a post never goes
+        # out over the wire without the photo it was created with.
+        decoded = payload.validated_data.get("decoded_image")
+        if decoded is not None:
+            extension = ALLOWED_PHOTO_TYPES[payload.validated_data["content_type"]]
+            post.image.save(
+                f"{uuid.uuid4().hex}{extension}",
+                ContentFile(decoded),
+                save=True,
+            )
         # Read back through the list queryset so the card returned from a create
         # is assembled by the code that assembles the card in the feed, rather
         # than by a second path that can disagree with it.
