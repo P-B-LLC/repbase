@@ -1284,6 +1284,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/RepbaseUser'
           description: ''
+    delete:
+      operationId: me_destroy
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/me/photo/:
     put:
       operationId: me_photo_update
@@ -2558,6 +2568,294 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/social/blocks/:
+    get:
+      operationId: social_blocks_list
+      description: |-
+        People this user has blocked.
+
+        No update endpoint, for the reason a recurrence has none: there is nothing
+        inside a block to change. Lifting one is a delete, and blocking the same
+        person again is a new row with a new date, which is what actually happened.
+
+        Only blocks the requester made are listed. Who has blocked you is not
+        something this API answers, and a list would answer it.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedBlockList'
+          description: ''
+    post:
+      operationId: social_blocks_create
+      description: |-
+        People this user has blocked.
+
+        No update endpoint, for the reason a recurrence has none: there is nothing
+        inside a block to change. Lifting one is a delete, and blocking the same
+        person again is a new row with a new date, which is what actually happened.
+
+        Only blocks the requester made are listed. Who has blocked you is not
+        something this API answers, and a list would answer it.
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BlockRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/BlockRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/BlockRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Block'
+          description: ''
+  /api/v1/social/blocks/{id}/:
+    delete:
+      operationId: social_blocks_destroy
+      description: |-
+        People this user has blocked.
+
+        No update endpoint, for the reason a recurrence has none: there is nothing
+        inside a block to change. Lifting one is a delete, and blocking the same
+        person again is a new row with a new date, which is what actually happened.
+
+        Only blocks the requester made are listed. Who has blocked you is not
+        something this API answers, and a list would answer it.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this block.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/social/feed/:
+    get:
+      operationId: social_feed_list
+      description: |-
+        What the people you follow have posted, newest first.
+
+        Fanned out on read: a page is one indexed walk over the posts of everyone
+        the reader follows. Fanning out on write would mean a row per follower per
+        post, nearly all of them never looked at, and a second copy of the
+        visibility rules to keep in step with this one.
+
+        The reader's own posts are in it, minus the private ones. Posting and being
+        returned to a feed that does not contain what you just posted reads as a
+        failure, and this is the cheapest confirmation the app can give; a private
+        post is one deliberately held back, so it stays on the profile list where it
+        was put and out of the stream that exists to be shared.
+      parameters:
+      - in: query
+        name: cursor
+        schema:
+          type: string
+        description: The position carried by the previous page's `next` link. Absent
+          means start at the newest post.
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: How many posts to return, at most 50. Asking for more is refused
+          rather than reduced, so a page is always the size it was asked for.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPostList'
+          description: ''
+  /api/v1/social/posts/:
+    get:
+      operationId: social_posts_list
+      description: |-
+        Posts: what someone has chosen to show other people.
+
+        Reading and writing use different querysets on purpose. A reader gets
+        everything the visibility rules allow; an author gets their own rows and
+        nothing else, so somebody else's post is a 404 to a PATCH for the same
+        reason it is a 404 to a GET of a session that is not theirs — it was never
+        in the set.
+      parameters:
+      - in: query
+        name: author
+        schema:
+          type: integer
+        description: Return only posts by this user, still filtered by what the reader
+          is allowed to see.
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPostList'
+          description: ''
+    post:
+      operationId: social_posts_create
+      description: Post a workout, meal or planner entry the requester owns. The server
+        reads the source and builds the snapshot; the request names the object and
+        never carries its contents.
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePostRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CreatePostRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreatePostRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+  /api/v1/social/posts/{id}/:
+    get:
+      operationId: social_posts_retrieve
+      description: |-
+        Posts: what someone has chosen to show other people.
+
+        Reading and writing use different querysets on purpose. A reader gets
+        everything the visibility rules allow; an author gets their own rows and
+        nothing else, so somebody else's post is a 404 to a PATCH for the same
+        reason it is a 404 to a GET of a session that is not theirs — it was never
+        in the set.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+    patch:
+      operationId: social_posts_partial_update
+      description: Change the caption or who can see this post. The snapshot records
+        what happened and is not editable.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdatePostRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdatePostRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdatePostRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+    delete:
+      operationId: social_posts_destroy
+      description: |-
+        Posts: what someone has chosen to show other people.
+
+        Reading and writing use different querysets on purpose. A reader gets
+        everything the visibility rules allow; an author gets their own rows and
+        nothing else, so somebody else's post is a 404 to a PATCH for the same
+        reason it is a 404 to a GET of a session that is not theirs — it was never
+        in the set.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/users/:
     get:
       operationId: users_list
@@ -2601,6 +2899,120 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PublicRepbaseUser'
+          description: ''
+  /api/v1/users/{id}/follow/:
+    post:
+      operationId: users_follow_create
+      description: Follow this user. Following again changes nothing and answers 200,
+        so a double tap is not an error.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this repbase user.
+        required: true
+      tags:
+      - users
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          description: No response body
+        '200':
+          description: No response body
+        '409':
+          description: No response body
+    delete:
+      operationId: users_follow_destroy
+      description: Stop following this user.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this repbase user.
+        required: true
+      tags:
+      - users
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/users/{id}/followers/:
+    get:
+      operationId: users_followers_list
+      description: |-
+        Who follows this user, most recent first.
+
+        Paged, unlike the gym member list this otherwise resembles: a gym holds
+        the people who train there and a well-followed account holds orders of
+        magnitude more.
+
+        Paged over the follow rows rather than over the profiles, because
+        RepbaseUser has no Meta.ordering — paginating it would slice an
+        unordered result and hand the same person to two different pages. The
+        follows are ordered by when they were made, which is also the order this
+        list wants.
+
+        A block cannot leave a stale row here: making one deletes the follows
+        both ways, and the follow action refuses to remake them.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this repbase user.
+        required: true
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - users
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPublicRepbaseUserList'
+          description: ''
+  /api/v1/users/{id}/following/:
+    get:
+      operationId: users_following_list
+      description: Who this user follows, most recently followed first.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this repbase user.
+        required: true
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - users
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPublicRepbaseUserList'
           description: ''
   /api/v1/workout-exercises/:
     get:
@@ -2929,6 +3341,52 @@ components:
       required:
       - token
       - user
+    Block:
+      type: object
+      description: |-
+        One person the requester has blocked.
+
+        `blocked_user` is nested beside the plain id because the only screen that
+        reads this list is a list of people, and a page of bare ids would be a
+        profile fetch each. The id stays because that is what a client sends back to
+        lift the block.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        blocker:
+          type: integer
+          readOnly: true
+        blocked:
+          type: integer
+        blocked_user:
+          allOf:
+          - $ref: '#/components/schemas/PublicRepbaseUser'
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - blocked
+      - blocked_user
+      - blocker
+      - created_at
+      - id
+    BlockRequest:
+      type: object
+      description: |-
+        One person the requester has blocked.
+
+        `blocked_user` is nested beside the plain id because the only screen that
+        reads this list is a list of people, and a page of bare ids would be a
+        profile fetch each. The id stays because that is what a client sends back to
+        lift the block.
+      properties:
+        blocked:
+          type: integer
+      required:
+      - blocked
     BodyWeightEntry:
       type: object
       properties:
@@ -3043,6 +3501,42 @@ components:
         * `image/jpeg` - image/jpeg
         * `image/png` - image/png
         * `image/webp` - image/webp
+    CreatePostKindEnum:
+      enum:
+      - workout
+      - meal
+      - planner
+      type: string
+      description: |-
+        * `workout` - Workout
+        * `meal` - Meal
+        * `planner` - Planner
+    CreatePostRequest:
+      type: object
+      description: |-
+        What to post, and who may see it.
+
+        A reference and nothing else. The server reads the source itself and builds
+        the snapshot from it, so no client can decide what a post says it did —
+        accepting the content here would be accepting a five-hundred-kilogram squat
+        from anyone who could type one.
+      properties:
+        kind:
+          $ref: '#/components/schemas/CreatePostKindEnum'
+        source_id:
+          type: integer
+          minimum: 1
+        caption:
+          type: string
+          default: ''
+          maxLength: 300
+        visibility:
+          allOf:
+          - $ref: '#/components/schemas/VisibilityEnum'
+          default: public
+      required:
+      - kind
+      - source_id
     DisciplinesEnum:
       enum:
       - powerlifting
@@ -3452,6 +3946,29 @@ components:
           readOnly: true
       required:
       - updated_at
+    PaginatedBlockList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Block'
     PaginatedBodyWeightEntryList:
       type: object
       required:
@@ -3590,6 +4107,25 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PlannerEntry'
+    PaginatedPostList:
+      type: object
+      required:
+      - results
+      properties:
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cD00ODY%3D"
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?cursor=cj0xJnA9NDg3
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Post'
     PaginatedPublicRepbaseUserList:
       type: object
       required:
@@ -4080,6 +4616,20 @@ components:
           type: string
           format: date-time
           nullable: true
+    PatchedUpdatePostRequest:
+      type: object
+      description: |-
+        The two things about a post that can still change.
+
+        The snapshot is not among them. It is the record of what happened, and one
+        that could be edited into a different workout after people had read it would
+        be worth nothing as a record.
+      properties:
+        caption:
+          type: string
+          maxLength: 300
+        visibility:
+          $ref: '#/components/schemas/VisibilityEnum'
     PatchedWorkoutExerciseRequest:
       type: object
       properties:
@@ -4310,6 +4860,381 @@ components:
       required:
       - scheduled_date
       - title
+    Post:
+      type: object
+      description: |-
+        A post as anyone allowed to see it reads it.
+
+        `workout`, `meal` and `planner` are three keys side by side with exactly one
+        of them filled in, rather than one field whose type is chosen by `kind`. A
+        client built before a fourth kind existed then fails to draw that one post;
+        with a discriminated union it fails to decode the whole page around it.
+
+        `kind` and `visibility` go out as plain strings for the same reason: a value
+        added later should be a string the client does not recognise, not a decoding
+        error. Requests still take a closed set — see `CreatePostSerializer`.
+
+        Every field here is read-only. A post is created from a source it does not
+        carry and edited through `UpdatePostSerializer`, so there is no shape in
+        which this serializer accepts anything.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        author:
+          allOf:
+          - $ref: '#/components/schemas/PublicRepbaseUser'
+          readOnly: true
+        kind:
+          type: string
+          readOnly: true
+        caption:
+          type: string
+          readOnly: true
+        visibility:
+          type: string
+          readOnly: true
+        workout:
+          allOf:
+          - $ref: '#/components/schemas/PostWorkout'
+          readOnly: true
+          nullable: true
+        meal:
+          allOf:
+          - $ref: '#/components/schemas/PostMeal'
+          readOnly: true
+          nullable: true
+        planner:
+          allOf:
+          - $ref: '#/components/schemas/PostPlannerEntry'
+          readOnly: true
+          nullable: true
+        source_id:
+          type: integer
+          nullable: true
+          readOnly: true
+        viewer_follows_author:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - author
+      - caption
+      - created_at
+      - id
+      - kind
+      - meal
+      - planner
+      - source_id
+      - updated_at
+      - viewer_follows_author
+      - visibility
+      - workout
+    PostMeal:
+      type: object
+      description: |-
+        A posted meal, frozen at the moment it was posted.
+
+        Totals are derived from the foods nested underneath, exactly as
+        `FoodMealSerializer` derives them from a live meal, and rendered through the
+        same `NUTRITION_DECIMAL` so a frozen calorie count has the same shape on the
+        wire as a live one.
+      properties:
+        name:
+          type: string
+          readOnly: true
+        date:
+          type: string
+          format: date
+          readOnly: true
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/PostMealEntry'
+          readOnly: true
+        total_calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+      required:
+      - date
+      - entries
+      - name
+      - total_calories
+      - total_carbohydrate_grams
+      - total_fat_grams
+      - total_protein_grams
+    PostMealEntry:
+      type: object
+      description: One food inside a posted meal, per serving with its servings beside
+        it.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        servings:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          readOnly: true
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+        total_calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        total_fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        position:
+          type: integer
+          readOnly: true
+      required:
+      - calories
+      - carbohydrate_grams
+      - fat_grams
+      - id
+      - name
+      - position
+      - protein_grams
+      - servings
+      - total_calories
+      - total_carbohydrate_grams
+      - total_fat_grams
+      - total_protein_grams
+    PostPlannerEntry:
+      type: object
+      description: A posted planner item, frozen at the moment it was posted.
+      properties:
+        kind:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        category:
+          type: string
+          readOnly: true
+        scheduled_date:
+          type: string
+          format: date
+          readOnly: true
+        scheduled_time:
+          type: string
+          format: time
+          readOnly: true
+          nullable: true
+        is_complete:
+          type: boolean
+          readOnly: true
+      required:
+      - category
+      - is_complete
+      - kind
+      - scheduled_date
+      - scheduled_time
+      - title
+    PostWorkout:
+      type: object
+      description: |-
+        A posted workout, frozen at the moment it was posted.
+
+        The three totals are summed from the exercises nested underneath rather
+        than stored, the way `FoodMealSerializer` sums a meal's foods, so a figure
+        printed under a card cannot disagree with the rows printed inside it. They
+        walk `exercises` and nothing else, so a page of them costs no queries as
+        long as the feed prefetches that relation.
+
+        There is no `id` here or on the other two snapshots: each is one-to-one with
+        its post, the post's id already identifies it, and an id in this position
+        invites a client into thinking it can fetch the workout it came from.
+      properties:
+        title:
+          type: string
+          readOnly: true
+        workout_type:
+          type: string
+          readOnly: true
+          nullable: true
+        performed_at:
+          type: string
+          format: date-time
+          readOnly: true
+        duration_seconds:
+          type: integer
+          readOnly: true
+          nullable: true
+        cardio_machine:
+          type: string
+          readOnly: true
+          nullable: true
+        cardio_seconds:
+          type: integer
+          readOnly: true
+          nullable: true
+        cardio_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          readOnly: true
+          nullable: true
+        route_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          readOnly: true
+          nullable: true
+        pace_seconds_per_km:
+          type: integer
+          readOnly: true
+          nullable: true
+        elevation_gain_m:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,1})?$
+          readOnly: true
+          nullable: true
+        exercises:
+          type: array
+          items:
+            $ref: '#/components/schemas/PostWorkoutExercise'
+          readOnly: true
+        exercise_count:
+          type: integer
+          readOnly: true
+        total_set_count:
+          type: integer
+          readOnly: true
+        total_volume_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
+          nullable: true
+          readOnly: true
+      required:
+      - cardio_distance_km
+      - cardio_machine
+      - cardio_seconds
+      - duration_seconds
+      - elevation_gain_m
+      - exercise_count
+      - exercises
+      - pace_seconds_per_km
+      - performed_at
+      - route_distance_km
+      - title
+      - total_set_count
+      - total_volume_kg
+      - workout_type
+    PostWorkoutExercise:
+      type: object
+      description: One exercise inside a posted workout.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        order:
+          type: integer
+          readOnly: true
+        set_count:
+          type: integer
+          readOnly: true
+        top_set_weight_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        top_set_reps:
+          type: integer
+          readOnly: true
+          nullable: true
+        total_reps:
+          type: integer
+          readOnly: true
+          nullable: true
+        volume_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          readOnly: true
+          nullable: true
+      required:
+      - distance_km
+      - id
+      - name
+      - order
+      - set_count
+      - top_set_reps
+      - top_set_weight_kg
+      - total_reps
+      - volume_kg
     ProfilePhotoUploadRequest:
       type: object
       description: |-
@@ -4405,6 +5330,21 @@ components:
       - target_weight_kg
       - username
       - weight_kg
+    PublicRepbaseUserRequest:
+      type: object
+      properties:
+        bio:
+          type: string
+          maxLength: 300
+        gym:
+          type: integer
+          nullable: true
+        shows_height:
+          type: boolean
+        shows_weight:
+          type: boolean
+        shows_target_weight:
+          type: boolean
     RecentFood:
       type: object
       description: A food the user has logged before, for the picker.
@@ -4988,6 +5928,16 @@ components:
       description: |-
         * `metric` - Metric (kg/cm)
         * `imperial` - Imperial (lb/in)
+    VisibilityEnum:
+      enum:
+      - public
+      - followers
+      - private
+      type: string
+      description: |-
+        * `public` - Public
+        * `followers` - Followers
+        * `private` - Private
     WeekdayEnum:
       enum:
       - 0

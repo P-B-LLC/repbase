@@ -1415,3 +1415,409 @@ class SavedFoodIngredient(models.Model):
 
     def __str__(self):
         return f"{self.name} x{self.servings}"
+
+
+class Follow(models.Model):
+    """One person choosing to see another's posts.
+
+    One-directional and immediate: following is not an agreement between two
+    people, so there is no pending state and no matching row the other way. The
+    pair is unique and nobody may follow themself, both in the database rather
+    than in the view, because a duplicate row would show every one of that
+    author's posts twice in the feed that joins through here.
+    """
+
+    follower = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="following",
+    )
+    following = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="followers",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("following", "-created_at")),
+            models.Index(fields=("follower", "-created_at")),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("follower", "following"),
+                name="unique_follow_per_pair",
+            ),
+            # `condition` rather than `check`: Django renamed the keyword in 5.1
+            # and dropped the old spelling in 6.0, and this project is past that.
+            models.CheckConstraint(
+                condition=~models.Q(follower=models.F("following")),
+                name="follow_is_not_self",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.follower} follows {self.following}"
+
+
+class Block(models.Model):
+    """One person refusing to appear to another.
+
+    Its own row rather than a flag on `Follow`, because a block has to work
+    when neither person ever followed the other, and has to outlive the follows
+    it removes: making one drops any follow in either direction, and this row is
+    what stops them being remade. Like a follow it is unique per pair and cannot
+    point at its own maker.
+
+    No `updated_at`, because there is nothing to change — a block is made or
+    lifted.
+    """
+
+    blocker = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="blocks",
+    )
+    blocked = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="blocked_by",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        # The unique constraint already indexes the pair blocker-first. This is
+        # the other direction, which the feed asks on every page: has the author
+        # of this row blocked the person reading it.
+        indexes = [
+            models.Index(fields=("blocked", "blocker")),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=("blocker", "blocked"),
+                name="unique_block_per_pair",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(blocker=models.F("blocked")),
+                name="block_is_not_self",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.blocker} blocks {self.blocked}"
+
+
+class Post(models.Model):
+    """Something a user has chosen to show other people.
+
+    A post carries its own copy of what was posted rather than rendering the
+    live object. Editing last week's workout must not rewrite what people have
+    already read, and deleting it must not empty a post that has been up for a
+    month, so the links back to the source go null and the copy stays.
+
+    `kind` says which of the three snapshot siblings exists. It is stored rather
+    than inferred from which sibling is present, so a page of the feed can be
+    ordered, counted and filtered without touching three more tables.
+    """
+
+    class Kind(models.TextChoices):
+        WORKOUT = "workout", "Workout"
+        MEAL = "meal", "Meal"
+        PLANNER = "planner", "Planner"
+
+    class Visibility(models.TextChoices):
+        PUBLIC = "public", "Public"
+        FOLLOWERS = "followers", "Followers"
+        PRIVATE = "private", "Private"
+
+    author = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="posts",
+    )
+    kind = models.CharField(max_length=20, choices=Kind.choices)
+    caption = models.CharField(max_length=300, blank=True)
+    visibility = models.CharField(
+        max_length=20,
+        choices=Visibility.choices,
+        default=Visibility.PUBLIC,
+    )
+    # What the post was made from. Kept so the author's own workout, meal or
+    # planner row can show that it has been posted, and shown to nobody else:
+    # where a stranger's post came from is not a stranger's business. Null once
+    # the source is deleted, which is the whole point of copying it first.
+    source_session = models.ForeignKey(
+        WorkoutSession,
+        on_delete=models.SET_NULL,
+        related_name="posts",
+        null=True,
+        blank=True,
+    )
+    source_meal = models.ForeignKey(
+        FoodMeal,
+        on_delete=models.SET_NULL,
+        related_name="posts",
+        null=True,
+        blank=True,
+    )
+    source_planner_entry = models.ForeignKey(
+        PlannerEntry,
+        on_delete=models.SET_NULL,
+        related_name="posts",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        # Named in the order the feed reads them: narrowed to the people being
+        # followed, then walked backwards from a (created_at, id) cursor. The
+        # second index is the same walk without the author filter, which is what
+        # a single profile's posts and any unfiltered page do.
+        indexes = [
+            models.Index(fields=("author", "-created_at", "-id")),
+            models.Index(fields=("-created_at", "-id")),
+        ]
+
+    def __str__(self):
+        return f"{self.author}: {self.get_kind_display()}"
+
+
+class PostWorkout(models.Model):
+    """What a posted workout looked like the moment it was posted.
+
+    Every figure here was computed once, at post time, from the session's sets
+    and route, then frozen. A page of fifty posts cannot walk fifty lists of
+    route points to report fifty distances, and the points themselves are never
+    copied: the first and last fix of a run from home is a home address.
+
+    The `related_name` is the key the post goes out under: the response carries
+    `workout`, `meal` and `planner` side by side with exactly one of them
+    non-null, and nothing has to translate between the column and the wire.
+
+    What is nullable here is what can genuinely be absent — a session with no
+    template has no type, one that was never started has no duration, a lifting
+    session has no distance. Everything a card must print is not.
+    """
+
+    post = models.OneToOneField(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="workout",
+    )
+    #: Resolved at post time and never looked up again: the session's template
+    #: link is nullable and a template can be renamed, so reading it live would
+    #: show a name the post never went out with, or none at all.
+    title = models.CharField(max_length=150)
+    # Nullable rather than blank: an ad-hoc session has no template to take a
+    # type from, and a null generates a plain optional in clients instead of a
+    # choice-or-empty-string union. Clients draw the lifting card when it is
+    # absent.
+    workout_type = models.CharField(
+        max_length=20,
+        choices=WorkoutTemplate.WorkoutType.choices,
+        null=True,
+        blank=True,
+        default=None,
+    )
+    #: When the training happened, taken from the session's end, start or
+    #: creation in that order. The post's own `created_at` is when it was
+    #: shared, which is a different date whenever someone posts yesterday.
+    performed_at = models.DateTimeField()
+    duration_seconds = models.PositiveIntegerField(null=True, blank=True)
+    #: The cardio finisher, copied whole or not at all: a machine with no time,
+    #: or a time with no machine, gives a card nothing to draw.
+    cardio_machine = models.CharField(
+        max_length=20,
+        choices=CardioMachine.choices,
+        null=True,
+        blank=True,
+        default=None,
+    )
+    cardio_seconds = models.PositiveIntegerField(null=True, blank=True)
+    cardio_distance_km = models.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    #: Kilometers and meters, like every other measurement in Repbase. Nothing
+    #: about the author is copied into a snapshot, their unit preference least
+    #: of all, or the card would keep the poster's units on every reader's
+    #: screen forever.
+    route_distance_km = models.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    #: Whole seconds. The live session reports this as a float, and a fraction
+    #: of a second of pace is not something anyone reads off a card.
+    pace_seconds_per_km = models.PositiveIntegerField(null=True, blank=True)
+    elevation_gain_m = models.DecimalField(
+        max_digits=7,
+        decimal_places=1,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+
+    def __str__(self):
+        return self.title
+
+
+class PostWorkoutExercise(models.Model):
+    """One exercise as it stood in a posted workout.
+
+    Per exercise rather than per set, because "Bench Press 4 x 8 at 80 kg" is
+    the line a reader wants and set-by-set detail is training-log material for
+    the person who did it; at fifty posts a page, per-set rows would put around
+    fifteen hundred objects on the wire to render nothing. Per exercise rather
+    than one summary line on the post, because a post has a detail view and the
+    session it came from may be long deleted by the time anyone opens it.
+
+    Weight, reps, volume and distance are null when no set carried them: a
+    bodyweight session and an unlogged one must not both read "0 kg". The
+    totals for the whole workout are summed from these rows when the post is
+    rendered rather than stored, so a figure under a card cannot disagree with
+    the rows printed inside it.
+    """
+
+    post_workout = models.ForeignKey(
+        PostWorkout,
+        on_delete=models.CASCADE,
+        related_name="exercises",
+    )
+    #: Copied, not linked. The exercise itself survives — the FK on a live
+    #: session is PROTECT — but it can be renamed, and a snapshot records what
+    #: the exercise was called on the day.
+    name = models.CharField(max_length=150)
+    order = models.PositiveIntegerField(default=1)
+    #: Sets that recorded a weight, a rep count or a distance. Deliberately not
+    #: "sets with a `completed_at`", which is how the records and progress
+    #: queries count: whether the app writes that timestamp for every set a user
+    #: ticks is not visible from the backend, and a set with numbers in it was
+    #: plainly performed.
+    set_count = models.PositiveIntegerField(default=0)
+    #: The heaviest logged set, which is the pair a card line quotes.
+    top_set_weight_kg = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    top_set_reps = models.PositiveIntegerField(null=True, blank=True)
+    total_reps = models.PositiveIntegerField(null=True, blank=True)
+    #: Sum of weight times reps over the sets that logged both, in the same
+    #: 12/2 shape the exercise progress endpoint already sends volume in, so one
+    #: lift's volume has one shape across the API.
+    volume_kg = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    distance_km = models.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+
+    class Meta:
+        ordering = ("order", "id")
+
+    def __str__(self):
+        return f"{self.name} x{self.set_count}"
+
+
+class PostMeal(models.Model):
+    """What a posted meal looked like the moment it was posted.
+
+    Totals are not stored. They are summed from the rows below when the post is
+    rendered, the same arithmetic `FoodMealSerializer` runs over a live meal, so
+    the numbers under a card can never drift from the foods listed inside it.
+    """
+
+    post = models.OneToOneField(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="meal",
+    )
+    name = models.CharField(max_length=100)
+    date = models.DateField()
+
+    def __str__(self):
+        return f"{self.date}: {self.name}"
+
+
+class PostMealEntry(models.Model):
+    """One food inside a posted meal.
+
+    Mirrors `FoodEntry` field for field, per-serving split included, so
+    freezing a meal is a copy rather than a translation and both sides derive
+    their totals by multiplying the same two numbers.
+    """
+
+    post_meal = models.ForeignKey(
+        PostMeal,
+        on_delete=models.CASCADE,
+        related_name="entries",
+    )
+    name = models.CharField(max_length=150)
+    servings = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        default=Decimal("1"),
+        validators=[MinValueValidator(Decimal("0.01"))],
+    )
+    calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    carbohydrate_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    fat_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
+    position = models.PositiveSmallIntegerField(default=1)
+
+    class Meta:
+        ordering = ("position", "id")
+
+    def __str__(self):
+        return f"{self.name} x{self.servings}"
+
+
+class PostPlannerEntry(models.Model):
+    """What a posted planner item looked like the moment it was posted.
+
+    `is_complete` is frozen as a boolean instead of copying `completed_at`: the
+    minute a task was ticked is not feed material, and an event can never be
+    completed at all, so the timestamp is structurally absent for half of them.
+
+    Notes are not copied here, nor from a session's exercises. Those fields were
+    written by people who had no social feature to consider, and carrying them
+    into a post would disclose old text retroactively.
+    """
+
+    post = models.OneToOneField(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="planner",
+    )
+    kind = models.CharField(max_length=10, choices=PlannerEntry.Kind.choices)
+    title = models.CharField(max_length=150)
+    category = models.CharField(max_length=20, choices=PlannerCategory.choices)
+    scheduled_date = models.DateField()
+    #: Null means the day was enough, exactly as on the entry it was taken from.
+    scheduled_time = models.TimeField(null=True, blank=True)
+    is_complete = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.scheduled_date}: {self.title}"

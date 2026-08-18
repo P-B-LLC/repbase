@@ -34,6 +34,14 @@ from .models import (
     WorkoutSchedule,
     WorkoutSession,
     WorkoutTemplate,
+    Block,
+    Follow,
+    Post,
+    PostMeal,
+    PostMealEntry,
+    PostPlannerEntry,
+    PostWorkout,
+    PostWorkoutExercise,
     normalize_gym_text,
 )
 
@@ -1179,3 +1187,473 @@ class ExerciseProgressPointSerializer(serializers.Serializer):
     #: workout. Grouping by date instead would merge two sessions trained on
     #: the same day into a single point.
     session = serializers.IntegerField()
+
+
+#: Belongs beside PUBLIC_KILOGRAMS and NUTRITION_DECIMAL at lines 431-438, and
+#: is down here only because this block is appended. Same 12/2 shape as
+#: ExerciseProgressPointSerializer.volume_kg, so one lift's volume has one
+#: shape wherever the API reports it.
+VOLUME_DECIMAL = serializers.DecimalField(max_digits=12, decimal_places=2)
+
+
+def nutrition_amount(row, field):
+    """One food's contribution to a meal: its per-serving figure times servings.
+
+    The arithmetic `FoodEntrySerializer._total` runs on a live entry, lifted out
+    of that class so a posted meal and the meal it was copied from add up the
+    same way. Returns the raw Decimal; the caller renders it, because a meal
+    total is the sum of these and strings do not add.
+    """
+    return (getattr(row, field) or Decimal("0")) * (row.servings or Decimal("0"))
+
+
+class PostWorkoutExerciseSerializer(serializers.ModelSerializer):
+    """One exercise inside a posted workout."""
+
+    # Declared rather than left to `read_only_fields`, which strips `allow_null`
+    # off a model field it marks read-only. Without these the schema promises
+    # numbers where a bodyweight set, an unlogged set and a lifting exercise all
+    # send null, and every such post fails to decode in a generated client.
+    top_set_weight_kg = serializers.DecimalField(
+        max_digits=7, decimal_places=2, read_only=True, allow_null=True
+    )
+    top_set_reps = serializers.IntegerField(read_only=True, allow_null=True)
+    total_reps = serializers.IntegerField(read_only=True, allow_null=True)
+    volume_kg = serializers.DecimalField(
+        max_digits=12, decimal_places=2, read_only=True, allow_null=True
+    )
+    distance_km = serializers.DecimalField(
+        max_digits=7, decimal_places=3, read_only=True, allow_null=True
+    )
+
+    class Meta:
+        model = PostWorkoutExercise
+        fields = [
+            "id",
+            "name",
+            "order",
+            "set_count",
+            "top_set_weight_kg",
+            "top_set_reps",
+            "total_reps",
+            "volume_kg",
+            "distance_km",
+        ]
+        read_only_fields = ["id", "name", "order", "set_count"]
+
+
+class PostWorkoutSerializer(serializers.ModelSerializer):
+    """A posted workout, frozen at the moment it was posted.
+
+    The three totals are summed from the exercises nested underneath rather
+    than stored, the way `FoodMealSerializer` sums a meal's foods, so a figure
+    printed under a card cannot disagree with the rows printed inside it. They
+    walk `exercises` and nothing else, so a page of them costs no queries as
+    long as the feed prefetches that relation.
+
+    There is no `id` here or on the other two snapshots: each is one-to-one with
+    its post, the post's id already identifies it, and an id in this position
+    invites a client into thinking it can fetch the workout it came from.
+    """
+
+    workout_type = serializers.CharField(read_only=True, allow_null=True)
+    duration_seconds = serializers.IntegerField(read_only=True, allow_null=True)
+    cardio_machine = serializers.CharField(read_only=True, allow_null=True)
+    cardio_seconds = serializers.IntegerField(read_only=True, allow_null=True)
+    cardio_distance_km = serializers.DecimalField(
+        max_digits=7, decimal_places=3, read_only=True, allow_null=True
+    )
+    route_distance_km = serializers.DecimalField(
+        max_digits=7, decimal_places=3, read_only=True, allow_null=True
+    )
+    pace_seconds_per_km = serializers.IntegerField(read_only=True, allow_null=True)
+    elevation_gain_m = serializers.DecimalField(
+        max_digits=7, decimal_places=1, read_only=True, allow_null=True
+    )
+    exercises = PostWorkoutExerciseSerializer(many=True, read_only=True)
+    exercise_count = serializers.SerializerMethodField()
+    total_set_count = serializers.SerializerMethodField()
+    total_volume_kg = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostWorkout
+        fields = [
+            "title",
+            "workout_type",
+            "performed_at",
+            "duration_seconds",
+            "cardio_machine",
+            "cardio_seconds",
+            "cardio_distance_km",
+            "route_distance_km",
+            "pace_seconds_per_km",
+            "elevation_gain_m",
+            "exercises",
+            "exercise_count",
+            "total_set_count",
+            "total_volume_kg",
+        ]
+        read_only_fields = ["title", "performed_at", "exercises"]
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_exercise_count(self, snapshot):
+        return len(snapshot.exercises.all())
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_total_set_count(self, snapshot):
+        return sum(exercise.set_count for exercise in snapshot.exercises.all())
+
+    @extend_schema_field(serializers.DecimalField(
+        max_digits=12, decimal_places=2, allow_null=True
+    ))
+    def get_total_volume_kg(self, snapshot):
+        # Null, not zero, when no exercise logged a load: a bodyweight session
+        # and a session nobody filled in must not both read "0 kg".
+        volumes = [
+            exercise.volume_kg
+            for exercise in snapshot.exercises.all()
+            if exercise.volume_kg is not None
+        ]
+        if not volumes:
+            return None
+        return VOLUME_DECIMAL.to_representation(sum(volumes))
+
+
+class PostMealEntrySerializer(serializers.ModelSerializer):
+    """One food inside a posted meal, per serving with its servings beside it."""
+
+    total_calories = serializers.SerializerMethodField()
+    total_protein_grams = serializers.SerializerMethodField()
+    total_carbohydrate_grams = serializers.SerializerMethodField()
+    total_fat_grams = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostMealEntry
+        fields = [
+            "id",
+            "name",
+            "servings",
+            "calories",
+            "protein_grams",
+            "carbohydrate_grams",
+            "fat_grams",
+            "total_calories",
+            "total_protein_grams",
+            "total_carbohydrate_grams",
+            "total_fat_grams",
+            "position",
+        ]
+        read_only_fields = [
+            "id",
+            "name",
+            "servings",
+            "calories",
+            "protein_grams",
+            "carbohydrate_grams",
+            "fat_grams",
+            "position",
+        ]
+
+    def _total(self, entry, field):
+        return NUTRITION_DECIMAL.to_representation(nutrition_amount(entry, field))
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_calories(self, entry):
+        return self._total(entry, "calories")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_protein_grams(self, entry):
+        return self._total(entry, "protein_grams")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_carbohydrate_grams(self, entry):
+        return self._total(entry, "carbohydrate_grams")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_fat_grams(self, entry):
+        return self._total(entry, "fat_grams")
+
+
+class PostMealSerializer(serializers.ModelSerializer):
+    """A posted meal, frozen at the moment it was posted.
+
+    Totals are derived from the foods nested underneath, exactly as
+    `FoodMealSerializer` derives them from a live meal, and rendered through the
+    same `NUTRITION_DECIMAL` so a frozen calorie count has the same shape on the
+    wire as a live one.
+    """
+
+    entries = PostMealEntrySerializer(many=True, read_only=True)
+    total_calories = serializers.SerializerMethodField()
+    total_protein_grams = serializers.SerializerMethodField()
+    total_carbohydrate_grams = serializers.SerializerMethodField()
+    total_fat_grams = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostMeal
+        fields = [
+            "name",
+            "date",
+            "entries",
+            "total_calories",
+            "total_protein_grams",
+            "total_carbohydrate_grams",
+            "total_fat_grams",
+        ]
+        read_only_fields = ["name", "date", "entries"]
+
+    def _total(self, snapshot, field):
+        total = sum(
+            nutrition_amount(entry, field) for entry in snapshot.entries.all()
+        ) or Decimal("0")
+        return NUTRITION_DECIMAL.to_representation(total)
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_calories(self, snapshot):
+        return self._total(snapshot, "calories")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_protein_grams(self, snapshot):
+        return self._total(snapshot, "protein_grams")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_carbohydrate_grams(self, snapshot):
+        return self._total(snapshot, "carbohydrate_grams")
+
+    @extend_schema_field(serializers.DecimalField(max_digits=10, decimal_places=2))
+    def get_total_fat_grams(self, snapshot):
+        return self._total(snapshot, "fat_grams")
+
+
+class PostPlannerEntrySerializer(serializers.ModelSerializer):
+    """A posted planner item, frozen at the moment it was posted."""
+
+    kind = serializers.CharField(read_only=True)
+    category = serializers.CharField(read_only=True)
+    scheduled_time = serializers.TimeField(read_only=True, allow_null=True)
+
+    class Meta:
+        model = PostPlannerEntry
+        fields = [
+            "kind",
+            "title",
+            "category",
+            "scheduled_date",
+            "scheduled_time",
+            "is_complete",
+        ]
+        read_only_fields = ["title", "scheduled_date", "is_complete"]
+
+
+class PostSerializer(serializers.ModelSerializer):
+    """A post as anyone allowed to see it reads it.
+
+    `workout`, `meal` and `planner` are three keys side by side with exactly one
+    of them filled in, rather than one field whose type is chosen by `kind`. A
+    client built before a fourth kind existed then fails to draw that one post;
+    with a discriminated union it fails to decode the whole page around it.
+
+    `kind` and `visibility` go out as plain strings for the same reason: a value
+    added later should be a string the client does not recognise, not a decoding
+    error. Requests still take a closed set — see `CreatePostSerializer`.
+
+    Every field here is read-only. A post is created from a source it does not
+    carry and edited through `UpdatePostSerializer`, so there is no shape in
+    which this serializer accepts anything.
+    """
+
+    author = PublicRepbaseUserSerializer(read_only=True)
+    kind = serializers.CharField(read_only=True)
+    visibility = serializers.CharField(read_only=True)
+    # The reverse one-to-one raises rather than returning None when the snapshot
+    # is a different kind, which DRF turns into a null for a field that says it
+    # allows one. Saying so is also what puts the null in the schema.
+    workout = PostWorkoutSerializer(read_only=True, allow_null=True)
+    meal = PostMealSerializer(read_only=True, allow_null=True)
+    planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
+    source_id = serializers.SerializerMethodField()
+    viewer_follows_author = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Post
+        fields = [
+            "id",
+            "author",
+            "kind",
+            "caption",
+            "visibility",
+            "workout",
+            "meal",
+            "planner",
+            "source_id",
+            "viewer_follows_author",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "author",
+            "kind",
+            "caption",
+            "visibility",
+            "workout",
+            "meal",
+            "planner",
+            "source_id",
+            "viewer_follows_author",
+            "created_at",
+            "updated_at",
+        ]
+
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
+    def get_source_id(self, post):
+        """The workout, meal or planner entry this was made from, for its author.
+
+        Null for everyone else, and null again once the source is deleted. Where
+        a stranger's post came from is not a stranger's business; the author
+        gets it so their own workout can show that it has been posted, and
+        `kind` already says which of the three tables the id belongs to.
+
+        Null as well when the context carries no request — a post rendered
+        outside one, from a shell or a management command, shows no source
+        rather than showing everybody's.
+        """
+        request = self.context.get("request")
+        if request is None:
+            return None
+        # Django caches the reverse one-to-one on the user object, and the
+        # request holds one user, so this is a query for the page rather than
+        # one per post. It is also None for an anonymous user, which the
+        # comparison below then refuses.
+        profile = getattr(request.user, "repbase_profile", None)
+        if profile is None or post.author_id != profile.id:
+            return None
+        return (
+            post.source_session_id
+            or post.source_meal_id
+            or post.source_planner_entry_id
+        )
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_follows_author(self, post):
+        """Whether the reader follows this post's author.
+
+        Read off the annotation `views.visible_posts_for` already puts on every
+        row it returns, so a page of fifty costs the one subquery that decided
+        those fifty were visible in the first place. Asking the follow table per
+        row is the one thing this field must never do.
+
+        False when the annotation is absent, which happens on exactly one path:
+        the author-scoped queryset behind PATCH and DELETE. Those return the
+        reader's own post, and nobody follows themself, so false is the true
+        answer there rather than a stand-in for one.
+        """
+        return bool(getattr(post, "viewer_follows_author", False))
+
+
+class CreatePostSerializer(serializers.Serializer):
+    """What to post, and who may see it.
+
+    A reference and nothing else. The server reads the source itself and builds
+    the snapshot from it, so no client can decide what a post says it did —
+    accepting the content here would be accepting a five-hundred-kilogram squat
+    from anyone who could type one.
+    """
+
+    kind = serializers.ChoiceField(choices=Post.Kind.choices)
+    source_id = serializers.IntegerField(min_value=1)
+    caption = serializers.CharField(
+        max_length=300,
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+    visibility = serializers.ChoiceField(
+        choices=Post.Visibility.choices,
+        required=False,
+        default=Post.Visibility.PUBLIC,
+    )
+
+    def validate_caption(self, value):
+        return value.strip()
+
+    # There is deliberately no `validate` resolving `source_id` here. Which
+    # table the id belongs to depends on `kind`, so the lookup has to happen
+    # after both fields are known - and the view has to load that row anyway,
+    # with its sets or foods prefetched, to build the snapshot from it. Doing it
+    # here as well would read the row twice and leave the refusals in one of the
+    # two places unreachable. `views.source_for` is the single place that
+    # resolves a source and the single place that refuses one.
+
+
+class UpdatePostSerializer(serializers.ModelSerializer):
+    """The two things about a post that can still change.
+
+    The snapshot is not among them. It is the record of what happened, and one
+    that could be edited into a different workout after people had read it would
+    be worth nothing as a record.
+    """
+
+    visibility = serializers.ChoiceField(
+        choices=Post.Visibility.choices,
+        required=False,
+    )
+
+    class Meta:
+        model = Post
+        fields = ["caption", "visibility"]
+
+    def validate_caption(self, value):
+        return value.strip()
+
+
+class FollowSerializer(serializers.ModelSerializer):
+    """The record that one person follows another.
+
+    Response only. Both people are named by the URL and the token, so a request
+    body would carry nothing, and the checks a follow needs — not yourself, not
+    someone either of you has blocked — cannot be made from a body that names
+    nobody. They belong in the view.
+    """
+
+    follower = serializers.PrimaryKeyRelatedField(read_only=True)
+    following = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = Follow
+        fields = ["id", "follower", "following", "created_at"]
+        read_only_fields = ["id", "follower", "following", "created_at"]
+
+
+class BlockSerializer(serializers.ModelSerializer):
+    """One person the requester has blocked.
+
+    `blocked_user` is nested beside the plain id because the only screen that
+    reads this list is a list of people, and a page of bare ids would be a
+    profile fetch each. The id stays because that is what a client sends back to
+    lift the block.
+    """
+
+    blocker = serializers.PrimaryKeyRelatedField(read_only=True)
+    blocked = serializers.PrimaryKeyRelatedField(queryset=RepbaseUser.objects.all())
+    blocked_user = PublicRepbaseUserSerializer(source="blocked", read_only=True)
+
+    class Meta:
+        model = Block
+        fields = ["id", "blocker", "blocked", "blocked_user", "created_at"]
+        read_only_fields = ["id", "blocker", "blocked_user", "created_at"]
+
+    def validate_blocked(self, value):
+        if value.id == self.context["request"].user.repbase_profile.id:
+            raise serializers.ValidationError("You cannot block yourself.")
+        return value
+
+    def validate(self, attrs):
+        # Pre-checked so a second tap on Block is a 400 naming the field, rather
+        # than the unique constraint surfacing as an unhandled 500.
+        blocker = self.context["request"].user.repbase_profile
+        if Block.objects.filter(blocker=blocker, blocked=attrs["blocked"]).exists():
+            raise serializers.ValidationError(
+                {"blocked": "You have already blocked this person."}
+            )
+        return attrs
