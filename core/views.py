@@ -2072,7 +2072,10 @@ class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         if self.request.query_params.get("include_retired") not in ("true", "1"):
             queryset = queryset.filter(retired_at__isnull=True)
 
-        return queryset
+        # Ordered explicitly. Annotating drops the model's Meta ordering, and
+        # an unordered queryset makes paging non-deterministic: the same row
+        # can appear on two pages or on none.
+        return queryset.order_by("kind", "name", "pk")
 
     def perform_create(self, serializer):
         gear = serializer.save(owner=self.owner_profile())

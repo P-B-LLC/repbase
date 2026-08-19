@@ -5402,6 +5402,9 @@ components:
         workout:
           type: integer
           nullable: true
+        gear:
+          type: integer
+          nullable: true
     PatchedWorkoutTemplateRequest:
       type: object
       properties:
@@ -6962,6 +6965,15 @@ components:
           pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
           readOnly: true
           nullable: true
+        recorded_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,3})?$
+          readOnly: true
+          nullable: true
+        gear:
+          type: integer
+          nullable: true
         route_distance_km:
           type: number
           format: double
@@ -7008,7 +7020,7 @@ components:
             $ref: '#/components/schemas/SessionSplit'
           readOnly: true
         logged_set_count:
-          type: string
+          type: integer
           readOnly: true
         created_at:
           type: string
@@ -7035,6 +7047,7 @@ components:
       - moving_pace_seconds_per_km
       - moving_seconds
       - pace_seconds_per_km
+      - recorded_distance_km
       - repbase_user
       - route_distance_km
       - splits
@@ -7046,6 +7059,9 @@ components:
       type: object
       properties:
         workout:
+          type: integer
+          nullable: true
+        gear:
           type: integer
           nullable: true
     WorkoutTemplate:

@@ -1145,6 +1145,8 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "cardio_seconds",
             "cardio_distance_km",
             "health_distance_km",
+            "recorded_distance_km",
+            "gear",
             "route_distance_km",
             "pace_seconds_per_km",
             "moving_pace_seconds_per_km",
@@ -1159,6 +1161,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
         read_only_fields = [
+            "recorded_distance_km",
             "id",
             "repbase_user",
             "logged_set_count",
@@ -1190,7 +1193,6 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         return value
 
 
-    @extend_schema_field(serializers.IntegerField())
     def validate_gear(self, value):
         """Gear must be the user's, and must suit the sport.
 
@@ -1217,6 +1219,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
                 )
         return value
 
+    @extend_schema_field(serializers.IntegerField())
     def get_logged_set_count(self, session):
         """How many sets this session actually recorded.
 
