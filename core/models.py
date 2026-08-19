@@ -444,11 +444,40 @@ class WorkoutSession(models.Model):
         blank=True,
         validators=[MinValueValidator(0)],
     )
+    #: Apple Health's own identifier, when this session came from there
+    #: rather than being recorded in Repbase. Kept so importing the same
+    #: workout twice finds the row it already made instead of making another.
+    health_external_id = models.CharField(
+        max_length=64,
+        null=True,
+        blank=True,
+        db_index=True,
+    )
+    #: Distance as Health reported it.
+    #:
+    #: Separate from route_distance_km, which Repbase computes from GPS points
+    #: an imported workout does not have, and from cardio_distance_km, which is
+    #: read off a machine display and belongs to a finisher rather than to the
+    #: session itself.
+    health_distance_km = models.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ("-created_at",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("repbase_user", "health_external_id"),
+                condition=models.Q(health_external_id__isnull=False),
+                name="unique_health_workout_per_user",
+            )
+        ]
 
     def clean(self):
         if self.started_at and self.ended_at and self.ended_at < self.started_at:
@@ -1916,3 +1945,39 @@ def food_meals_for_day(owner, date, at_least=0):
         for offset in range(wanted - len(meals))
     ])
     return current()
+
+
+class DailyStepCount(models.Model):
+    """One day's steps, as Apple Health reported them.
+
+    Stored as a day and a total rather than as individual samples. Health
+    records the same steps from a phone and a watch separately, so the device
+    asks it for a de-duplicated sum and sends that one number here; keeping
+    the samples would mean re-deriving that sum on every read and getting it
+    wrong the first time someone wears both.
+
+    Steps are not something Repbase can produce on its own, so a day with no
+    row means Health was never asked, not that nobody walked.
+    """
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="daily_step_counts",
+    )
+    day = models.DateField(db_index=True)
+    steps = models.PositiveIntegerField(validators=[MinValueValidator(0)])
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-day",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("owner", "day"),
+                name="unique_step_count_per_day",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.owner}: {self.steps} steps on {self.day}"

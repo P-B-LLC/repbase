@@ -4,6 +4,7 @@ from decimal import Decimal
 
 from django.core.files.base import ContentFile
 from django.db import transaction
+from django.utils.dateparse import parse_date
 from django.db.models import Count, Exists, OuterRef, Q
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
@@ -25,6 +26,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from .models import (
     BodyWeightEntry,
+    DailyStepCount,
     Exercise,
     RepbaseUser,
     SessionExercise,
@@ -61,6 +63,10 @@ from .serializers import (
     ALLOWED_PHOTO_TYPES,
     AuthResponseSerializer,
     BodyWeightEntrySerializer,
+    DailyStepCountRecordSerializer,
+    HealthImportResultSerializer,
+    HealthWorkoutImportSerializer,
+    DailyStepCountSerializer,
     ExerciseProgressPointSerializer,
     ExerciseSerializer,
     LoginSerializer,
@@ -1858,3 +1864,147 @@ class BlockViewSet(
                 Q(follower=blocker, following=blocked)
                 | Q(follower=blocked, following=blocker)
             ).delete()
+
+
+class DailyStepCountViewSet(
+    OwnedViewSetMixin,
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Steps as Health reported them. Read here, written only by ``record``."""
+
+    queryset = DailyStepCount.objects.select_related("owner")
+    serializer_class = DailyStepCountSerializer
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="since",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Only days on or after this date. Without it every day "
+                    "ever recorded comes back, which grows without bound."
+                ),
+            )
+        ]
+    )
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    def get_queryset(self):
+        queryset = self.scope_to_owner(super().get_queryset())
+        since = self.request.query_params.get("since")
+        if since:
+            parsed = parse_date(since)
+            if parsed is not None:
+                queryset = queryset.filter(day__gte=parsed)
+        return queryset
+
+    @extend_schema(
+        request=DailyStepCountRecordSerializer,
+        # 204, not the stored rows. The rows would come back wrapped in the
+        # pagination envelope this view declares, which would be a lie: the
+        # action returns everything it touched in one response and paginates
+        # nothing. The client re-reads through `list` regardless.
+        responses={204: None},
+    )
+    @action(detail=False, methods=["post"])
+    def record(self, request):
+        """Store a batch of days, replacing any already held for those days.
+
+        Health is the source of truth for steps, so a day arriving again
+        overwrites rather than adds. Anything else would double a total every
+        time the app reopened.
+        """
+        payload = DailyStepCountRecordSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        owner = self.owner_profile()
+        days = payload.validated_data["days"]
+
+        with transaction.atomic():
+            for entry in days:
+                DailyStepCount.objects.update_or_create(
+                    owner=owner,
+                    day=entry["day"],
+                    defaults={"steps": entry["steps"]},
+                )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class HealthWorkoutImportView(APIView):
+    """Takes workouts Apple Health holds and keeps the ones Repbase does not.
+
+    The device sends everything Health reported for the window; deciding what
+    is already known happens here, where the sessions are, rather than on the
+    device, which would have to download its own history to find out.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=HealthWorkoutImportSerializer,
+        responses=HealthImportResultSerializer,
+    )
+    def post(self, request):
+        payload = HealthWorkoutImportSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        owner = profile_for(request.user)
+        incoming = payload.validated_data["workouts"]
+
+        imported = 0
+        skipped_overlapping = 0
+        already_imported = 0
+
+        with transaction.atomic():
+            for entry in incoming:
+                if WorkoutSession.objects.filter(
+                    repbase_user=owner,
+                    health_external_id=entry["external_id"],
+                ).exists():
+                    already_imported += 1
+                    continue
+
+                # A run tracked in Repbase and by the Watch is one run. The
+                # session Repbase recorded itself wins: it has the route and
+                # the climb, and this one would be the same effort counted
+                # twice. Only sessions Repbase recorded are compared against,
+                # so two imported workouts that happen to abut do not cancel
+                # each other out.
+                if WorkoutSession.objects.filter(
+                    repbase_user=owner,
+                    health_external_id__isnull=True,
+                    started_at__lt=entry["ended_at"],
+                    ended_at__gt=entry["started_at"],
+                ).exists():
+                    skipped_overlapping += 1
+                    continue
+
+                activity = entry["activity"]
+                template, _ = WorkoutTemplate.objects.get_or_create(
+                    owner=owner,
+                    name=WorkoutTemplate.WorkoutType(activity).label,
+                    defaults={"workout_type": activity},
+                )
+                WorkoutSession.objects.create(
+                    repbase_user=owner,
+                    workout=template,
+                    status=WorkoutSession.Status.COMPLETED,
+                    started_at=entry["started_at"],
+                    ended_at=entry["ended_at"],
+                    health_external_id=entry["external_id"],
+                    health_distance_km=entry.get("distance_km"),
+                )
+                imported += 1
+
+        return Response(
+            HealthImportResultSerializer(
+                {
+                    "imported": imported,
+                    "skipped_overlapping": skipped_overlapping,
+                    "already_imported": already_imported,
+                }
+            ).data
+        )

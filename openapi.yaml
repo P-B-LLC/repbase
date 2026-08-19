@@ -2498,6 +2498,39 @@ paths:
               schema:
                 $ref: '#/components/schemas/WorkoutSession'
           description: ''
+  /api/v1/sessions/import-health/:
+    post:
+      operationId: sessions_import_health_create
+      description: |-
+        Takes workouts Apple Health holds and keeps the ones Repbase does not.
+
+        The device sends everything Health reported for the window; deciding what
+        is already known happens here, where the sessions are, rather than on the
+        device, which would have to download its own history to find out.
+      tags:
+      - sessions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HealthWorkoutImportRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/HealthWorkoutImportRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/HealthWorkoutImportRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthImportResult'
+          description: ''
   /api/v1/set-entries/:
     get:
       operationId: set_entries_list
@@ -2944,6 +2977,65 @@ paths:
         required: true
       tags:
       - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/step-counts/:
+    get:
+      operationId: step_counts_list
+      description: Steps as Health reported them. Read here, written only by ``record``.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - in: query
+        name: since
+        schema:
+          type: string
+          format: date
+        description: Only days on or after this date. Without it every day ever recorded
+          comes back, which grows without bound.
+      tags:
+      - step-counts
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedDailyStepCountList'
+          description: ''
+  /api/v1/step-counts/record/:
+    post:
+      operationId: step_counts_record_create
+      description: |-
+        Store a batch of days, replacing any already held for those days.
+
+        Health is the source of truth for steps, so a day arriving again
+        overwrites rather than adds. Anything else would double a total every
+        time the app reopened.
+      tags:
+      - step-counts
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DailyStepCountRecordRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/DailyStepCountRecordRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/DailyStepCountRecordRequest'
+        required: true
       security:
       - tokenAuth: []
       - cookieAuth: []
@@ -3414,6 +3506,18 @@ paths:
           description: No response body
 components:
   schemas:
+    ActivityEnum:
+      enum:
+      - lifting
+      - running
+      - biking
+      - swimming
+      type: string
+      description: |-
+        * `lifting` - Lifting
+        * `running` - Running
+        * `biking` - Biking
+        * `swimming` - Swimming
     ApplySavedMealRequest:
       type: object
       description: |-
@@ -3656,6 +3760,66 @@ components:
       required:
       - kind
       - source_id
+    DailyStepCount:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        owner:
+          type: integer
+          readOnly: true
+        day:
+          type: string
+          format: date
+        steps:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - day
+      - id
+      - owner
+      - steps
+      - updated_at
+    DailyStepCountEntryRequest:
+      type: object
+      description: One day of steps on its way in from the device.
+      properties:
+        day:
+          type: string
+          format: date
+        steps:
+          type: integer
+          minimum: 0
+      required:
+      - day
+      - steps
+    DailyStepCountRecordRequest:
+      type: object
+      description: |-
+        A batch of days.
+
+        The device sends several at once because Health can backfill: a watch
+        synced after a day offline changes yesterday's total, not only today's.
+        Sending one day at a time would leave those corrections behind.
+      properties:
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyStepCountEntryRequest'
+      required:
+      - days
     DisciplinesEnum:
       enum:
       - powerlifting
@@ -4013,6 +4177,59 @@ components:
           maxLength: 100
       required:
       - name
+    HealthImportResult:
+      type: object
+      description: |-
+        What the import did, counted rather than described.
+
+        Three numbers rather than one, because "nothing happened" has three very
+        different causes and a user who imported nothing deserves to know which.
+      properties:
+        imported:
+          type: integer
+        skipped_overlapping:
+          type: integer
+        already_imported:
+          type: integer
+      required:
+      - already_imported
+      - imported
+      - skipped_overlapping
+    HealthWorkoutImportRequest:
+      type: object
+      properties:
+        workouts:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthWorkoutRequest'
+      required:
+      - workouts
+    HealthWorkoutRequest:
+      type: object
+      description: One finished workout on its way in from Apple Health.
+      properties:
+        external_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        activity:
+          $ref: '#/components/schemas/ActivityEnum'
+        started_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+        distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          nullable: true
+      required:
+      - activity
+      - ended_at
+      - external_id
+      - started_at
     LoginRequest:
       type: object
       properties:
@@ -4120,6 +4337,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BodyWeightEntry'
+    PaginatedDailyStepCountList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/DailyStepCount'
     PaginatedExerciseList:
       type: object
       required:
@@ -6363,6 +6603,12 @@ components:
           pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
           readOnly: true
           nullable: true
+        health_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          readOnly: true
+          nullable: true
         route_distance_km:
           type: number
           format: double
@@ -6429,6 +6675,7 @@ components:
       - elevation_gain_m
       - elevation_loss_m
       - ended_at
+      - health_distance_km
       - id
       - logged_set_count
       - max_speed_kmh

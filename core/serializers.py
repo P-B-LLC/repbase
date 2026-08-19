@@ -14,6 +14,7 @@ from drf_spectacular.utils import extend_schema_field
 from .models import (
     CardioMachine,
     BodyWeightEntry,
+    DailyStepCount,
     Exercise,
     RepbaseUser,
     SessionExercise,
@@ -1142,6 +1143,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "cardio_machine",
             "cardio_seconds",
             "cardio_distance_km",
+            "health_distance_km",
             "route_distance_km",
             "pace_seconds_per_km",
             "moving_pace_seconds_per_km",
@@ -1167,6 +1169,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "cardio_machine",
             "cardio_seconds",
             "cardio_distance_km",
+            "health_distance_km",
             "route_distance_km",
             "pace_seconds_per_km",
             "moving_pace_seconds_per_km",
@@ -1813,3 +1816,68 @@ class BlockSerializer(serializers.ModelSerializer):
                 {"blocked": "You have already blocked this person."}
             )
         return attrs
+
+
+class DailyStepCountSerializer(serializers.ModelSerializer):
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+
+    class Meta:
+        model = DailyStepCount
+        fields = ["id", "owner", "day", "steps", "created_at", "updated_at"]
+        read_only_fields = ["id", "owner", "created_at", "updated_at"]
+
+
+class DailyStepCountEntrySerializer(serializers.Serializer):
+    """One day of steps on its way in from the device."""
+
+    day = serializers.DateField()
+    steps = serializers.IntegerField(min_value=0)
+
+
+class DailyStepCountRecordSerializer(serializers.Serializer):
+    """A batch of days.
+
+    The device sends several at once because Health can backfill: a watch
+    synced after a day offline changes yesterday's total, not only today's.
+    Sending one day at a time would leave those corrections behind.
+    """
+
+    days = DailyStepCountEntrySerializer(many=True, allow_empty=True)
+
+
+class HealthWorkoutSerializer(serializers.Serializer):
+    """One finished workout on its way in from Apple Health."""
+
+    external_id = serializers.CharField(max_length=64)
+    activity = serializers.ChoiceField(choices=WorkoutTemplate.WorkoutType.choices)
+    started_at = serializers.DateTimeField()
+    ended_at = serializers.DateTimeField()
+    distance_km = serializers.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        required=False,
+        allow_null=True,
+    )
+
+    def validate(self, attrs):
+        if attrs["ended_at"] < attrs["started_at"]:
+            raise serializers.ValidationError(
+                {"ended_at": "End time cannot be before start time."}
+            )
+        return attrs
+
+
+class HealthWorkoutImportSerializer(serializers.Serializer):
+    workouts = HealthWorkoutSerializer(many=True, allow_empty=True)
+
+
+class HealthImportResultSerializer(serializers.Serializer):
+    """What the import did, counted rather than described.
+
+    Three numbers rather than one, because "nothing happened" has three very
+    different causes and a user who imported nothing deserves to know which.
+    """
+
+    imported = serializers.IntegerField()
+    skipped_overlapping = serializers.IntegerField()
+    already_imported = serializers.IntegerField()

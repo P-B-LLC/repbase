@@ -4,9 +4,11 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     BlockViewSet,
     BodyWeightEntryViewSet,
+    DailyStepCountViewSet,
     FeedViewSet,
     ExerciseProgressView,
     ExerciseViewSet,
+    HealthWorkoutImportView,
     PostViewSet,
     FoodEntryViewSet,
     FoodMealViewSet,
@@ -53,6 +55,7 @@ router.register("sessions", WorkoutSessionViewSet)
 router.register("session-exercises", SessionExerciseViewSet)
 router.register("set-entries", SetEntryViewSet)
 router.register("body-weight", BodyWeightEntryViewSet)
+router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
 urlpatterns = [
     path("auth/register/", RegisterView.as_view(), name="register"),
@@ -62,6 +65,11 @@ urlpatterns = [
     path("me/", MeView.as_view(), name="me"),
     path("me/photo/", MePhotoView.as_view(), name="me-photo"),
     path("food/goals/", NutritionGoalView.as_view(), name="nutrition-goals"),
+    path(
+        "sessions/import-health/",
+        HealthWorkoutImportView.as_view(),
+        name="import-health",
+    ),
     path(
         "progress/exercises/<int:exercise_id>/",
         ExerciseProgressView.as_view(),
