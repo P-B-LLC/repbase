@@ -1075,6 +1075,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     elevation_gain_m = serializers.FloatField(read_only=True, allow_null=True)
     elevation_loss_m = serializers.FloatField(read_only=True, allow_null=True)
     splits = SessionSplitSerializer(many=True, read_only=True)
+    logged_set_count = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkoutSession
@@ -1099,12 +1100,14 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "elevation_gain_m",
             "elevation_loss_m",
             "splits",
+            "logged_set_count",
             "created_at",
             "updated_at",
         ]
         read_only_fields = [
             "id",
             "repbase_user",
+            "logged_set_count",
             "workout_name",
             "status",
             "started_at",
@@ -1131,6 +1134,24 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Workout does not belong to this user.")
         return value
 
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_logged_set_count(self, session):
+        """How many sets this session actually recorded.
+
+        A session is finished by tapping Finish, not by logging anything, so a
+        completed session can hold nothing at all. Clients need to tell those
+        apart from real training without reading every set of every session.
+
+        Uses the annotation the list view adds when it is there, and counts
+        directly when it is not, so a single session read is still correct.
+        """
+        annotated = getattr(session, "logged_set_total", None)
+        if annotated is not None:
+            return annotated
+        return SetEntry.objects.filter(
+            session_exercise__session=session,
+        ).exclude(weight_kg__isnull=True, reps__isnull=True).count()
 
 class SessionRoutePointSerializer(serializers.ModelSerializer):
     class Meta:

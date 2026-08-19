@@ -913,9 +913,20 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     # Every session in a list reports distance, pace, climb and splits, and
     # each of those walks its route. Without prefetching, asking for a history
     # of runs issues a query per session per figure.
-    queryset = WorkoutSession.objects.select_related(
-        "repbase_user", "workout"
-    ).prefetch_related("route_points")
+    queryset = (
+        WorkoutSession.objects.select_related("repbase_user", "workout")
+        .prefetch_related("route_points")
+        # Counted in the same query rather than per session. A history of a
+        # hundred sessions would otherwise be a hundred extra counts.
+        .annotate(
+            logged_set_total=Count(
+                "session_exercises__sets",
+                filter=Q(session_exercises__sets__weight_kg__isnull=False)
+                | Q(session_exercises__sets__reps__isnull=False),
+                distinct=True,
+            )
+        )
+    )
     serializer_class = WorkoutSessionSerializer
     permission_classes = [IsAuthenticated]
     owner_lookup = "repbase_user"

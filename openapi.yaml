@@ -6353,6 +6353,9 @@ components:
           items:
             $ref: '#/components/schemas/SessionSplit'
           readOnly: true
+        logged_set_count:
+          type: integer
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -6372,6 +6375,7 @@ components:
       - elevation_loss_m
       - ended_at
       - id
+      - logged_set_count
       - max_speed_kmh
       - moving_pace_seconds_per_km
       - moving_seconds
