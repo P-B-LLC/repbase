@@ -1153,6 +1153,23 @@ class PlannerEntry(models.Model):
         indexes = [
             models.Index(fields=("owner", "scheduled_date")),
         ]
+        constraints = [
+            # One task per workout per day. The app puts a scheduled workout on
+            # the calendar automatically, and a client that could not see the
+            # entry it had already made added another on every launch --
+            # seventeen rows for one Tuesday before anyone noticed. Careful
+            # client code was what failed; this is the guarantee that does not
+            # depend on it.
+            #
+            # Conditional, because the rule is about workout tasks only. Two
+            # hand-written tasks on one day are ordinary, and an event that
+            # happens to name the same workout is a different kind of thing.
+            models.UniqueConstraint(
+                fields=("owner", "workout", "scheduled_date"),
+                condition=models.Q(kind="task", workout__isnull=False),
+                name="unique_workout_task_per_day",
+            )
+        ]
 
     def __str__(self):
         return f"{self.scheduled_date}: {self.title}"

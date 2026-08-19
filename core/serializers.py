@@ -922,6 +922,39 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
                         )
                     }
                 )
+
+        # The database refuses a second task for the same workout on the same
+        # day. Caught here so it comes back as a validation error naming the
+        # field, rather than as the IntegrityError escaping to a 500 -- which
+        # is exactly what a duplicate workout name used to do.
+        workout = attrs.get("workout", getattr(self.instance, "workout", None))
+        date = attrs.get(
+            "scheduled_date", getattr(self.instance, "scheduled_date", None)
+        )
+        # The idiom used elsewhere in this file. profile_for lives in views,
+        # and importing it here would make serializers and views import each
+        # other.
+        owner = getattr(self.instance, "owner", None) or (
+            self.context["request"].user.repbase_profile
+        )
+        if kind == PlannerEntry.Kind.TASK and workout is not None and date is not None:
+            clash = PlannerEntry.objects.filter(
+                owner=owner,
+                workout=workout,
+                scheduled_date=date,
+                kind=PlannerEntry.Kind.TASK,
+            )
+            if self.instance is not None:
+                clash = clash.exclude(pk=self.instance.pk)
+            if clash.exists():
+                raise serializers.ValidationError(
+                    {
+                        "workout": (
+                            "That workout is already on the planner for "
+                            f"{date}."
+                        )
+                    }
+                )
         return attrs
 
     def _apply_completion(self, instance, is_complete):

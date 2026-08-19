@@ -4573,7 +4573,9 @@ components:
         does not throw away the time it was done.
       properties:
         kind:
-          $ref: '#/components/schemas/PlannerEntryKindEnum'
+          allOf:
+          - $ref: '#/components/schemas/PlannerEntryKindEnum'
+          default: task
         title:
           type: string
           minLength: 1
@@ -4866,7 +4868,9 @@ components:
           type: integer
           readOnly: true
         kind:
-          $ref: '#/components/schemas/PlannerEntryKindEnum'
+          allOf:
+          - $ref: '#/components/schemas/PlannerEntryKindEnum'
+          default: task
         title:
           type: string
           maxLength: 150
@@ -4931,7 +4935,9 @@ components:
         does not throw away the time it was done.
       properties:
         kind:
-          $ref: '#/components/schemas/PlannerEntryKindEnum'
+          allOf:
+          - $ref: '#/components/schemas/PlannerEntryKindEnum'
+          default: task
         title:
           type: string
           minLength: 1
