@@ -371,6 +371,15 @@ class WorkoutSchedule(models.Model):
         blank=True,
     )
     notes = models.CharField(max_length=300, blank=True)
+    #: When this day's planner task was created, if it ever was.
+    #:
+    #: Set once and never cleared, including when the task is deleted. The
+    #: planner task is offered once per scheduled day; deleting it is an
+    #: answer, and without a record of having asked, "no task here" and "the
+    #: user removed the task" look identical and it comes back every launch.
+    #: The same reasoning as source_recurrence above: a day the user clears
+    #: stays cleared.
+    planner_synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

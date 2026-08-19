@@ -1951,6 +1951,38 @@ paths:
                 items:
                   $ref: '#/components/schemas/WorkoutSchedule'
           description: ''
+  /api/v1/schedules/sync-planner/:
+    post:
+      operationId: schedules_sync_planner_create
+      description: 'Put a planner task on every scheduled day in the range that has
+        not had one yet, and return the tasks that were created. Idempotent: a day
+        whose task already exists, or whose task the user deleted, is left alone.'
+      tags:
+      - schedules
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlannerSyncRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlannerSyncRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PlannerSyncRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PlannerEntry'
+          description: ''
   /api/v1/session-exercises/:
     get:
       operationId: session_exercises_list
@@ -4962,6 +4994,23 @@ components:
       required:
       - scheduled_date
       - title
+    PlannerSyncRequest:
+      type: object
+      description: |-
+        The range of scheduled days to give planner tasks to.
+
+        Named without the Request suffix: a serializer called
+        PlannerSyncRequestSerializer generates PlannerSyncRequestRequest.
+      properties:
+        start:
+          type: string
+          format: date
+        end:
+          type: string
+          format: date
+      required:
+      - end
+      - start
     Post:
       type: object
       description: |-

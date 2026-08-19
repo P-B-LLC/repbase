@@ -836,6 +836,24 @@ class WorkoutScheduleSerializer(serializers.ModelSerializer):
         return value
 
 
+class PlannerSyncSerializer(serializers.Serializer):
+    """The range of scheduled days to give planner tasks to.
+
+    Named without the Request suffix: a serializer called
+    PlannerSyncRequestSerializer generates PlannerSyncRequestRequest.
+    """
+
+    start = serializers.DateField()
+    end = serializers.DateField()
+
+    def validate(self, attrs):
+        if attrs["end"] < attrs["start"]:
+            raise serializers.ValidationError(
+                {"end": "The end of the range is before its start."}
+            )
+        return attrs
+
+
 class PlannerEntrySerializer(serializers.ModelSerializer):
     """A task or event on the planner.
 

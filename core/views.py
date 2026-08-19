@@ -84,6 +84,7 @@ from .serializers import (
     SavedFoodMealSerializer,
     PlanWeekSerializer,
     PlannerEntrySerializer,
+    PlannerSyncSerializer,
     WorkoutExerciseSerializer,
     WorkoutRecurrenceSerializer,
     WorkoutScheduleSerializer,
@@ -445,6 +446,75 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             .order_by("scheduled_date", "id")
         )
         return Response(WorkoutScheduleSerializer(schedules, many=True).data)
+
+    @extend_schema(
+        request=PlannerSyncSerializer,
+        responses=PlannerEntrySerializer(many=True),
+        description=(
+            "Put a planner task on every scheduled day in the range that has "
+            "not had one yet, and return the tasks that were created. "
+            "Idempotent: a day whose task already exists, or whose task the "
+            "user deleted, is left alone."
+        ),
+    )
+    @action(
+        detail=False,
+        methods=["post"],
+        url_path="sync-planner",
+        pagination_class=None,
+    )
+    def sync_planner(self, request):
+        """Create the planner tasks a range of scheduled workouts still needs.
+
+        The client used to do this: read the planner, work out which schedules
+        had no task, and post one for each. It could not tell a day the user
+        had cleared from a day never offered, so a deleted task came back on
+        the next launch. Only the server can answer that, because only the
+        server remembers having asked.
+        """
+        serializer = PlannerSyncSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        owner = self.owner_profile()
+        start = serializer.validated_data["start"]
+        end = serializer.validated_data["end"]
+
+        created = []
+        with transaction.atomic():
+            pending = (
+                WorkoutSchedule.objects.select_for_update()
+                .filter(
+                    owner=owner,
+                    scheduled_date__gte=start,
+                    scheduled_date__lte=end,
+                    planner_synced_at__isnull=True,
+                )
+                .select_related("workout")
+                .order_by("scheduled_date", "id")
+            )
+            for schedule in pending:
+                # A task may already exist from before this endpoint, or from a
+                # day the user made by hand. Adopt it rather than colliding
+                # with the uniqueness rule.
+                entry = PlannerEntry.objects.filter(
+                    owner=owner,
+                    workout=schedule.workout,
+                    scheduled_date=schedule.scheduled_date,
+                    kind=PlannerEntry.Kind.TASK,
+                ).first()
+                if entry is None:
+                    entry = PlannerEntry.objects.create(
+                        owner=owner,
+                        kind=PlannerEntry.Kind.TASK,
+                        title=schedule.workout.name,
+                        category=PlannerCategory.WORKOUT,
+                        scheduled_date=schedule.scheduled_date,
+                        workout=schedule.workout,
+                    )
+                    created.append(entry)
+                schedule.planner_synced_at = timezone.now()
+                schedule.save(update_fields=["planner_synced_at", "updated_at"])
+
+        return Response(PlannerEntrySerializer(created, many=True).data)
 
 
 @extend_schema_view(
