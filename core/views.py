@@ -5,7 +5,8 @@ from decimal import Decimal
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils.dateparse import parse_date
-from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models import Count, Exists, OuterRef, Q, Sum
+from django.db.models.functions import Coalesce
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
@@ -27,6 +28,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from .models import (
     BodyWeightEntry,
     DailyStepCount,
+    Gear,
     Exercise,
     RepbaseUser,
     SessionExercise,
@@ -64,6 +66,7 @@ from .serializers import (
     AuthResponseSerializer,
     BodyWeightEntrySerializer,
     DailyStepCountRecordSerializer,
+    GearSerializer,
     HealthImportResultSerializer,
     HealthWorkoutImportSerializer,
     DailyStepCountSerializer,
@@ -1162,6 +1165,14 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             )
 
         session.refresh_from_db()
+        # Store what the track came to. route_distance_km recomputes it from
+        # the points every time it is read, which is fine for one session and
+        # impossible to sum in SQL across every session a shoe was worn for.
+        distance = session.route_distance_km
+        if distance is not None:
+            session.recorded_distance_km = round(distance, 3)
+            session.save(update_fields=["recorded_distance_km", "updated_at"])
+
         # 200, matching the documented contract and the start/end actions.
         return Response(self.get_serializer(session).data)
 
@@ -1996,6 +2007,7 @@ class HealthWorkoutImportView(APIView):
                     ended_at=entry["ended_at"],
                     health_external_id=entry["external_id"],
                     health_distance_km=entry.get("distance_km"),
+                    recorded_distance_km=entry.get("distance_km"),
                 )
                 imported += 1
 
@@ -2008,3 +2020,78 @@ class HealthWorkoutImportView(APIView):
                 }
             ).data
         )
+
+
+class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+    """Shoes and bikes, and how far each has been.
+
+    Mileage is summed here rather than counted on the device: it is a property
+    of every session the gear was used for, and only the server has them all.
+    """
+
+    queryset = Gear.objects.select_related("owner")
+    serializer_class = GearSerializer
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="kind",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Only shoes, or only bikes.",
+                enum=["shoe", "bike"],
+            ),
+            OpenApiParameter(
+                name="include_retired",
+                type=bool,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Retired gear is left out unless this is true, so the "
+                    "picker offers only what is still in use."
+                ),
+            ),
+        ]
+    )
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    def get_queryset(self):
+        queryset = self.scope_to_owner(super().get_queryset()).annotate(
+            recorded_distance_total=Coalesce(
+                Sum("sessions__recorded_distance_km"),
+                Decimal("0"),
+            ),
+            recorded_session_count=Count("sessions", distinct=True),
+        )
+
+        kind = self.request.query_params.get("kind")
+        if kind in Gear.Kind.values:
+            queryset = queryset.filter(kind=kind)
+
+        if self.request.query_params.get("include_retired") not in ("true", "1"):
+            queryset = queryset.filter(retired_at__isnull=True)
+
+        return queryset
+
+    def perform_create(self, serializer):
+        gear = serializer.save(owner=self.owner_profile())
+        self._clear_other_defaults(gear)
+
+    def perform_update(self, serializer):
+        gear = serializer.save()
+        self._clear_other_defaults(gear)
+
+    def _clear_other_defaults(self, gear):
+        """Only one default per kind.
+
+        A constraint enforces this too, but a constraint can only refuse. This
+        is what makes choosing a new default work instead of failing.
+        """
+        if not gear.is_default:
+            return
+        Gear.objects.filter(
+            owner=gear.owner,
+            kind=gear.kind,
+            is_default=True,
+        ).exclude(pk=gear.pk).update(is_default=False)

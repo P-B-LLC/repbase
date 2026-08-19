@@ -15,6 +15,7 @@ from .models import (
     CardioMachine,
     BodyWeightEntry,
     DailyStepCount,
+    Gear,
     Exercise,
     RepbaseUser,
     SessionExercise,
@@ -1102,7 +1103,7 @@ class SessionSplitSerializer(serializers.Serializer):
     reports so a partial split is not mistaken for a fast one.
     """
 
-    kilometer = serializers.IntegerField(read_only=True)
+    number = serializers.IntegerField(read_only=True)
     seconds = serializers.FloatField(read_only=True)
     distance_km = serializers.FloatField(read_only=True)
 
@@ -1190,6 +1191,32 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
 
 
     @extend_schema_field(serializers.IntegerField())
+    def validate_gear(self, value):
+        """Gear must be the user's, and must suit the sport.
+
+        A bike is not worn on a run. Refusing here keeps a shoe's mileage
+        meaning what it says: the distance covered in that shoe, not the
+        distance of whatever session it happened to be attached to.
+        """
+        if value is None:
+            return value
+
+        owner = self.context["request"].user.repbase_profile
+        if value.owner_id != owner.id:
+            raise serializers.ValidationError("Gear does not belong to this user.")
+        if value.retired_at is not None:
+            raise serializers.ValidationError("That gear has been retired.")
+
+        workout = getattr(self.instance, "workout", None)
+        if workout is not None:
+            allowed = Gear.WORKOUT_TYPES.get(value.kind, ())
+            if workout.workout_type not in allowed:
+                raise serializers.ValidationError(
+                    f"A {value.get_kind_display().lower()} cannot be used for a "
+                    f"{workout.get_workout_type_display().lower()} session."
+                )
+        return value
+
     def get_logged_set_count(self, session):
         """How many sets this session actually recorded.
 
@@ -1881,3 +1908,48 @@ class HealthImportResultSerializer(serializers.Serializer):
     imported = serializers.IntegerField()
     skipped_overlapping = serializers.IntegerField()
     already_imported = serializers.IntegerField()
+
+
+class GearSerializer(serializers.ModelSerializer):
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    #: Everything on it, including whatever it arrived with. Annotated onto the
+    #: queryset so a list of ten shoes is one query rather than eleven.
+    total_distance_km = serializers.SerializerMethodField()
+    session_count = serializers.SerializerMethodField()
+    is_retired = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Gear
+        fields = [
+            "id",
+            "owner",
+            "kind",
+            "name",
+            "brand",
+            "notes",
+            "initial_distance_km",
+            "retire_at_km",
+            "is_default",
+            "retired_at",
+            "is_retired",
+            "total_distance_km",
+            "session_count",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "owner",
+            "is_retired",
+            "total_distance_km",
+            "session_count",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_total_distance_km(self, obj) -> float:
+        recorded = getattr(obj, "recorded_distance_total", None) or 0
+        return float(obj.initial_distance_km) + float(recorded)
+
+    def get_session_count(self, obj) -> int:
+        return getattr(obj, "recorded_session_count", 0)

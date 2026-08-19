@@ -27,6 +27,11 @@ MOVING_SPEED_FLOOR_MPS = 0.5
 #: still, so it is left out of moving time entirely.
 MAX_ROUTE_GAP_SECONDS = 60.0
 
+#: A mile in kilometres, exactly. Distances are stored in kilometres; this is
+#: what turns them into the unit the app reads in.
+MILE_KM = 1.609344
+
+
 class CardioMachine(models.TextChoices):
     """Machines a workout can finish on.
 
@@ -466,6 +471,28 @@ class WorkoutSession(models.Model):
         blank=True,
         validators=[MinValueValidator(0)],
     )
+    #: How far this session actually covered, whatever the source.
+    #:
+    #: route_distance_km computes the same thing from the stored track, but it
+    #: is a Python property and cannot be summed in SQL. Gear mileage is a sum
+    #: over every session a shoe or bike was used for, so it needs a column.
+    #: Written when a track is uploaded or a workout is imported, and left null
+    #: for a session that recorded no distance at all.
+    recorded_distance_km = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    #: The shoe or bike used. Null when the user did not say.
+    gear = models.ForeignKey(
+        "Gear",
+        on_delete=models.SET_NULL,
+        related_name="sessions",
+        null=True,
+        blank=True,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -739,10 +766,14 @@ class WorkoutSession(models.Model):
 
     @property
     def splits(self):
-        """Time taken for each kilometer, in order.
+        """Time taken for each mile, in order.
 
-        The per-kilometer breakdown is what shows whether a run was even or
-        started too fast, which a single average cannot.
+        The per-mile breakdown is what shows whether a run was even or started
+        too fast, which a single average cannot.
+
+        Distances are stored in kilometres throughout; the boundary is a mile
+        because that is the unit the app reads in, and a split has to be cut
+        where it will be shown or the numbers describe a run nobody did.
         """
         points = list(self.route_points.all())
         if len(points) < 2:
@@ -750,7 +781,7 @@ class WorkoutSession(models.Model):
 
         splits = []
         total_km = 0.0
-        next_boundary = 1.0
+        next_boundary = MILE_KM
         split_start = points[0].recorded_at
 
         for previous, current in zip(points, points[1:]):
@@ -776,24 +807,24 @@ class WorkoutSession(models.Model):
                 )
                 splits.append(
                     {
-                        "kilometer": len(splits) + 1,
+                        "number": len(splits) + 1,
                         "seconds": round(
                             (boundary_time - split_start).total_seconds(), 2
                         ),
-                        "distance_km": 1.0,
+                        "distance_km": round(MILE_KM, 6),
                     }
                 )
                 split_start = boundary_time
-                next_boundary += 1.0
+                next_boundary += MILE_KM
 
-        # Whatever is left after the last whole kilometer is still part of the
-        # run. Dropping it would hide the finish of anything that does not end
-        # exactly on a kilometer, which is almost every run.
-        remainder = total_km - (next_boundary - 1.0)
+        # Whatever is left after the last whole mile is still part of the run.
+        # Dropping it would hide the finish of anything that does not end
+        # exactly on a mile, which is almost every run.
+        remainder = total_km - (next_boundary - MILE_KM)
         if remainder >= 0.01:
             splits.append(
                 {
-                    "kilometer": len(splits) + 1,
+                    "number": len(splits) + 1,
                     "seconds": round(
                         (points[-1].recorded_at - split_start).total_seconds(), 2
                     ),
@@ -1981,3 +2012,82 @@ class DailyStepCount(models.Model):
 
     def __str__(self):
         return f"{self.owner}: {self.steps} steps on {self.day}"
+
+
+class Gear(models.Model):
+    """A shoe or a bike, and the distance put through it.
+
+    Kept as its own record rather than a label on a session so that mileage
+    survives: a shoe outlives any one run, and the question it exists to
+    answer is how much is left in it.
+    """
+
+    class Kind(models.TextChoices):
+        SHOE = "shoe", "Shoe"
+        BIKE = "bike", "Bike"
+
+    #: Which workout type each kind of gear belongs to. A bike is not worn on a
+    #: run, and attaching one to a swim is a mistake worth refusing rather than
+    #: quietly recording.
+    WORKOUT_TYPES = {
+        Kind.SHOE: (WorkoutTemplate.WorkoutType.RUNNING,),
+        Kind.BIKE: (WorkoutTemplate.WorkoutType.BIKING,),
+    }
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="gear",
+    )
+    kind = models.CharField(max_length=8, choices=Kind.choices)
+    name = models.CharField(max_length=80)
+    brand = models.CharField(max_length=60, blank=True)
+    notes = models.TextField(blank=True)
+    #: Distance already on it before Repbase started counting, so a shoe added
+    #: half way through its life reports its real age rather than starting over.
+    initial_distance_km = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        default=0,
+        validators=[MinValueValidator(0)],
+    )
+    #: The distance at which the user wants to be told it is due for
+    #: replacement. Optional and never guessed: how long a shoe lasts depends
+    #: on the shoe, the runner and the ground, and inventing a number here
+    #: would be advice dressed up as a measurement.
+    retire_at_km = models.DecimalField(
+        max_digits=8,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
+    )
+    #: Preselected for new sessions of the matching type.
+    is_default = models.BooleanField(default=False)
+    #: Set when the user retires it. Retired gear keeps its mileage and stops
+    #: being offered; nothing is deleted, because the history of what was worn
+    #: is the point.
+    retired_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("kind", "name")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("owner", "kind", "name"),
+                name="unique_gear_name_per_kind",
+            ),
+            models.UniqueConstraint(
+                fields=("owner", "kind"),
+                condition=models.Q(is_default=True),
+                name="one_default_gear_per_kind",
+            ),
+        ]
+
+    @property
+    def is_retired(self):
+        return self.retired_at is not None
+
+    def __str__(self):
+        return f"{self.owner}: {self.name}"

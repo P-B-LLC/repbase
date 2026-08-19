@@ -1042,6 +1042,202 @@ paths:
                 items:
                   $ref: '#/components/schemas/FoodMeal'
           description: ''
+  /api/v1/gear/:
+    get:
+      operationId: gear_list
+      description: |-
+        Shoes and bikes, and how far each has been.
+
+        Mileage is summed here rather than counted on the device: it is a property
+        of every session the gear was used for, and only the server has them all.
+      parameters:
+      - in: query
+        name: include_retired
+        schema:
+          type: boolean
+        description: Retired gear is left out unless this is true, so the picker offers
+          only what is still in use.
+      - in: query
+        name: kind
+        schema:
+          type: string
+          enum:
+          - bike
+          - shoe
+        description: Only shoes, or only bikes.
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - gear
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedGearList'
+          description: ''
+    post:
+      operationId: gear_create
+      description: |-
+        Shoes and bikes, and how far each has been.
+
+        Mileage is summed here rather than counted on the device: it is a property
+        of every session the gear was used for, and only the server has them all.
+      tags:
+      - gear
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GearRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GearRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GearRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gear'
+          description: ''
+  /api/v1/gear/{id}/:
+    get:
+      operationId: gear_retrieve
+      description: |-
+        Shoes and bikes, and how far each has been.
+
+        Mileage is summed here rather than counted on the device: it is a property
+        of every session the gear was used for, and only the server has them all.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gear.
+        required: true
+      tags:
+      - gear
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gear'
+          description: ''
+    put:
+      operationId: gear_update
+      description: |-
+        Shoes and bikes, and how far each has been.
+
+        Mileage is summed here rather than counted on the device: it is a property
+        of every session the gear was used for, and only the server has them all.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gear.
+        required: true
+      tags:
+      - gear
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GearRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/GearRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/GearRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gear'
+          description: ''
+    patch:
+      operationId: gear_partial_update
+      description: |-
+        Shoes and bikes, and how far each has been.
+
+        Mileage is summed here rather than counted on the device: it is a property
+        of every session the gear was used for, and only the server has them all.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gear.
+        required: true
+      tags:
+      - gear
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedGearRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedGearRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedGearRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Gear'
+          description: ''
+    delete:
+      operationId: gear_destroy
+      description: |-
+        Shoes and bikes, and how far each has been.
+
+        Mileage is summed here rather than counted on the device: it is a property
+        of every session the gear was used for, and only the server has them all.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this gear.
+        required: true
+      tags:
+      - gear
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/gyms/:
     get:
       operationId: gyms_list
@@ -4124,6 +4320,110 @@ components:
       required:
       - date
       - name
+    Gear:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        owner:
+          type: integer
+          readOnly: true
+        kind:
+          $ref: '#/components/schemas/GearKindEnum'
+        name:
+          type: string
+          maxLength: 80
+        brand:
+          type: string
+          maxLength: 60
+        notes:
+          type: string
+        initial_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,3})?$
+        retire_at_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,3})?$
+          nullable: true
+        is_default:
+          type: boolean
+          default: false
+        retired_at:
+          type: string
+          format: date-time
+          nullable: true
+        is_retired:
+          type: boolean
+          readOnly: true
+        total_distance_km:
+          type: number
+          format: double
+          readOnly: true
+        session_count:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - id
+      - is_retired
+      - kind
+      - name
+      - owner
+      - session_count
+      - total_distance_km
+      - updated_at
+    GearKindEnum:
+      enum:
+      - shoe
+      - bike
+      type: string
+      description: |-
+        * `shoe` - Shoe
+        * `bike` - Bike
+    GearRequest:
+      type: object
+      properties:
+        kind:
+          $ref: '#/components/schemas/GearKindEnum'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        brand:
+          type: string
+          maxLength: 60
+        notes:
+          type: string
+        initial_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,3})?$
+        retire_at_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,3})?$
+          nullable: true
+        is_default:
+          type: boolean
+          default: false
+        retired_at:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+      - kind
+      - name
     Gym:
       type: object
       description: A gym, and how many people say they train there.
@@ -4429,6 +4729,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/FoodMeal'
+    PaginatedGearList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Gear'
     PaginatedGymList:
       type: object
       required:
@@ -4802,6 +5125,36 @@ components:
           maximum: 9223372036854775807
           minimum: 0
           format: int64
+    PatchedGearRequest:
+      type: object
+      properties:
+        kind:
+          $ref: '#/components/schemas/GearKindEnum'
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        brand:
+          type: string
+          maxLength: 60
+        notes:
+          type: string
+        initial_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,3})?$
+        retire_at_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,3})?$
+          nullable: true
+        is_default:
+          type: boolean
+          default: false
+        retired_at:
+          type: string
+          format: date-time
+          nullable: true
     PatchedGymRequest:
       type: object
       description: A gym, and how many people say they train there.
@@ -6211,7 +6564,7 @@ components:
         The final entry may cover less than a kilometer, which `distance_km`
         reports so a partial split is not mistaken for a fast one.
       properties:
-        kilometer:
+        number:
           type: integer
           readOnly: true
         seconds:
@@ -6224,7 +6577,7 @@ components:
           readOnly: true
       required:
       - distance_km
-      - kilometer
+      - number
       - seconds
     SetEntry:
       type: object
@@ -6655,7 +7008,7 @@ components:
             $ref: '#/components/schemas/SessionSplit'
           readOnly: true
         logged_set_count:
-          type: integer
+          type: string
           readOnly: true
         created_at:
           type: string
