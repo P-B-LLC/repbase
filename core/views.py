@@ -1108,6 +1108,28 @@ class SessionExerciseViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return queryset.filter(session_id=session) if session else queryset
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="session_exercise",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="Return only the sets logged against this session exercise.",
+            ),
+            OpenApiParameter(
+                name="session",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return every set logged in this session, across all of "
+                    "its exercises. Lets a client read one whole session in a "
+                    "single request instead of one request per exercise."
+                ),
+            ),
+        ]
+    )
+)
 class SetEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = SetEntry.objects.select_related(
         "session_exercise__session__repbase_user"
@@ -1121,6 +1143,12 @@ class SetEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         session_exercise = self.request.query_params.get("session_exercise")
         if session_exercise:
             queryset = queryset.filter(session_exercise_id=session_exercise)
+        # Whole session at once. Showing what was lifted last time needs every
+        # set of the previous session, and asking exercise by exercise costs a
+        # request per exercise for data one query already has.
+        session = self.request.query_params.get("session")
+        if session:
+            queryset = queryset.filter(session_exercise__session_id=session)
         return queryset
 
 

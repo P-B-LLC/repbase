@@ -2476,6 +2476,18 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: session
+        schema:
+          type: integer
+        description: Return every set logged in this session, across all of its exercises.
+          Lets a client read one whole session in a single request instead of one
+          request per exercise.
+      - in: query
+        name: session_exercise
+        schema:
+          type: integer
+        description: Return only the sets logged against this session exercise.
       tags:
       - set-entries
       security:
