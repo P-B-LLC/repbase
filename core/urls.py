@@ -10,6 +10,7 @@ from .views import (
     ExerciseViewSet,
     GearViewSet,
     HealthWorkoutImportView,
+    TrainingStatsView,
     PostViewSet,
     FoodEntryViewSet,
     FoodMealViewSet,
@@ -67,6 +68,11 @@ urlpatterns = [
     path("me/", MeView.as_view(), name="me"),
     path("me/photo/", MePhotoView.as_view(), name="me-photo"),
     path("food/goals/", NutritionGoalView.as_view(), name="nutrition-goals"),
+    path(
+        "sessions/training-stats/",
+        TrainingStatsView.as_view(),
+        name="training-stats",
+    ),
     path(
         "sessions/import-health/",
         HealthWorkoutImportView.as_view(),

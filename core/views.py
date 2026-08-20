@@ -66,6 +66,7 @@ from .serializers import (
     AuthResponseSerializer,
     BodyWeightEntrySerializer,
     DailyStepCountRecordSerializer,
+    TrainingStatsSerializer,
     GearSerializer,
     HealthImportResultSerializer,
     HealthWorkoutImportSerializer,
@@ -963,6 +964,15 @@ class WorkoutRecurrenceViewSet(
     list=extend_schema(
         parameters=[
             OpenApiParameter(
+                name="since",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Only sessions on or after this date, so a client can ask "
+                    "for a week without paging its whole history."
+                ),
+            ),
+            OpenApiParameter(
                 name="status",
                 type=str,
                 location=OpenApiParameter.QUERY,
@@ -1012,6 +1022,18 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
+
+        # Bounded reads. Without this the only way to ask for the
+        # sessions of one week was to page every session ever
+        # recorded, which is what the dashboard used to do.
+        since = self.request.query_params.get("since")
+        if since:
+            parsed = parse_date(since)
+            if parsed is not None:
+                queryset = queryset.filter(
+                    Q(ended_at__date__gte=parsed)
+                    | Q(ended_at__isnull=True, started_at__date__gte=parsed)
+                )
         session_status = self.request.query_params.get("status")
         workout = self.request.query_params.get("workout")
         workout_name = self.request.query_params.get("workout_name")
@@ -2102,3 +2124,131 @@ class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             kind=gear.kind,
             is_default=True,
         ).exclude(pk=gear.pk).update(is_default=False)
+
+
+class TrainingStatsView(APIView):
+    """Totals, streaks and the six-week trend.
+
+    Counted here rather than on the device. The device used to page every
+    session it had ever recorded in order to reduce them, which is a growing
+    download for a handful of integers, and it meant two clients could
+    disagree about the same history.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="today",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "The device's own date. Week and month boundaries are cut "
+                    "against this rather than the server's clock, so the "
+                    "figures match the calendar the user is looking at."
+                ),
+            )
+        ],
+        responses=TrainingStatsSerializer,
+    )
+    def get(self, request):
+        owner = profile_for(request.user)
+        today = parse_date(request.query_params.get("today") or "") or timezone.localdate()
+
+        # Only what the reduction needs. Reading whole session objects here
+        # would repeat, on the server, the mistake this endpoint exists to fix.
+        rows = (
+            WorkoutSession.objects.filter(
+                repbase_user=owner,
+                status=WorkoutSession.Status.COMPLETED,
+            )
+            .annotate(
+                logged_sets=Count(
+                    "session_exercises__sets",
+                    filter=Q(session_exercises__sets__weight_kg__isnull=False)
+                    | Q(session_exercises__sets__reps__isnull=False),
+                    distinct=True,
+                )
+            )
+            .values(
+                "workout__name",
+                "workout__workout_type",
+                "started_at",
+                "ended_at",
+                "recorded_distance_km",
+                "logged_sets",
+            )
+        )
+
+        # One workout trained on one day, however many sessions that took.
+        # Counting sessions made starting Tuesday's workout six times read as
+        # six workouts, which is what it once did.
+        days = set()
+        for row in rows:
+            performed = row["ended_at"] or row["started_at"]
+            if performed is None:
+                continue
+
+            workout_type = row["workout__workout_type"]
+            if workout_type in WorkoutTemplate.DISTANCE_TYPES:
+                # A run logs no sets. Distance when it was measured, and the
+                # time it took when it was not: a treadmill run still happened.
+                started, ended = row["started_at"], row["ended_at"]
+                duration = (ended - started).total_seconds() if started and ended else 0
+                trained = (row["recorded_distance_km"] or 0) > 0 or duration > 0
+            else:
+                trained = row["logged_sets"] > 0
+
+            if trained:
+                days.add((row["workout__name"], timezone.localtime(performed).date()))
+
+        week_of = {}
+        for _, day in days:
+            start = week_start_for(day)
+            week_of[start] = week_of.get(start, 0) + 1
+
+        this_week = week_start_for(today)
+        active_weeks = set(week_of)
+
+        # The streak may run up to last week without this week having started.
+        cursor = this_week if this_week in active_weeks else this_week - timedelta(days=7)
+        current_streak = 0
+        while cursor in active_weeks:
+            current_streak += 1
+            cursor -= timedelta(days=7)
+
+        best_streak = 0
+        run = 0
+        previous = None
+        for start in sorted(active_weeks):
+            run = run + 1 if previous is not None and (start - previous).days == 7 else 1
+            best_streak = max(best_streak, run)
+            previous = start
+
+        six_weeks = [
+            week_of.get(this_week - timedelta(days=7 * offset), 0)
+            for offset in reversed(range(6))
+        ]
+
+        return Response(
+            TrainingStatsSerializer(
+                {
+                    "total_workouts": len(days),
+                    "completed_this_week": week_of.get(this_week, 0),
+                    "completed_this_month": sum(
+                        1
+                        for _, day in days
+                        if day.year == today.year and day.month == today.month
+                    ),
+                    "current_streak_weeks": current_streak,
+                    "best_streak_weeks": best_streak,
+                    "six_week_counts": six_weeks,
+                    "weekly_goal": WorkoutSchedule.objects.filter(
+                        owner=owner,
+                        scheduled_date__gte=this_week,
+                        scheduled_date__lt=this_week + timedelta(days=7),
+                    ).count(),
+                }
+            ).data
+        )

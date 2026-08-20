@@ -2349,6 +2349,13 @@ paths:
         schema:
           type: integer
       - in: query
+        name: since
+        schema:
+          type: string
+          format: date
+        description: Only sessions on or after this date, so a client can ask for
+          a week without paging its whole history.
+      - in: query
         name: status
         schema:
           type: string
@@ -2726,6 +2733,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthImportResult'
+          description: ''
+  /api/v1/sessions/training-stats/:
+    get:
+      operationId: sessions_training_stats_retrieve
+      description: |-
+        Totals, streaks and the six-week trend.
+
+        Counted here rather than on the device. The device used to page every
+        session it had ever recorded in order to reduce them, which is a growing
+        download for a handful of integers, and it meant two clients could
+        disagree about the same history.
+      parameters:
+      - in: query
+        name: today
+        schema:
+          type: string
+          format: date
+        description: The device's own date. Week and month boundaries are cut against
+          this rather than the server's clock, so the figures match the calendar the
+          user is looking at.
+      tags:
+      - sessions
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrainingStats'
           description: ''
   /api/v1/set-entries/:
     get:
@@ -6678,6 +6716,40 @@ components:
         * `planned` - Planned
         * `active` - Active
         * `completed` - Completed
+    TrainingStats:
+      type: object
+      description: |-
+        The training record, counted once on the server.
+
+        Every figure here used to be worked out on the device, which meant paging
+        the whole session history to the phone on every visit to the dashboard so
+        it could reduce it. The numbers are a property of the history, and the
+        history lives here.
+      properties:
+        total_workouts:
+          type: integer
+        completed_this_week:
+          type: integer
+        completed_this_month:
+          type: integer
+        current_streak_weeks:
+          type: integer
+        best_streak_weeks:
+          type: integer
+        six_week_counts:
+          type: array
+          items:
+            type: integer
+        weekly_goal:
+          type: integer
+      required:
+      - best_streak_weeks
+      - completed_this_month
+      - completed_this_week
+      - current_streak_weeks
+      - six_week_counts
+      - total_workouts
+      - weekly_goal
     UnitPreferenceEnum:
       enum:
       - metric

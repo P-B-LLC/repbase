@@ -1971,3 +1971,23 @@ class GearSerializer(serializers.ModelSerializer):
 
     def get_session_count(self, obj) -> int:
         return getattr(obj, "recorded_session_count", 0)
+
+
+class TrainingStatsSerializer(serializers.Serializer):
+    """The training record, counted once on the server.
+
+    Every figure here used to be worked out on the device, which meant paging
+    the whole session history to the phone on every visit to the dashboard so
+    it could reduce it. The numbers are a property of the history, and the
+    history lives here.
+    """
+
+    total_workouts = serializers.IntegerField()
+    completed_this_week = serializers.IntegerField()
+    completed_this_month = serializers.IntegerField()
+    current_streak_weeks = serializers.IntegerField()
+    best_streak_weeks = serializers.IntegerField()
+    #: Oldest first, six entries, ending with the week containing `today`.
+    six_week_counts = serializers.ListField(child=serializers.IntegerField())
+    #: Scheduled workouts in the week containing `today`.
+    weekly_goal = serializers.IntegerField()
