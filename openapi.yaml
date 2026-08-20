@@ -6924,6 +6924,10 @@ components:
         workout_name:
           type: string
           readOnly: true
+        workout_type:
+          type: string
+          readOnly: true
+          nullable: true
         status:
           allOf:
           - $ref: '#/components/schemas/StatusEnum'
@@ -7055,6 +7059,7 @@ components:
       - status
       - updated_at
       - workout_name
+      - workout_type
     WorkoutSessionRequest:
       type: object
       properties:

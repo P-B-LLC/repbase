@@ -1111,6 +1111,14 @@ class SessionSplitSerializer(serializers.Serializer):
 class WorkoutSessionSerializer(serializers.ModelSerializer):
     repbase_user = serializers.PrimaryKeyRelatedField(read_only=True)
     workout_name = serializers.CharField(source="workout.name", read_only=True)
+    #: The sport, so a client can tell what counts as having trained:
+    #: sets for a lifting session, distance or time for a run.
+    #: A session whose template was deleted has none, hence allow_null.
+    workout_type = serializers.CharField(
+        source="workout.workout_type",
+        read_only=True,
+        allow_null=True,
+    )
     duration_seconds = serializers.FloatField(read_only=True, allow_null=True)
     cardio_machine = serializers.ChoiceField(
         choices=CardioMachine.choices,
@@ -1137,6 +1145,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "repbase_user",
             "workout",
             "workout_name",
+            "workout_type",
             "status",
             "started_at",
             "ended_at",
@@ -1166,6 +1175,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             "repbase_user",
             "logged_set_count",
             "workout_name",
+            "workout_type",
             "status",
             "started_at",
             "ended_at",
