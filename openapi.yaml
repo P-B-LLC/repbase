@@ -4365,6 +4365,11 @@ components:
         session_count:
           type: integer
           readOnly: true
+        last_used_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -4378,6 +4383,7 @@ components:
       - id
       - is_retired
       - kind
+      - last_used_at
       - name
       - owner
       - session_count

@@ -5,7 +5,7 @@ from decimal import Decimal
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils.dateparse import parse_date
-from django.db.models import Count, Exists, OuterRef, Q, Sum
+from django.db.models import Count, Exists, Max, OuterRef, Q, Sum
 from django.db.models.functions import Coalesce
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
@@ -2063,6 +2063,10 @@ class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 Decimal("0"),
             ),
             recorded_session_count=Count("sessions", distinct=True),
+            # The most recent session it was attached to. Preselecting the
+            # last thing worn beats preselecting a flag the user set once and
+            # forgot, and it costs nothing extra: the join is already here.
+            last_used_at=Max("sessions__started_at"),
         )
 
         kind = self.request.query_params.get("kind")

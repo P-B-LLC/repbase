@@ -1929,6 +1929,9 @@ class GearSerializer(serializers.ModelSerializer):
     #: queryset so a list of ten shoes is one query rather than eleven.
     total_distance_km = serializers.SerializerMethodField()
     session_count = serializers.SerializerMethodField()
+    #: When this was last trained in, so a client can preselect what
+    #: the user reached for most recently instead of asking again.
+    last_used_at = serializers.DateTimeField(read_only=True, allow_null=True)
     is_retired = serializers.BooleanField(read_only=True)
 
     class Meta:
@@ -1947,6 +1950,7 @@ class GearSerializer(serializers.ModelSerializer):
             "is_retired",
             "total_distance_km",
             "session_count",
+            "last_used_at",
             "created_at",
             "updated_at",
         ]
@@ -1956,6 +1960,7 @@ class GearSerializer(serializers.ModelSerializer):
             "is_retired",
             "total_distance_km",
             "session_count",
+            "last_used_at",
             "created_at",
             "updated_at",
         ]
