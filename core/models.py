@@ -1669,6 +1669,13 @@ class Post(models.Model):
         choices=Visibility.choices,
         default=Visibility.PUBLIC,
     )
+    #: Whether the author chose to show the weights they lifted.
+    #:
+    #: Recorded, but not consulted when rendering: a post that withholds them
+    #: never had them written. The flag is here so the card can say the
+    #: numbers were held back rather than absent, which is a different thing
+    #: from a bodyweight session.
+    shows_weights = models.BooleanField(default=True)
     #: The post being passed on, when this is a repost.
     #:
     #: Cascades, unlike the source links below. Those point at the thing a

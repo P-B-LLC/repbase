@@ -122,6 +122,7 @@ from .serializers import (
     CreatePostSerializer,
     PostCommentSerializer,
     PostSerializer,
+    SavedWorkoutResultSerializer,
     UpdatePostSerializer,
 )
 
@@ -1569,7 +1570,7 @@ def whole_seconds(value):
     return None if value is None else int(round(value))
 
 
-def snapshot_workout(post, session):
+def snapshot_workout(post, session, shows_weights=True):
     """Copy a finished session onto a post.
 
     The route figures are read once here and stored as numbers. Each of those
@@ -1634,10 +1635,15 @@ def snapshot_workout(post, session):
                 set_count=len(sets),
                 # None rather than zero throughout: a bodyweight session and an
                 # unlogged one must not both read "0 kg".
-                top_set_weight_kg=top.weight_kg if top is not None else None,
+                # Held back at the author's word, and so never stored.
+                # Reps stay: "4 x 8" is what was done, and it is the load
+                # people are shy about, not the count.
+                top_set_weight_kg=(
+                    top.weight_kg if shows_weights and top is not None else None
+                ),
                 top_set_reps=top.reps if top is not None else None,
                 total_reps=sum(reps) if reps else None,
-                volume_kg=sum(volumes) if volumes else None,
+                volume_kg=sum(volumes) if shows_weights and volumes else None,
                 distance_km=sum(distances) if distances else None,
             )
         )
@@ -1689,7 +1695,9 @@ def snapshot_planner(post, entry):
 
 
 @transaction.atomic
-def create_post_from_source(author, kind, source, caption, visibility):
+def create_post_from_source(
+    author, kind, source, caption, visibility, shows_weights=True
+):
     """Freeze a source object into a post.
 
     The client sends which object it is and nothing about its contents, so the
@@ -1715,9 +1723,10 @@ def create_post_from_source(author, kind, source, caption, visibility):
         source_session=source if kind == Post.Kind.WORKOUT else None,
         source_meal=source if kind == Post.Kind.MEAL else None,
         source_planner_entry=source if kind == Post.Kind.PLANNER else None,
+        shows_weights=shows_weights,
     )
     if kind == Post.Kind.WORKOUT:
-        snapshot_workout(post, source)
+        snapshot_workout(post, source, shows_weights=shows_weights)
     elif kind == Post.Kind.MEAL:
         snapshot_meal(post, source)
     else:
@@ -1876,6 +1885,102 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             ).delete()
         return Response(self._card(original.pk))
 
+    @extend_schema(
+        request=None,
+        responses={201: SavedWorkoutResultSerializer},
+        description=(
+            "Copy a posted workout into your own workouts. The exercises and "
+            "their set counts are taken; weights are not, because a workout "
+            "you save is a plan to follow rather than a record of somebody "
+            "else's session."
+        ),
+    )
+    @action(detail=True, methods=["post"], url_path="save-workout")
+    def save_workout(self, request, pk=None):
+        post = self.get_object()
+        owner = self.owner_profile()
+        # A repost carries nothing of its own; what is being saved is the
+        # workout in the post underneath it.
+        source = post.repost_of or post
+        snapshot = getattr(source, "workout", None)
+        if snapshot is None:
+            raise ValidationError({"post": "That post is not a workout."})
+
+        exercises = list(snapshot.exercises.all())
+        if not exercises:
+            raise ValidationError(
+                {"post": "That workout has no exercises to save."}
+            )
+
+        name = self._free_workout_name(owner, snapshot.title, source.author)
+        with transaction.atomic():
+            template = WorkoutTemplate.objects.create(
+                owner=owner,
+                name=name,
+                workout_type=(
+                    snapshot.workout_type
+                    or WorkoutTemplate.WorkoutType.LIFTING
+                ),
+            )
+            for order, line in enumerate(exercises, start=1):
+                # The shared row first, this user's own next, and a new one
+                # only when neither exists. A private "Bench Press" per person
+                # who saves a workout would fork the exercise that progress
+                # and personal records are grouped by.
+                candidates = Exercise.objects.filter(
+                    name__iexact=line.name
+                ).filter(Q(created_by__isnull=True) | Q(created_by=owner))
+                exercise = (
+                    candidates.filter(created_by__isnull=True).first()
+                    or candidates.first()
+                    or Exercise.objects.create(name=line.name, created_by=owner)
+                )
+                WorkoutExercise.objects.create(
+                    workout=template,
+                    exercise=exercise,
+                    order=order,
+                    target_sets=line.set_count or None,
+                )
+
+        return Response(
+            SavedWorkoutResultSerializer(
+                {
+                    "workout": template,
+                    "name": name,
+                    "exercise_count": len(exercises),
+                    "renamed": name != snapshot.title,
+                },
+                context=self.get_serializer_context(),
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @staticmethod
+    def _free_workout_name(owner, title, author):
+        """A name this user does not already have.
+
+        Workout names are unique per user, so saving somebody's "Push Day"
+        when you have your own would either fail or quietly hand back yours.
+        Neither is what was asked for, so the copy is named after who it came
+        from, and numbered after that.
+        """
+        base = (title or "Workout").strip() or "Workout"
+        taken = set(
+            WorkoutTemplate.objects.filter(owner=owner).values_list("name", flat=True)
+        )
+        if base not in taken:
+            return base
+
+        from_author = f"{base} (from @{author.user.username})"[:150]
+        if from_author not in taken:
+            return from_author
+
+        for suffix in range(2, 100):
+            numbered = f"{from_author} {suffix}"[:150]
+            if numbered not in taken:
+                return numbered
+        raise ValidationError({"post": "You already have too many copies of that."})
+
     def _card(self, pk):
         """The post read back with its counts, as the feed would send it."""
         post = self.get_queryset().get(pk=pk)
@@ -1895,6 +2000,7 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             source_for(author, kind, payload.validated_data["source_id"]),
             payload.validated_data.get("caption", ""),
             payload.validated_data.get("visibility", Post.Visibility.PUBLIC),
+            payload.validated_data.get("shows_weights", True),
         )
         # Saved after the row exists, because the upload path is named from
         # its id. Done before the card is read back, so a post never goes

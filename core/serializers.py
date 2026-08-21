@@ -1737,6 +1737,20 @@ class PostCommentSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class SavedWorkoutResultSerializer(serializers.Serializer):
+    """What saving somebody else's posted workout produced.
+
+    The name is returned because it is not always the one on the post: a user
+    who already has a "Push Day" gets the copy under a name saying where it
+    came from, and the app has to be able to tell them so.
+    """
+
+    workout = serializers.PrimaryKeyRelatedField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    exercise_count = serializers.IntegerField(read_only=True)
+    renamed = serializers.BooleanField(read_only=True)
+
+
 class PostSerializer(serializers.ModelSerializer):
     """A post as anyone allowed to see it reads it.
 
@@ -1774,6 +1788,9 @@ class PostSerializer(serializers.ModelSerializer):
     repost_count = serializers.SerializerMethodField()
     #: Whether the person reading has already done it, so the button can be
     #: drawn in the right state on first paint rather than after a second call.
+    #: Whether the reader wrote it. Offering to save your own workout
+    #: back into your own workouts is not an offer worth making.
+    viewer_is_author = serializers.SerializerMethodField()
     viewer_has_liked = serializers.SerializerMethodField()
     viewer_has_reposted = serializers.SerializerMethodField()
     #: The post being passed on, present only on a repost. A repost cannot
@@ -1796,6 +1813,8 @@ class PostSerializer(serializers.ModelSerializer):
             "planner",
             "source_id",
             "viewer_follows_author",
+            "shows_weights",
+            "viewer_is_author",
             "like_count",
             "comment_count",
             "repost_count",
@@ -1816,6 +1835,8 @@ class PostSerializer(serializers.ModelSerializer):
             "planner",
             "source_id",
             "viewer_follows_author",
+            "shows_weights",
+            "viewer_is_author",
             "like_count",
             "comment_count",
             "repost_count",
@@ -1899,6 +1920,10 @@ class PostSerializer(serializers.ModelSerializer):
         counted = getattr(post, "repost_total", None)
         return counted if counted is not None else post.reposts.count()
 
+    def get_viewer_is_author(self, post) -> bool:
+        viewer = self._viewer()
+        return viewer is not None and post.author_id == viewer.id
+
     def get_viewer_has_liked(self, post) -> bool:
         flagged = getattr(post, "viewer_liked", None)
         if flagged is not None:
@@ -1943,6 +1968,9 @@ class CreatePostSerializer(serializers.Serializer):
         allow_blank=True,
         default="",
     )
+    #: Defaults to showing them. Somebody who says nothing has posted a
+    #: workout, and a workout without its numbers is the unusual case.
+    shows_weights = serializers.BooleanField(required=False, default=True)
     visibility = serializers.ChoiceField(
         choices=Post.Visibility.choices,
         required=False,
