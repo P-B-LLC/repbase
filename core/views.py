@@ -5,7 +5,17 @@ from decimal import Decimal
 from django.core.files.base import ContentFile
 from django.db import models, transaction
 from django.utils.dateparse import parse_date
-from django.db.models import Count, Exists, Max, OuterRef, Q, Sum
+from django.db.models import (
+    Count,
+    Exists,
+    Max,
+    OuterRef,
+    Prefetch,
+    Q,
+    Subquery,
+    Sum,
+    Value,
+)
 from django.db.models.functions import Coalesce
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
@@ -17,7 +27,7 @@ from drf_spectacular.utils import (
     extend_schema_view,
 )
 from rest_framework import mixins, pagination, status, viewsets
-from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -52,6 +62,8 @@ from .models import (
     Block,
     Follow,
     Post,
+    PostComment,
+    PostLike,
     PostMeal,
     PostMealEntry,
     PostPlannerEntry,
@@ -108,6 +120,7 @@ from .serializers import (
     WorkoutTemplateSerializer,
     BlockSerializer,
     CreatePostSerializer,
+    PostCommentSerializer,
     PostSerializer,
     UpdatePostSerializer,
 )
@@ -1382,6 +1395,40 @@ class FeedCursorPagination(pagination.CursorPagination):
         return size
 
 
+def annotate_social_counts(viewer, queryset):
+    """Add the like, comment and repost figures a card shows.
+
+    Subqueries rather than `Count` with joins. Three counts pulled through
+    three multi-valued relations in one query multiply out: a post with four
+    likes and three comments reports twelve of each. The usual repair is
+    `distinct=True` on every aggregate, which is a full pass per count; a
+    correlated subquery is one indexed lookup and cannot inflate a row.
+    """
+    def total(model, field):
+        return Coalesce(
+            Subquery(
+                model.objects.filter(**{field: OuterRef("pk")})
+                .order_by()
+                .values(field)
+                .annotate(n=Count("pk"))
+                .values("n")[:1]
+            ),
+            Value(0),
+        )
+
+    return queryset.annotate(
+        like_total=total(PostLike, "post"),
+        comment_total=total(PostComment, "post"),
+        repost_total=total(Post, "repost_of"),
+        viewer_liked=Exists(
+            PostLike.objects.filter(post=OuterRef("pk"), user=viewer)
+        ),
+        viewer_reposted=Exists(
+            Post.objects.filter(repost_of=OuterRef("pk"), author=viewer)
+        ),
+    )
+
+
 def visible_posts_for(viewer, queryset):
     """Narrow a post queryset to what one person is allowed to see.
 
@@ -1744,7 +1791,9 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             # somebody's caption is not a capability this endpoint should have.
             return super().get_queryset().filter(author=profile)
 
-        queryset = visible_posts_for(profile, super().get_queryset())
+        queryset = annotate_social_counts(
+            profile, visible_posts_for(profile, super().get_queryset())
+        )
         if self.action != "list":
             # The author filter is the list's alone: a create reads its own new
             # post back through this queryset, and a stray query string on the
@@ -1752,6 +1801,65 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             return queryset
         author = self.request.query_params.get("author")
         return queryset.filter(author_id=author) if author else queryset
+
+    @extend_schema(
+        request=None,
+        responses=PostSerializer,
+        description="Like this post, or remove your like with DELETE.",
+    )
+    @action(detail=True, methods=["post", "delete"])
+    def like(self, request, pk=None):
+        post = self.get_object()
+        profile = self.owner_profile()
+        if request.method == "POST":
+            # get_or_create rather than create: a second tap, or a retry of a
+            # request whose answer was lost, must not be an error.
+            PostLike.objects.get_or_create(post=post, user=profile)
+        else:
+            PostLike.objects.filter(post=post, user=profile).delete()
+        return Response(self._card(post.pk))
+
+    @extend_schema(
+        request=None,
+        responses=PostSerializer,
+        description=(
+            "Pass this post on to your followers, or undo it with DELETE. "
+            "Reposting a repost passes on the original."
+        ),
+    )
+    @action(detail=True, methods=["post", "delete"])
+    def repost(self, request, pk=None):
+        post = self.get_object()
+        profile = self.owner_profile()
+        # A repost of a repost points at the original. Otherwise a chain builds
+        # up, and each link has to be walked to find the thing being shown.
+        original = post.repost_of or post
+
+        if request.method == "POST":
+            Post.objects.get_or_create(
+                author=profile,
+                repost_of=original,
+                defaults={
+                    "kind": Post.Kind.REPOST,
+                    # A repost carries no caption of its own. The words on
+                    # screen stay the original author's, which is the whole
+                    # claim a repost makes.
+                    "caption": "",
+                    "visibility": Post.Visibility.PUBLIC,
+                },
+            )
+        else:
+            Post.objects.filter(
+                author=profile,
+                repost_of=original,
+                kind=Post.Kind.REPOST,
+            ).delete()
+        return Response(self._card(original.pk))
+
+    def _card(self, pk):
+        """The post read back with its counts, as the feed would send it."""
+        post = self.get_queryset().get(pk=pk)
+        return self.get_serializer(post).data
 
     def create(self, request, *args, **kwargs):
         payload = CreatePostSerializer(
@@ -1845,7 +1953,9 @@ class FeedViewSet(OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericView
 
     def get_queryset(self):
         profile = self.owner_profile()
-        queryset = visible_posts_for(profile, super().get_queryset())
+        queryset = annotate_social_counts(
+            profile, visible_posts_for(profile, super().get_queryset())
+        )
         # visible_posts_for has already annotated the follow test, so narrowing
         # to the people being followed reuses that subquery instead of asking
         # the follow table the same question twice.
@@ -1853,6 +1963,72 @@ class FeedViewSet(OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericView
             Q(viewer_follows_author=True)
             | (Q(author=profile) & ~Q(visibility=Post.Visibility.PRIVATE))
         )
+
+
+class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+    """Comments on a post.
+
+    Reading is governed by the post, not by the comment: if you may see the
+    post you may read what people said about it, and if you may not, its
+    comments are a 404 for the same reason the post is. Writing and deleting
+    belong to the comment's own author.
+    """
+
+    queryset = PostComment.objects.all()
+    serializer_class = PostCommentSerializer
+    permission_classes = [IsAuthenticated]
+    owner_lookup = "author"
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
+
+    def get_queryset(self):
+        profile = self.owner_profile()
+        if self.action in ("partial_update", "destroy"):
+            # A 404 rather than a 403 on someone else's comment, matching how
+            # posts scope editing: it was never in the set.
+            return PostComment.objects.filter(author=profile)
+
+        readable = visible_posts_for(profile, Post.objects.all())
+        queryset = (
+            PostComment.objects.filter(post__in=readable)
+            .select_related("author", "author__user")
+            .prefetch_related(
+                Prefetch(
+                    "replies",
+                    queryset=PostComment.objects.select_related(
+                        "author", "author__user"
+                    ),
+                )
+            )
+        )
+        post = self.request.query_params.get("post")
+        if post:
+            queryset = queryset.filter(post_id=post)
+        if self.action == "list":
+            # Top level only. The replies come nested inside their parent, and
+            # returning them again beside it would show every reply twice.
+            queryset = queryset.filter(parent__isnull=True)
+        return queryset
+
+    @extend_schema(parameters=[
+        OpenApiParameter(
+            name="post",
+            type=int,
+            location=OpenApiParameter.QUERY,
+            description="Only comments on this post.",
+        )
+    ])
+    def list(self, request, *args, **kwargs):
+        return super().list(request, *args, **kwargs)
+
+    def perform_create(self, serializer):
+        profile = self.owner_profile()
+        post = serializer.validated_data.get("post")
+        # Commenting on a post you cannot see would tell you it exists.
+        if not visible_posts_for(profile, Post.objects.all()).filter(
+            pk=getattr(post, "pk", None)
+        ).exists():
+            raise NotFound("No such post.")
+        serializer.save(author=profile)
 
 
 class BlockViewSet(

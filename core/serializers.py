@@ -44,6 +44,7 @@ from .models import (
     Block,
     Follow,
     Post,
+    PostComment,
     PostMeal,
     PostMealEntry,
     PostPlannerEntry,
@@ -1604,6 +1605,138 @@ class PostPlannerEntrySerializer(serializers.ModelSerializer):
         read_only_fields = ["title", "scheduled_date", "is_complete"]
 
 
+class RepostedPostSerializer(serializers.ModelSerializer):
+    """The original, as it appears inside a repost.
+
+    Deliberately not `PostSerializer`. That one carries `repost_of`, and a
+    serializer that contains itself is a schema no generator can express and a
+    depth no reader wants. A repost cannot be reposted, so one level is all
+    there is to show.
+    """
+
+    author = PublicRepbaseUserSerializer(read_only=True)
+    kind = serializers.CharField(read_only=True)
+    workout = PostWorkoutSerializer(read_only=True, allow_null=True)
+    meal = PostMealSerializer(read_only=True, allow_null=True)
+    planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
+    image_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Post
+        fields = [
+            "id",
+            "author",
+            "kind",
+            "image_url",
+            "caption",
+            "workout",
+            "meal",
+            "planner",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_image_url(self, post):
+        if not post.image:
+            return None
+        request = self.context.get("request")
+        url = post.image.url
+        return request.build_absolute_uri(url) if request else url
+
+
+class PostReplySerializer(serializers.ModelSerializer):
+    """A reply, as it appears nested under the comment it answers.
+
+    The same fields as a comment without `replies`, because a reply cannot
+    have any -- the model refuses a reply to a reply. Kept a separate class so
+    the contract can name the type instead of describing an array of anonymous
+    objects, which is what a self-referential field generates.
+    """
+
+    author = PublicRepbaseUserSerializer(read_only=True)
+    viewer_is_author = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostComment
+        fields = [
+            "id",
+            "post",
+            "author",
+            "parent",
+            "body",
+            "viewer_is_author",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = fields
+
+    def get_viewer_is_author(self, comment) -> bool:
+        request = self.context.get("request")
+        viewer = getattr(getattr(request, "user", None), "repbase_profile", None)
+        return viewer is not None and comment.author_id == viewer.id
+
+
+class PostCommentSerializer(serializers.ModelSerializer):
+    """A comment, and the replies hanging off it.
+
+    `replies` is filled only for a top-level comment, and is never more than
+    one deep because the model refuses a reply to a reply. The client can
+    therefore render a thread without walking anything.
+    """
+
+    author = PublicRepbaseUserSerializer(read_only=True)
+    replies = serializers.SerializerMethodField()
+    viewer_is_author = serializers.SerializerMethodField()
+
+    class Meta:
+        model = PostComment
+        fields = [
+            "id",
+            "post",
+            "author",
+            "parent",
+            "body",
+            "replies",
+            "viewer_is_author",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "author", "created_at", "updated_at"]
+
+    @extend_schema_field(PostReplySerializer(many=True))
+    def get_replies(self, comment):
+        if comment.parent_id is not None:
+            return []
+        # Prefetched by the view. Sorting here rather than in the query keeps
+        # the prefetch usable: re-ordering it would fetch the rows again.
+        replies = sorted(
+            comment.replies.all(),
+            key=lambda reply: (reply.created_at, reply.id),
+        )
+        return PostReplySerializer(replies, many=True, context=self.context).data
+
+    def get_viewer_is_author(self, comment) -> bool:
+        request = self.context.get("request")
+        viewer = getattr(getattr(request, "user", None), "repbase_profile", None)
+        return viewer is not None and comment.author_id == viewer.id
+
+    def validate(self, attrs):
+        post = attrs.get("post") or getattr(self.instance, "post", None)
+        parent = attrs.get("parent")
+        if parent is None:
+            return attrs
+        if parent.post_id != getattr(post, "id", None):
+            raise serializers.ValidationError(
+                {"parent": "That comment is on a different post."}
+            )
+        if parent.parent_id is not None:
+            raise serializers.ValidationError(
+                {"parent": "Reply to the comment itself, not to a reply."}
+            )
+        return attrs
+
+
 class PostSerializer(serializers.ModelSerializer):
     """A post as anyone allowed to see it reads it.
 
@@ -1633,6 +1766,21 @@ class PostSerializer(serializers.ModelSerializer):
     source_id = serializers.SerializerMethodField()
     viewer_follows_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
+    #: Counted by the database, not by the length of a list the client would
+    #: otherwise have to be sent. A card shows the number; only the detail page
+    #: asks who.
+    like_count = serializers.SerializerMethodField()
+    comment_count = serializers.SerializerMethodField()
+    repost_count = serializers.SerializerMethodField()
+    #: Whether the person reading has already done it, so the button can be
+    #: drawn in the right state on first paint rather than after a second call.
+    viewer_has_liked = serializers.SerializerMethodField()
+    viewer_has_reposted = serializers.SerializerMethodField()
+    #: The post being passed on, present only on a repost. A repost cannot
+    #: itself be reposted, so this never nests more than one deep -- which is
+    #: why it can be a serializer of its own rather than a recursive reference
+    #: the schema could not describe.
+    repost_of = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -1648,6 +1796,12 @@ class PostSerializer(serializers.ModelSerializer):
             "planner",
             "source_id",
             "viewer_follows_author",
+            "like_count",
+            "comment_count",
+            "repost_count",
+            "viewer_has_liked",
+            "viewer_has_reposted",
+            "repost_of",
             "created_at",
             "updated_at",
         ]
@@ -1662,6 +1816,12 @@ class PostSerializer(serializers.ModelSerializer):
             "planner",
             "source_id",
             "viewer_follows_author",
+            "like_count",
+            "comment_count",
+            "repost_count",
+            "viewer_has_liked",
+            "viewer_has_reposted",
+            "repost_of",
             "created_at",
             "updated_at",
         ]
@@ -1723,6 +1883,47 @@ class PostSerializer(serializers.ModelSerializer):
         answer there rather than a stand-in for one.
         """
         return bool(getattr(post, "viewer_follows_author", False))
+
+    #: Read off the annotation the queryset added when it is there, and only
+    #: counted per row when it is not -- a serializer used on a single object,
+    #: such as the one a create reads back, has no annotation behind it.
+    def get_like_count(self, post) -> int:
+        counted = getattr(post, "like_total", None)
+        return counted if counted is not None else post.likes.count()
+
+    def get_comment_count(self, post) -> int:
+        counted = getattr(post, "comment_total", None)
+        return counted if counted is not None else post.comments.count()
+
+    def get_repost_count(self, post) -> int:
+        counted = getattr(post, "repost_total", None)
+        return counted if counted is not None else post.reposts.count()
+
+    def get_viewer_has_liked(self, post) -> bool:
+        flagged = getattr(post, "viewer_liked", None)
+        if flagged is not None:
+            return bool(flagged)
+        viewer = self._viewer()
+        return bool(viewer) and post.likes.filter(user=viewer).exists()
+
+    def get_viewer_has_reposted(self, post) -> bool:
+        flagged = getattr(post, "viewer_reposted", None)
+        if flagged is not None:
+            return bool(flagged)
+        viewer = self._viewer()
+        return bool(viewer) and post.reposts.filter(author=viewer).exists()
+
+    @extend_schema_field(RepostedPostSerializer(allow_null=True))
+    def get_repost_of(self, post):
+        original = post.repost_of
+        if original is None:
+            return None
+        return RepostedPostSerializer(original, context=self.context).data
+
+    def _viewer(self):
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        return getattr(user, "repbase_profile", None)
 
 
 class CreatePostSerializer(serializers.Serializer):

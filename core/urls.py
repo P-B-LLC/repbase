@@ -12,6 +12,7 @@ from .views import (
     WorkoutCycleViewSet,
     HealthWorkoutImportView,
     TrainingStatsView,
+    PostCommentViewSet,
     PostViewSet,
     FoodEntryViewSet,
     FoodMealViewSet,
@@ -49,6 +50,7 @@ router.register("food/meals", FoodMealViewSet)
 router.register("food/entries", FoodEntryViewSet)
 router.register("food/saved-meals", SavedFoodMealViewSet)
 router.register("social/posts", PostViewSet)
+router.register("social/comments", PostCommentViewSet)
 # An explicit basename: this viewset is a second view over Post, and the
 # router would otherwise derive "post" for both and register two url names
 # that shadow each other.

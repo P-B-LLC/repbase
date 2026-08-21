@@ -1636,6 +1636,11 @@ class Post(models.Model):
         WORKOUT = "workout", "Workout"
         MEAL = "meal", "Meal"
         PLANNER = "planner", "Planner"
+        #: Someone else's post, passed on. The only kind with no snapshot
+        #: sibling of its own: what it shows is the post it points at, read
+        #: live, because a repost that froze a copy would keep showing a
+        #: caption its author had since corrected.
+        REPOST = "repost", "Repost"
 
     class Visibility(models.TextChoices):
         PUBLIC = "public", "Public"
@@ -1663,6 +1668,18 @@ class Post(models.Model):
         max_length=20,
         choices=Visibility.choices,
         default=Visibility.PUBLIC,
+    )
+    #: The post being passed on, when this is a repost.
+    #:
+    #: Cascades, unlike the source links below. Those point at the thing a
+    #: snapshot was taken from, and the snapshot outlives it; a repost holds no
+    #: copy at all, so an original that is gone leaves nothing to show.
+    repost_of = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        related_name="reposts",
+        null=True,
+        blank=True,
     )
     # What the post was made from. Kept so the author's own workout, meal or
     # planner row can show that it has been posted, and shown to nobody else:
@@ -2209,3 +2226,80 @@ class WorkoutCycleSlot(models.Model):
 
     def __str__(self):
         return f"{self.cycle_id} #{self.position}"
+
+
+class PostLike(models.Model):
+    """One person's like of one post.
+
+    A row per like rather than a counter on the post. Unliking is then a
+    delete, two taps in the same second cannot both increment, and the count is
+    always exactly who is in this table -- a number that can drift away from
+    the people it claims to represent is worse than no number.
+    """
+
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="likes",
+    )
+    user = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="post_likes",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["post", "user"],
+                name="unique_post_like",
+            )
+        ]
+        indexes = [models.Index(fields=["post", "-created_at"])]
+
+    def __str__(self):
+        return f"like on post {self.post_id}"
+
+
+class PostComment(models.Model):
+    """A reply on a post, or on another reply.
+
+    Exactly one level of nesting. `parent` must itself be top level, so a
+    thread is a comment and the replies under it rather than a tree that
+    indents off the side of a phone and that nobody can follow. Deeper
+    conversations still work -- a reply naming who it answers reads no worse
+    than a fourth indent, and it stays legible.
+    """
+
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="comments",
+    )
+    author = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="post_comments",
+    )
+    #: Null for a top-level comment. A reply to a reply is refused by the
+    #: serializer rather than silently re-parented, so the client is told.
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        related_name="replies",
+        null=True,
+        blank=True,
+    )
+    body = models.TextField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        #: Oldest first, which is how a conversation reads. Ties broken by id
+        #: so a page boundary means the same thing on the next request.
+        ordering = ["created_at", "id"]
+        indexes = [models.Index(fields=["post", "created_at"])]
+
+    def __str__(self):
+        return f"comment on post {self.post_id}"
