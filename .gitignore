@@ -49,3 +49,6 @@ dist/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# Local database snapshots taken before risky migrations.
+db.sqlite3.backup*
