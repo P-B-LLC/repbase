@@ -1803,9 +1803,19 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return queryset.filter(author_id=author) if author else queryset
 
     @extend_schema(
+        methods=["POST"],
         request=None,
         responses=PostSerializer,
-        description="Like this post, or remove your like with DELETE.",
+        description="Like this post.",
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        request=None,
+        # Keyed by status. A bare serializer on a DELETE is overridden with
+        # the 204 drf-spectacular assumes a delete returns, and the contract
+        # would then promise an empty body this view does not send.
+        responses={200: PostSerializer},
+        description="Remove your like. Answers with the post, not 204.",
     )
     @action(detail=True, methods=["post", "delete"])
     def like(self, request, pk=None):
@@ -1820,12 +1830,22 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return Response(self._card(post.pk))
 
     @extend_schema(
+        methods=["POST"],
         request=None,
         responses=PostSerializer,
         description=(
-            "Pass this post on to your followers, or undo it with DELETE. "
-            "Reposting a repost passes on the original."
+            "Pass this post on to your followers. Reposting a repost passes "
+            "on the original, and the original is what comes back."
         ),
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        request=None,
+        # Keyed by status. A bare serializer on a DELETE is overridden with
+        # the 204 drf-spectacular assumes a delete returns, and the contract
+        # would then promise an empty body this view does not send.
+        responses={200: PostSerializer},
+        description="Withdraw your repost. Answers with the post, not 204.",
     )
     @action(detail=True, methods=["post", "delete"])
     def repost(self, request, pk=None):
