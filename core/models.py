@@ -185,6 +185,12 @@ class RepbaseUser(models.Model):
         blank=True,
         validators=[positive_decimal],
     )
+    #: Steps a day the user is aiming for.
+    #:
+    #: On the profile rather than in the app's own storage, so it follows the
+    #: account the way target weight does. Eight thousand to start, which is
+    #: the figure the widget showed when nobody could change it.
+    daily_step_goal = models.PositiveIntegerField(default=8000)
     unit_preference = models.CharField(
         max_length=10,
         choices=UnitPreference.choices,

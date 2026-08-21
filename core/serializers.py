@@ -598,6 +598,7 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "height_cm",
             "weight_kg",
             "target_weight_kg",
+            "daily_step_goal",
             "unit_preference",
             "bio",
             "profile_photo_url",
@@ -611,6 +612,12 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+        #: Bounded. Zero would make every day a goal day and the bar
+        #: meaningless, and the ceiling stops a typo writing a number
+        #: nothing on screen can render.
+        extra_kwargs = {
+            "daily_step_goal": {"min_value": 1_000, "max_value": 100_000},
+        }
         read_only_fields = [
             "id",
             "profile_photo_url",
