@@ -122,6 +122,7 @@ from .serializers import (
     CreatePostSerializer,
     PostCommentSerializer,
     PostSerializer,
+    PreviousSetSerializer,
     SavedWorkoutResultSerializer,
     UpdatePostSerializer,
 )
@@ -1732,6 +1733,88 @@ def create_post_from_source(
     else:
         snapshot_planner(post, source)
     return post
+
+
+class PreviousSetsView(OwnedViewSetMixin, APIView):
+    """What this user last lifted, per exercise.
+
+    One pass over their own set entries, newest first, keeping the first
+    occurrence of each (exercise, set number). The app used to do this by
+    reading recent sessions one at a time until it found one that had logged
+    something, which fails quietly on a run of sessions started and abandoned
+    -- and that run is nine long on real data.
+
+    Scoped to the caller throughout. Somebody else's numbers are not a hint,
+    they are somebody else's training.
+    """
+
+    permission_classes = [IsAuthenticated]
+    owner_lookup = "repbase_user"
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="exclude_session",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Ignore this session, which is the one being logged now."
+                ),
+            ),
+            OpenApiParameter(
+                name="workout",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Only exercises in this workout. Narrows the answer to "
+                    "what the screen is about to draw."
+                ),
+            ),
+        ],
+        responses=PreviousSetSerializer(many=True),
+    )
+    def get(self, request):
+        owner = self.owner_profile()
+
+        entries = (
+            SetEntry.objects.filter(
+                session_exercise__session__repbase_user=owner,
+                session_exercise__session__status=WorkoutSession.Status.COMPLETED,
+            )
+            .exclude(weight_kg__isnull=True, reps__isnull=True)
+            .select_related("session_exercise__session")
+            .order_by("-session_exercise__session__started_at", "-id")
+        )
+
+        exclude = request.query_params.get("exclude_session")
+        if exclude:
+            entries = entries.exclude(session_exercise__session_id=exclude)
+
+        workout = request.query_params.get("workout")
+        if workout:
+            entries = entries.filter(
+                session_exercise__exercise__workout_entries__workout_id=workout
+            )
+
+        # Newest first, so the first time an (exercise, set) pair is seen is
+        # the most recent one. Capped: a long history is a long scan, and
+        # nothing past the first occurrence of each pair is ever used.
+        seen = {}
+        for entry in entries[:600]:
+            key = (entry.session_exercise.exercise_id, entry.set_number)
+            if key in seen:
+                continue
+            seen[key] = {
+                "exercise": entry.session_exercise.exercise_id,
+                "set_number": entry.set_number,
+                "weight_kg": entry.weight_kg,
+                "reps": entry.reps,
+                "performed_at": entry.session_exercise.session.started_at,
+            }
+
+        return Response(
+            PreviousSetSerializer(list(seen.values()), many=True).data
+        )
 
 
 @extend_schema_view(

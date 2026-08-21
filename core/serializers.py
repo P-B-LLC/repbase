@@ -1737,6 +1737,18 @@ class PostCommentSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class PreviousSetSerializer(serializers.Serializer):
+    """One set from the last time an exercise was done."""
+
+    exercise = serializers.IntegerField(read_only=True)
+    set_number = serializers.IntegerField(read_only=True)
+    weight_kg = serializers.DecimalField(
+        max_digits=7, decimal_places=2, read_only=True, allow_null=True
+    )
+    reps = serializers.IntegerField(read_only=True, allow_null=True)
+    performed_at = serializers.DateTimeField(read_only=True, allow_null=True)
+
+
 class SavedWorkoutResultSerializer(serializers.Serializer):
     """What saving somebody else's posted workout produced.
 

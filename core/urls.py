@@ -14,6 +14,7 @@ from .views import (
     TrainingStatsView,
     PostCommentViewSet,
     PostViewSet,
+    PreviousSetsView,
     FoodEntryViewSet,
     FoodMealViewSet,
     GymViewSet,
@@ -65,6 +66,11 @@ router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
 urlpatterns = [
+    path(
+        "sessions/previous-sets/",
+        PreviousSetsView.as_view(),
+        name="previous-sets",
+    ),
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/login/", LoginView.as_view(), name="login"),
     path("auth/rotate-token/", RotateTokenView.as_view(), name="rotate-token"),
