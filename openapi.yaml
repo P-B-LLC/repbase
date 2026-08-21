@@ -234,6 +234,267 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/cycles/:
+    get:
+      operationId: cycles_list
+      description: Rotations that repeat every N days rather than every week.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - cycles
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedWorkoutCycleList'
+          description: ''
+    post:
+      operationId: cycles_create
+      description: Rotations that repeat every N days rather than every week.
+      tags:
+      - cycles
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkoutCycleRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WorkoutCycleRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WorkoutCycleRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutCycle'
+          description: ''
+  /api/v1/cycles/{id}/:
+    get:
+      operationId: cycles_retrieve
+      description: Rotations that repeat every N days rather than every week.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout cycle.
+        required: true
+      tags:
+      - cycles
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutCycle'
+          description: ''
+    put:
+      operationId: cycles_update
+      description: Rotations that repeat every N days rather than every week.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout cycle.
+        required: true
+      tags:
+      - cycles
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WorkoutCycleRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/WorkoutCycleRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/WorkoutCycleRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutCycle'
+          description: ''
+    patch:
+      operationId: cycles_partial_update
+      description: Rotations that repeat every N days rather than every week.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout cycle.
+        required: true
+      tags:
+      - cycles
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedWorkoutCycleRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedWorkoutCycleRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedWorkoutCycleRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutCycle'
+          description: ''
+    delete:
+      operationId: cycles_destroy
+      description: Rotations that repeat every N days rather than every week.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout cycle.
+        required: true
+      tags:
+      - cycles
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/cycles/{id}/plan-ahead/:
+    post:
+      operationId: cycles_plan_ahead_create
+      description: Writes schedule rows for the rotation up to a date.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout cycle.
+        required: true
+      tags:
+      - cycles
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CyclePlanAheadRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CyclePlanAheadRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CyclePlanAheadRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutCycle'
+          description: ''
+  /api/v1/cycles/{id}/resume-today/:
+    post:
+      operationId: cycles_resume_today_create
+      description: |-
+        Makes the next workout in the rotation happen today.
+
+        For somebody who has already drifted: rather than counting how many
+        days behind they are, the rotation is re-anchored so the workout they
+        owe lands on today and the rest follows from there.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout cycle.
+        required: true
+      tags:
+      - cycles
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CycleShiftResult'
+          description: ''
+  /api/v1/cycles/{id}/shift/:
+    post:
+      operationId: cycles_shift_create
+      description: |-
+        Pushes the rest of the rotation back, after an unplanned rest day.
+
+        The anchor moves and every future date moves with it. That is the whole
+        reason a rotation is anchored to a date: a weekly rule could only be
+        shifted by becoming a rule about a different weekday.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout cycle.
+        required: true
+      tags:
+      - cycles
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CycleShiftRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CycleShiftRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CycleShiftRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CycleShiftResult'
+          description: ''
   /api/v1/exercises/:
     get:
       operationId: exercises_list
@@ -3994,6 +4255,45 @@ components:
       required:
       - kind
       - source_id
+    CyclePlanAheadRequest:
+      type: object
+      description: How far forward to write schedule rows.
+      properties:
+        through:
+          type: string
+          format: date
+      required:
+      - through
+    CycleShiftRequest:
+      type: object
+      description: How many days to push the rest of the rotation back.
+      properties:
+        days:
+          type: integer
+          maximum: 31
+          minimum: 1
+      required:
+      - days
+    CycleShiftResult:
+      type: object
+      description: What the shift did, counted.
+      properties:
+        cycle:
+          $ref: '#/components/schemas/WorkoutCycle'
+        days_shifted:
+          type: integer
+        removed:
+          type: integer
+        scheduled:
+          type: integer
+        kept:
+          type: integer
+      required:
+      - cycle
+      - days_shifted
+      - kept
+      - removed
+      - scheduled
     DailyStepCount:
       type: object
       properties:
@@ -4976,6 +5276,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SetEntry'
+    PaginatedWorkoutCycleList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutCycle'
     PaginatedWorkoutExerciseList:
       type: object
       required:
@@ -5397,6 +5720,23 @@ components:
           maxLength: 300
         visibility:
           $ref: '#/components/schemas/VisibilityEnum'
+    PatchedWorkoutCycleRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        length:
+          type: integer
+          maximum: 31
+          minimum: 1
+        anchor_date:
+          type: string
+          format: date
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutCycleSlotRequest'
     PatchedWorkoutExerciseRequest:
       type: object
       properties:
@@ -6786,6 +7126,135 @@ components:
         * `4` - Friday
         * `5` - Saturday
         * `6` - Sunday
+    WorkoutCycle:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        owner:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 80
+        length:
+          type: integer
+          maximum: 31
+          minimum: 1
+        anchor_date:
+          type: string
+          format: date
+        effective_from:
+          type: string
+          format: date
+          readOnly: true
+        effective_until:
+          type: string
+          format: date
+          readOnly: true
+          nullable: true
+        is_active:
+          type: boolean
+          readOnly: true
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutCycleSlot'
+        current_position:
+          type: integer
+          readOnly: true
+        current_workout_name:
+          type: string
+          readOnly: true
+        next_workout_name:
+          type: string
+          readOnly: true
+        next_workout_date:
+          type: string
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - anchor_date
+      - created_at
+      - current_position
+      - current_workout_name
+      - effective_from
+      - effective_until
+      - id
+      - is_active
+      - length
+      - next_workout_date
+      - next_workout_name
+      - owner
+      - slots
+      - updated_at
+    WorkoutCycleRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          maxLength: 80
+        length:
+          type: integer
+          maximum: 31
+          minimum: 1
+        anchor_date:
+          type: string
+          format: date
+        slots:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutCycleSlotRequest'
+      required:
+      - anchor_date
+      - length
+      - slots
+    WorkoutCycleSlot:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+        workout:
+          type: integer
+          nullable: true
+        workout_name:
+          type: string
+          readOnly: true
+        is_rest:
+          type: boolean
+          readOnly: true
+      required:
+      - id
+      - is_rest
+      - position
+      - workout_name
+    WorkoutCycleSlotRequest:
+      type: object
+      properties:
+        position:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+        workout:
+          type: integer
+          nullable: true
+      required:
+      - position
     WorkoutExercise:
       type: object
       properties:

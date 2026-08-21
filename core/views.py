@@ -3,7 +3,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.core.files.base import ContentFile
-from django.db import transaction
+from django.db import models, transaction
 from django.utils.dateparse import parse_date
 from django.db.models import Count, Exists, Max, OuterRef, Q, Sum
 from django.db.models.functions import Coalesce
@@ -29,6 +29,8 @@ from .models import (
     BodyWeightEntry,
     DailyStepCount,
     Gear,
+    WorkoutCycleSlot,
+    WorkoutCycle,
     Exercise,
     RepbaseUser,
     SessionExercise,
@@ -68,6 +70,10 @@ from .serializers import (
     DailyStepCountRecordSerializer,
     TrainingStatsSerializer,
     GearSerializer,
+    CycleShiftResultSerializer,
+    CycleShiftSerializer,
+    CyclePlanAheadSerializer,
+    WorkoutCycleSerializer,
     HealthImportResultSerializer,
     HealthWorkoutImportSerializer,
     DailyStepCountSerializer,
@@ -2252,3 +2258,197 @@ class TrainingStatsView(APIView):
                 }
             ).data
         )
+
+
+class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+    """Rotations that repeat every N days rather than every week."""
+
+    queryset = WorkoutCycle.objects.prefetch_related("slots__workout").select_related(
+        "owner"
+    )
+    serializer_class = WorkoutCycleSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = self.scope_to_owner(super().get_queryset())
+        if self.request.query_params.get("include_ended") not in ("true", "1"):
+            queryset = queryset.filter(effective_until__isnull=True)
+        return queryset.order_by("-effective_from", "-id")
+
+    def perform_create(self, serializer):
+        # A rule can never reach backwards: it starts today, whatever anchor
+        # the user picked, so weeks already trained keep resolving through
+        # whatever was planned then.
+        today = timezone.localdate()
+        serializer.save(owner=self.owner_profile(), effective_from=today)
+
+    @extend_schema(
+        request=CyclePlanAheadSerializer,
+        responses=WorkoutCycleSerializer,
+    )
+    @action(detail=True, methods=["post"], url_path="plan-ahead")
+    def plan_ahead(self, request, pk=None):
+        """Writes schedule rows for the rotation up to a date."""
+        cycle = get_object_or_404(self.get_queryset(), pk=pk)
+        payload = CyclePlanAheadSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+
+        with transaction.atomic():
+            self._materialize(cycle, through=payload.validated_data["through"])
+
+        cycle.refresh_from_db()
+        return Response(self.get_serializer(cycle).data)
+
+    @extend_schema(
+        request=CycleShiftSerializer,
+        responses=CycleShiftResultSerializer,
+    )
+    @action(detail=True, methods=["post"])
+    def shift(self, request, pk=None):
+        """Pushes the rest of the rotation back, after an unplanned rest day.
+
+        The anchor moves and every future date moves with it. That is the whole
+        reason a rotation is anchored to a date: a weekly rule could only be
+        shifted by becoming a rule about a different weekday.
+        """
+        payload = CycleShiftSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        days = payload.validated_data["days"]
+        return self._reanchor(pk, shift_days=days)
+
+    @extend_schema(request=None, responses=CycleShiftResultSerializer)
+    @action(detail=True, methods=["post"], url_path="resume-today")
+    def resume_today(self, request, pk=None):
+        """Makes the next workout in the rotation happen today.
+
+        For somebody who has already drifted: rather than counting how many
+        days behind they are, the rotation is re-anchored so the workout they
+        owe lands on today and the rest follows from there.
+        """
+        return self._reanchor(pk, shift_days=None)
+
+    # MARK: - The work
+
+    def _reanchor(self, pk, shift_days):
+        cycle = get_object_or_404(self.get_queryset(), pk=pk)
+        owner = self.owner_profile()
+        today = timezone.localdate()
+
+        if shift_days is None:
+            # Where the rotation currently says the next workout is. Its
+            # position is what has to land on today.
+            target_position = None
+            for offset in range(0, cycle.length + 1):
+                slot = cycle.slot(today + timedelta(days=offset))
+                if slot is not None and slot.workout is not None:
+                    target_position = slot.position
+                    break
+            if target_position is None:
+                return Response(
+                    {"detail": "This rotation has no workouts in it."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            new_anchor = today - timedelta(days=target_position - 1)
+            moved = (new_anchor - cycle.anchor_date).days
+        else:
+            new_anchor = cycle.anchor_date + timedelta(days=shift_days)
+            moved = shift_days
+
+        with transaction.atomic():
+            # Rows this cycle wrote, from today on, that nothing has happened
+            # in yet. Days already trained are history and are left alone; days
+            # the user added themselves were never this cycle's to remove.
+            future = WorkoutSchedule.objects.filter(
+                owner=owner,
+                source_cycle=cycle,
+                scheduled_date__gte=today,
+            )
+            touched = WorkoutSession.objects.filter(
+                repbase_user=owner,
+                workout_id=models.OuterRef("workout_id"),
+                started_at__date=models.OuterRef("scheduled_date"),
+            )
+            removable = future.annotate(
+                has_session=Exists(touched)
+            ).filter(has_session=False)
+
+            kept = future.count() - removable.count()
+            removed = removable.count()
+            removable.delete()
+
+            # Close the rule in force and open its replacement, rather than
+            # editing the anchor in place. The past keeps resolving through
+            # what was planned at the time.
+            previous_through = cycle.materialized_through
+            cycle.effective_until = today
+            cycle.save(update_fields=["effective_until", "updated_at"])
+
+            replacement = WorkoutCycle.objects.create(
+                owner=owner,
+                name=cycle.name,
+                length=cycle.length,
+                anchor_date=new_anchor,
+                effective_from=today,
+            )
+            WorkoutCycleSlot.objects.bulk_create(
+                [
+                    WorkoutCycleSlot(
+                        cycle=replacement,
+                        position=slot.position,
+                        workout=slot.workout,
+                    )
+                    for slot in cycle.slots.all()
+                ]
+            )
+
+            scheduled = self._materialize(
+                replacement,
+                through=previous_through or today,
+            )
+
+        replacement.refresh_from_db()
+        return Response(
+            CycleShiftResultSerializer(
+                {
+                    "cycle": replacement,
+                    "days_shifted": moved,
+                    "removed": removed,
+                    "scheduled": scheduled,
+                    "kept": kept,
+                }
+            ).data
+        )
+
+    def _materialize(self, cycle, through):
+        """Writes one schedule row per workout slot up to `through`.
+
+        Returns how many were written. Days already holding this workout are
+        left as they are: scheduling the same workout twice on one day would
+        read as two sessions to everything that counts them.
+        """
+        owner = cycle.owner
+        start = max(cycle.effective_from, timezone.localdate())
+        if cycle.materialized_through and cycle.materialized_through >= start:
+            start = cycle.materialized_through + timedelta(days=1)
+
+        written = 0
+        day = start
+        while day <= through:
+            if cycle.effective_until and day >= cycle.effective_until:
+                break
+            slot = cycle.slot(day)
+            if slot is not None and slot.workout_id is not None:
+                _, created = WorkoutSchedule.objects.get_or_create(
+                    owner=owner,
+                    workout_id=slot.workout_id,
+                    scheduled_date=day,
+                    defaults={"source_cycle": cycle},
+                )
+                if created:
+                    written += 1
+            day += timedelta(days=1)
+
+        if through >= (cycle.materialized_through or cycle.effective_from):
+            cycle.materialized_through = through
+            cycle.save(update_fields=["materialized_through", "updated_at"])
+        return written

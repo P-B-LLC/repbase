@@ -9,6 +9,7 @@ from .views import (
     ExerciseProgressView,
     ExerciseViewSet,
     GearViewSet,
+    WorkoutCycleViewSet,
     HealthWorkoutImportView,
     TrainingStatsView,
     PostViewSet,
@@ -57,6 +58,7 @@ router.register("sessions", WorkoutSessionViewSet)
 router.register("session-exercises", SessionExerciseViewSet)
 router.register("set-entries", SetEntryViewSet)
 router.register("gear", GearViewSet, basename="gear")
+router.register("cycles", WorkoutCycleViewSet, basename="cycle")
 router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 

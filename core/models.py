@@ -365,6 +365,18 @@ class WorkoutSchedule(models.Model):
         on_delete=models.CASCADE,
         related_name="schedule_entries",
     )
+    #: The cycle that generated this day, when one did. Null for a day
+    #: the user scheduled themselves or a weekly repeat produced.
+    #: Shifting a rotation rewrites its own future rows and must leave
+    #: every other row alone, which it cannot do without knowing which
+    #: rows are its own — the same lesson as planner_synced_at.
+    source_cycle = models.ForeignKey(
+        "WorkoutCycle",
+        on_delete=models.SET_NULL,
+        related_name="generated_schedules",
+        null=True,
+        blank=True,
+    )
     scheduled_date = models.DateField(db_index=True)
     #: The weekly repeat that planned this day, if it was not chosen by hand.
     #: Kept so ending a repeat clears the days it added and nothing else.
@@ -2091,3 +2103,109 @@ class Gear(models.Model):
 
     def __str__(self):
         return f"{self.owner}: {self.name}"
+
+
+class WorkoutCycle(models.Model):
+    """A rotation that repeats every N days, whatever weekday that lands on.
+
+    ``WorkoutRecurrence`` cannot express this. It stores a weekday, and an
+    eight-day split has none: it falls on Monday, then Tuesday, then Wednesday,
+    drifting forever. A cycle stores a length and an anchor instead, and the
+    weekday is simply whatever the arithmetic produces.
+
+    Anchoring to a date is also what makes "I rested today, push everything
+    back" a single change. Every future date is derived from the anchor, so
+    moving it moves the whole rotation; a weekly rule could only be shifted by
+    becoming a rule about a different weekday.
+
+    Like recurrences, a cycle covers the half-open range
+    ``[effective_from, effective_until)``. Changing a plan closes the rule in
+    force and opens a new one, so weeks that already happened keep resolving
+    through whatever was planned then.
+    """
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="workout_cycles",
+    )
+    name = models.CharField(max_length=80, blank=True)
+    #: Days in one turn, rest days included. A six-workout two-rest rotation is
+    #: eight, not six, or "which day am I on" has no answer.
+    length = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1), MaxValueValidator(31)]
+    )
+    #: The date slot 1 falls on. Shifting the plan moves this and nothing else.
+    anchor_date = models.DateField()
+    effective_from = models.DateField(db_index=True)
+    effective_until = models.DateField(null=True, blank=True, db_index=True)
+    #: The last date already turned into schedule rows, so generating twice
+    #: does not have to reconsider days it has already written.
+    materialized_through = models.DateField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-effective_from", "-id")
+
+    @property
+    def is_active(self):
+        return self.effective_until is None
+
+    def position(self, day):
+        """Which slot of the rotation a date falls on, counting from one.
+
+        Python's modulo is non-negative for a positive divisor, so a date
+        before the anchor still lands on a real slot rather than a negative
+        one.
+        """
+        return ((day - self.anchor_date).days % self.length) + 1
+
+    def slot(self, day):
+        """The slot for a date, or None where the rotation has no slot set."""
+        return self.slots.filter(position=self.position(day)).first()
+
+    def __str__(self):
+        return f"{self.owner}: {self.name or 'cycle'} ({self.length} days)"
+
+
+class WorkoutCycleSlot(models.Model):
+    """One day of a rotation.
+
+    A null workout is a rest day, and it is stored rather than implied: a gap
+    and a deliberate rest look the same in a calendar, and only one of them is
+    part of the plan.
+    """
+
+    cycle = models.ForeignKey(
+        WorkoutCycle,
+        on_delete=models.CASCADE,
+        related_name="slots",
+    )
+    #: 1 through the cycle's length.
+    position = models.PositiveSmallIntegerField(
+        validators=[MinValueValidator(1)]
+    )
+    workout = models.ForeignKey(
+        WorkoutTemplate,
+        on_delete=models.CASCADE,
+        related_name="cycle_slots",
+        null=True,
+        blank=True,
+    )
+
+    class Meta:
+        ordering = ("position",)
+        constraints = [
+            models.UniqueConstraint(
+                fields=("cycle", "position"),
+                name="unique_slot_position_per_cycle",
+            )
+        ]
+
+    @property
+    def is_rest(self):
+        return self.workout_id is None
+
+    def __str__(self):
+        return f"{self.cycle_id} #{self.position}"

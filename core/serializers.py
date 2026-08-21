@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import base64
 import binascii
 import uuid
@@ -16,6 +18,8 @@ from .models import (
     BodyWeightEntry,
     DailyStepCount,
     Gear,
+    WorkoutCycleSlot,
+    WorkoutCycle,
     Exercise,
     RepbaseUser,
     SessionExercise,
@@ -1991,3 +1995,177 @@ class TrainingStatsSerializer(serializers.Serializer):
     six_week_counts = serializers.ListField(child=serializers.IntegerField())
     #: Scheduled workouts in the week containing `today`.
     weekly_goal = serializers.IntegerField()
+
+
+class WorkoutCycleSlotSerializer(serializers.ModelSerializer):
+    workout_name = serializers.CharField(source="workout.name", read_only=True)
+    is_rest = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = WorkoutCycleSlot
+        fields = ["id", "position", "workout", "workout_name", "is_rest"]
+        read_only_fields = ["id", "workout_name", "is_rest"]
+
+
+class WorkoutCycleSerializer(serializers.ModelSerializer):
+    owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    slots = WorkoutCycleSlotSerializer(many=True)
+    is_active = serializers.BooleanField(read_only=True)
+    #: Where the rotation is today, counting from one. The device should not
+    #: be doing this arithmetic: two clients disagreeing about which day of
+    #: the split it is would be worse than not showing it.
+    current_position = serializers.SerializerMethodField()
+    current_workout_name = serializers.SerializerMethodField()
+    next_workout_name = serializers.SerializerMethodField()
+    next_workout_date = serializers.SerializerMethodField()
+
+    class Meta:
+        model = WorkoutCycle
+        fields = [
+            "id",
+            "owner",
+            "name",
+            "length",
+            "anchor_date",
+            "effective_from",
+            "effective_until",
+            "is_active",
+            "slots",
+            "current_position",
+            "current_workout_name",
+            "next_workout_name",
+            "next_workout_date",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "owner",
+            "effective_from",
+            "effective_until",
+            "is_active",
+            "current_position",
+            "current_workout_name",
+            "next_workout_name",
+            "next_workout_date",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate(self, attrs):
+        length = attrs.get("length", getattr(self.instance, "length", None))
+        slots = attrs.get("slots")
+        if slots is not None and length is not None:
+            positions = [slot["position"] for slot in slots]
+            if len(set(positions)) != len(positions):
+                raise serializers.ValidationError(
+                    {"slots": "Two slots cannot share a position."}
+                )
+            if any(position < 1 or position > length for position in positions):
+                raise serializers.ValidationError(
+                    {"slots": f"Positions must be between 1 and {length}."}
+                )
+        return attrs
+
+    def validate_slots(self, value):
+        owner = self.context["request"].user.repbase_profile
+        for slot in value:
+            workout = slot.get("workout")
+            if workout is None:
+                continue
+            if workout.owner_id != owner.id:
+                raise serializers.ValidationError(
+                    "That workout does not belong to this user."
+                )
+            # A workout driven by both a weekly repeat and a rotation would
+            # have two generators writing the same dates, each undoing the
+            # other's idea of the plan.
+            if WorkoutRecurrence.objects.filter(
+                owner=owner,
+                workout=workout,
+                effective_until__isnull=True,
+            ).exists():
+                raise serializers.ValidationError(
+                    f"{workout.name} already repeats weekly. Stop the weekly "
+                    "repeat before putting it in a rotation."
+                )
+        return value
+
+    def _write_slots(self, cycle, slots):
+        cycle.slots.all().delete()
+        WorkoutCycleSlot.objects.bulk_create(
+            [
+                WorkoutCycleSlot(
+                    cycle=cycle,
+                    position=slot["position"],
+                    workout=slot.get("workout"),
+                )
+                for slot in slots
+            ]
+        )
+
+    def create(self, validated_data):
+        slots = validated_data.pop("slots", [])
+        cycle = WorkoutCycle.objects.create(**validated_data)
+        self._write_slots(cycle, slots)
+        return cycle
+
+    def update(self, instance, validated_data):
+        slots = validated_data.pop("slots", None)
+        for field, value in validated_data.items():
+            setattr(instance, field, value)
+        instance.save()
+        if slots is not None:
+            self._write_slots(instance, slots)
+        return instance
+
+    def _today(self):
+        return timezone.localdate()
+
+    def get_current_position(self, cycle) -> int:
+        return cycle.position(self._today())
+
+    def get_current_workout_name(self, cycle) -> str:
+        slot = cycle.slot(self._today())
+        if slot is None or slot.workout is None:
+            return "Rest"
+        return slot.workout.name
+
+    def _next(self, cycle):
+        """The next day of the rotation that is a workout rather than a rest."""
+        today = self._today()
+        for offset in range(0, cycle.length + 1):
+            day = today + timedelta(days=offset)
+            slot = cycle.slot(day)
+            if slot is not None and slot.workout is not None:
+                return day, slot.workout.name
+        return None, None
+
+    def get_next_workout_name(self, cycle) -> str:
+        return self._next(cycle)[1] or ""
+
+    def get_next_workout_date(self, cycle) -> str:
+        day = self._next(cycle)[0]
+        return day.isoformat() if day else ""
+
+
+class CyclePlanAheadSerializer(serializers.Serializer):
+    """How far forward to write schedule rows."""
+
+    through = serializers.DateField()
+
+
+class CycleShiftSerializer(serializers.Serializer):
+    """How many days to push the rest of the rotation back."""
+
+    days = serializers.IntegerField(min_value=1, max_value=31)
+
+
+class CycleShiftResultSerializer(serializers.Serializer):
+    """What the shift did, counted."""
+
+    cycle = WorkoutCycleSerializer()
+    days_shifted = serializers.IntegerField()
+    removed = serializers.IntegerField()
+    scheduled = serializers.IntegerField()
+    kept = serializers.IntegerField()
