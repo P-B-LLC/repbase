@@ -1998,8 +1998,15 @@ class TrainingStatsSerializer(serializers.Serializer):
 
 
 class WorkoutCycleSlotSerializer(serializers.ModelSerializer):
-    workout_name = serializers.CharField(source="workout.name", read_only=True)
+    #: "Rest", rather than no key at all. Sourced from ``workout.name`` this
+    #: hit a None partway down the chain, and DRF answers that by dropping the
+    #: field -- so the contract promised a string the response did not carry,
+    #: and every rotation with a rest day failed to decode on the client.
+    workout_name = serializers.SerializerMethodField()
     is_rest = serializers.BooleanField(read_only=True)
+
+    def get_workout_name(self, slot) -> str:
+        return slot.workout.name if slot.workout_id else "Rest"
 
     class Meta:
         model = WorkoutCycleSlot
