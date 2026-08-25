@@ -8,6 +8,8 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from zoneinfo import ZoneInfo, available_timezones
+
 from django.utils import timezone
 
 
@@ -217,6 +219,13 @@ class RepbaseUser(models.Model):
     )
     #: Each measurement is its own decision. A single flag forced height,
     #: weight and goal weight to be shared or withheld together.
+    #: The IANA zone this person lives in, e.g. "America/Chicago".
+    #:
+    #: Stored per user rather than changing TIME_ZONE, which would only move
+    #: the problem to whoever lives somewhere else. Everything is still stored
+    #: in UTC; this decides only what "today" means when a date is derived
+    #: from a moment.
+    time_zone = models.CharField(max_length=64, default="UTC")
     shows_height = models.BooleanField(default=False)
     shows_weight = models.BooleanField(default=False)
     shows_target_weight = models.BooleanField(default=False)
@@ -2443,3 +2452,29 @@ def best_set_for(owner, exercise):
         .order_by("-weight_kg", "-reps")
         .first()
     )
+
+
+def zone_for(profile):
+    """The tzinfo for a profile, falling back to UTC.
+
+    A zone name the platform does not recognise is not worth a 500 on every
+    request that needs a date; UTC is what the answer was before anyone set
+    one, so it is what an unusable value degrades to.
+    """
+    name = getattr(profile, "time_zone", "") or "UTC"
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo("UTC")
+
+
+def today_for(profile):
+    """The date it is where this person is.
+
+    `timezone.localdate()` answers with the server's day, and the server keeps
+    UTC. For a user in US Central that rolls over at seven in the evening, so
+    an evening workout was filed under tomorrow, a rotation advanced a day
+    early, and food logged after dinner landed on the wrong date. Anything
+    deriving a date from "now" has to ask this instead.
+    """
+    return timezone.localtime(timezone.now(), zone_for(profile)).date()

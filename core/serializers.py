@@ -4,6 +4,7 @@ import base64
 import binascii
 import uuid
 from decimal import Decimal
+from zoneinfo import available_timezones
 
 from django.contrib.auth import authenticate, get_user_model, password_validation
 from django.core.files.base import ContentFile
@@ -43,6 +44,7 @@ from .models import (
     MAX_FOOD_MEALS_PER_DAY,
     MAX_PROFILE_HIGHLIGHTS,
     MAX_PROFILE_PROMPTS,
+    today_for,
     ProfileHighlight,
     ProfilePrompt,
     best_set_for,
@@ -712,6 +714,14 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         allow_empty=True,
     )
 
+    #: Declared so blank reaches `validate_time_zone`. Left to the model field,
+    #: DRF refuses an empty string before the validator runs, and "put me back
+    #: on UTC" becomes an error the client cannot act on.
+    time_zone = serializers.CharField(
+        max_length=64, required=False, allow_blank=True
+    )
+
+
     class Meta:
         model = RepbaseUser
         fields = [
@@ -726,6 +736,7 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "target_weight_kg",
             "daily_step_goal",
             "unit_preference",
+            "time_zone",
             "bio",
             "profile_photo_url",
             "disciplines",
@@ -776,9 +787,22 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         return value.lower()
 
     def validate_birthdate(self, value):
-        if value and value > timezone.localdate():
+        # Judged where the user is. A date that is still today in Honolulu is
+        # already tomorrow in UTC, and refusing it would be the server telling
+        # somebody their birthday has not happened yet.
+        if value and value > today_for(self.instance):
             raise serializers.ValidationError("Birthdate cannot be in the future.")
         return value
+
+    def validate_time_zone(self, value):
+        name = (value or "").strip()
+        if not name:
+            return "UTC"
+        # Checked against what this machine actually knows, not a list kept
+        # here that would drift every time the zone database is updated.
+        if name not in available_timezones():
+            raise serializers.ValidationError("Not a time zone this server knows.")
+        return name
 
     @transaction.atomic
     def update(self, instance, validated_data):
@@ -2500,21 +2524,26 @@ class WorkoutCycleSerializer(serializers.ModelSerializer):
             self._write_slots(instance, slots)
         return instance
 
-    def _today(self):
-        return timezone.localdate()
+    def _today(self, cycle):
+        # The rotation owner's day, not the server's. "Day 3 of 8" advancing
+        # early every evening was this: UTC rolls over at seven in US Central.
+        #
+        # The cycle is required rather than optional so that no caller can
+        # quietly fall back to the server's clock again.
+        return today_for(cycle.owner)
 
     def get_current_position(self, cycle) -> int:
-        return cycle.position(self._today())
+        return cycle.position(self._today(cycle))
 
     def get_current_workout_name(self, cycle) -> str:
-        slot = cycle.slot(self._today())
+        slot = cycle.slot(self._today(cycle))
         if slot is None or slot.workout is None:
             return "Rest"
         return slot.workout.name
 
     def _next(self, cycle):
         """The next day of the rotation that is a workout rather than a rest."""
-        today = self._today()
+        today = self._today(cycle)
         for offset in range(0, cycle.length + 1):
             day = today + timedelta(days=offset)
             slot = cycle.slot(day)

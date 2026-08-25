@@ -6118,6 +6118,9 @@ components:
           minimum: 1000
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
+        time_zone:
+          type: string
+          maxLength: 64
         bio:
           type: string
           maxLength: 300
@@ -7400,6 +7403,9 @@ components:
           minimum: 1000
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
+        time_zone:
+          type: string
+          maxLength: 64
         bio:
           type: string
           maxLength: 300
@@ -7492,6 +7498,9 @@ components:
           minimum: 1000
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
+        time_zone:
+          type: string
+          maxLength: 64
         bio:
           type: string
           maxLength: 300

@@ -74,6 +74,7 @@ from .models import (
     PostWorkout,
     PostWorkoutExercise,
     food_meals_for_day,
+    today_for,
     normalize_gym_text,
     plan_recurring_week,
     week_start_for,
@@ -604,7 +605,7 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         serializer.is_valid(raise_exception=True)
         owner = self.owner_profile()
         week_start = week_start_for(serializer.validated_data["start"])
-        plan_recurring_week(owner, week_start, timezone.localdate())
+        plan_recurring_week(owner, week_start, today_for(owner))
         schedules = (
             WorkoutSchedule.objects.filter(
                 owner=owner,
@@ -1090,9 +1091,10 @@ class WorkoutRecurrenceViewSet(
         )
 
     def perform_create(self, serializer):
-        today = timezone.localdate()
+        owner = self.owner_profile()
+        today = today_for(owner)
         recurrence = serializer.save(
-            owner=self.owner_profile(),
+            owner=owner,
             effective_from=week_start_for(today),
         )
         # Claim the current week straight away. The workout is already on the
@@ -1101,7 +1103,7 @@ class WorkoutRecurrenceViewSet(
         plan_recurring_week(recurrence.owner, week_start_for(today), today)
 
     def perform_destroy(self, instance):
-        current_week = week_start_for(timezone.localdate())
+        current_week = week_start_for(today_for(instance.owner))
         # Clear only the weeks this rule had run ahead and planned. The current
         # week is left exactly as it is: those days are on the calendar in
         # front of the user, and one of them may already have been trained.
@@ -2683,7 +2685,7 @@ class TrainingStatsView(APIView):
     )
     def get(self, request):
         owner = profile_for(request.user)
-        today = parse_date(request.query_params.get("today") or "") or timezone.localdate()
+        today = parse_date(request.query_params.get("today") or "") or today_for(owner)
 
         # Only what the reduction needs. Reading whole session objects here
         # would repeat, on the server, the mistake this endpoint exists to fix.
@@ -2802,8 +2804,9 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         # A rule can never reach backwards: it starts today, whatever anchor
         # the user picked, so weeks already trained keep resolving through
         # whatever was planned then.
-        today = timezone.localdate()
-        serializer.save(owner=self.owner_profile(), effective_from=today)
+        owner = self.owner_profile()
+        today = today_for(owner)
+        serializer.save(owner=owner, effective_from=today)
 
     @extend_schema(
         request=CyclePlanAheadSerializer,
@@ -2855,7 +2858,7 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     def _reanchor(self, pk, shift_days):
         cycle = get_object_or_404(self.get_queryset(), pk=pk)
         owner = self.owner_profile()
-        today = timezone.localdate()
+        today = today_for(owner)
 
         if shift_days is None:
             # Where the rotation currently says the next workout is. Its
@@ -2950,7 +2953,7 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         read as two sessions to everything that counts them.
         """
         owner = cycle.owner
-        start = max(cycle.effective_from, timezone.localdate())
+        start = max(cycle.effective_from, today_for(cycle.owner))
         if cycle.materialized_through and cycle.materialized_through >= start:
             start = cycle.materialized_through + timedelta(days=1)
 
