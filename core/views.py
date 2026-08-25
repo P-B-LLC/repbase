@@ -52,6 +52,10 @@ from .models import (
     Gym,
     NutritionGoal,
     DEFAULT_FOOD_MEAL_COUNT,
+    MAX_PROFILE_HIGHLIGHTS,
+    MAX_PROFILE_PROMPTS,
+    ProfileHighlight,
+    ProfilePrompt,
     PlannerCategory,
     SavedFoodMeal,
     PlannerEntry,
@@ -107,7 +111,12 @@ from .serializers import (
     FoodMealSerializer,
     GymSerializer,
     NutritionGoalSerializer,
+    ProfileHighlightSerializer,
+    ProfileHighlightsRequestSerializer,
     ProfilePhotoUploadSerializer,
+    ProfilePromptSerializer,
+    ProfilePromptsRequestSerializer,
+    highlight_payload,
     RecentFoodSerializer,
     SavedFoodMealSerializer,
     PlanWeekSerializer,
@@ -222,6 +231,112 @@ class MeView(RetrieveUpdateDestroyAPIView):
         self.request.user.delete()
 
 
+class MePromptsView(APIView):
+    """The questions the signed-in user has answered."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: ProfilePromptSerializer(many=True)})
+    def get(self, request):
+        profile = profile_for(request.user)
+        return Response(
+            ProfilePromptSerializer(profile.prompts.all(), many=True).data
+        )
+
+    @extend_schema(
+        request=ProfilePromptsRequestSerializer,
+        responses={200: ProfilePromptSerializer(many=True)},
+        description=(
+            "Replace every answered question with the set sent. Sending an "
+            "empty list clears them."
+        ),
+    )
+    def put(self, request):
+        serializer = ProfilePromptsRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profile = profile_for(request.user)
+
+        with transaction.atomic():
+            # Replaced wholesale rather than reconciled. Three rows is not
+            # worth a diff, and a reconcile that goes wrong leaves an answer
+            # on a profile whose owner has already stopped seeing it.
+            profile.prompts.all().delete()
+            ProfilePrompt.objects.bulk_create([
+                ProfilePrompt(
+                    owner=profile,
+                    question=entry["question"],
+                    answer=entry["answer"],
+                    position=index + 1,
+                )
+                for index, entry in enumerate(serializer.validated_data["prompts"])
+            ])
+
+        return Response(
+            ProfilePromptSerializer(profile.prompts.all(), many=True).data
+        )
+
+
+class MeHighlightsView(APIView):
+    """The lifts the signed-in user has chosen to show."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: ProfileHighlightSerializer(many=True)})
+    def get(self, request):
+        profile = profile_for(request.user)
+        highlights = profile.highlights.select_related("exercise")
+        return Response(
+            ProfileHighlightSerializer(
+                [highlight_payload(highlight) for highlight in highlights],
+                many=True,
+            ).data
+        )
+
+    @extend_schema(
+        request=ProfileHighlightsRequestSerializer,
+        responses={200: ProfileHighlightSerializer(many=True)},
+        description=(
+            "Replace the featured lifts with the exercises sent, in the order "
+            "sent. An empty list clears them."
+        ),
+    )
+    def put(self, request):
+        serializer = ProfileHighlightsRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profile = profile_for(request.user)
+        wanted = serializer.validated_data["exercises"]
+
+        # Checked against what this person is allowed to use rather than
+        # against every row: a custom exercise belongs to whoever made it, and
+        # featuring somebody else's would put a name on a profile that its
+        # owner cannot see anywhere else in the app.
+        allowed = set(
+            Exercise.objects.filter(pk__in=wanted)
+            .filter(Q(created_by__isnull=True) | Q(created_by=profile))
+            .values_list("pk", flat=True)
+        )
+        missing = [pk for pk in wanted if pk not in allowed]
+        if missing:
+            raise ValidationError(
+                {"exercises": f"No exercise of yours with id {missing[0]}."}
+            )
+
+        with transaction.atomic():
+            profile.highlights.all().delete()
+            ProfileHighlight.objects.bulk_create([
+                ProfileHighlight(owner=profile, exercise_id=pk, position=index + 1)
+                for index, pk in enumerate(wanted)
+            ])
+
+        highlights = profile.highlights.select_related("exercise")
+        return Response(
+            ProfileHighlightSerializer(
+                [highlight_payload(highlight) for highlight in highlights],
+                many=True,
+            ).data
+        )
+
+
 class MePhotoView(APIView):
     """The signed-in user's profile photo."""
 
@@ -253,7 +368,11 @@ class MePhotoView(APIView):
 
 
 class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
-    queryset = RepbaseUser.objects.select_related("user").order_by("-created_at")
+    queryset = (
+        RepbaseUser.objects.select_related("user")
+        .prefetch_related("prompts")
+        .order_by("-created_at")
+    )
     serializer_class = PublicRepbaseUserSerializer
     permission_classes = [IsAuthenticated]
 
@@ -308,6 +427,25 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
             )
         _, created = Follow.objects.get_or_create(follower=follower, following=target)
         return Response(status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
+    @extend_schema(
+        responses={200: ProfileHighlightSerializer(many=True)},
+        description=(
+            "The lifts this user features, each with the best set they have "
+            "logged of it. Its own request because every highlight costs a "
+            "look through their set history."
+        ),
+    )
+    @action(detail=True, methods=["get"], pagination_class=None)
+    def highlights(self, request, pk=None):
+        target = self.get_object()
+        highlights = target.highlights.select_related("exercise")
+        return Response(
+            ProfileHighlightSerializer(
+                [highlight_payload(highlight) for highlight in highlights],
+                many=True,
+            ).data
+        )
 
     @extend_schema(responses=PublicRepbaseUserSerializer(many=True))
     @action(detail=True, methods=["get"])

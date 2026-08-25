@@ -2316,3 +2316,130 @@ class PostComment(models.Model):
 
     def __str__(self):
         return f"comment on post {self.post_id}"
+
+
+#: How many questions one profile may answer. Three keeps a profile readable
+#: at a glance and makes choosing them an act of expression in itself; twelve
+#: answered questions is a form, not a profile.
+MAX_PROFILE_PROMPTS = 3
+
+#: How many lifts a profile may feature, for the same reason.
+MAX_PROFILE_HIGHLIGHTS = 3
+
+
+class ProfilePrompt(models.Model):
+    """One question a person chose to answer on their profile.
+
+    A row per answer rather than a column per question. Which questions exist
+    is a product decision that will keep changing, and a column each would mean
+    a migration every time one is added or retired, plus a table of mostly
+    empty columns in between.
+
+    The answer is short on purpose. The bio is where someone writes at length;
+    these are meant to be read in a glance down a profile, and a paragraph in
+    one of them makes the other two invisible.
+    """
+
+    class Question(models.TextChoices):
+        WHY_I_TRAIN = "why_i_train", "Why I train"
+        CURRENT_GOAL = "current_goal", "What I am working towards"
+        FAVOURITE_LIFT = "favourite_lift", "Favourite lift"
+        HARDEST_PART = "hardest_part", "The hardest part for me"
+        BEST_ADVICE = "best_advice", "Best advice I have been given"
+        PROUDEST = "proudest", "Proudest moment in the gym"
+        REST_DAY = "rest_day", "A rest day looks like"
+        PRE_WORKOUT = "pre_workout", "What I eat before training"
+        POST_WORKOUT = "post_workout", "What I eat after"
+        TRAINING_TO = "training_to", "What I train to"
+        ONE_MORE_REP = "one_more_rep", "What gets me one more rep"
+        TRAINING_PARTNER = "training_partner", "Looking for a training partner who"
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="prompts",
+    )
+    question = models.CharField(max_length=24, choices=Question.choices)
+    answer = models.CharField(max_length=140)
+    position = models.PositiveSmallIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("position", "id")
+        constraints = [
+            # One answer per question. Answering the same one twice is not a
+            # thing anybody means to do, and the profile would print it twice.
+            models.UniqueConstraint(
+                fields=("owner", "question"),
+                name="unique_prompt_per_owner",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.owner}: {self.get_question_display()}"
+
+
+class ProfileHighlight(models.Model):
+    """An exercise someone chose to show their best of.
+
+    Only the choice is stored. The set underneath is read out of their own
+    logged sessions whenever the profile is drawn, so a highlight is a claim
+    the database can check rather than a number anyone can type. Every other
+    app makes you assert a 405 deadlift; this one can show the set.
+
+    Nothing is copied at the time of choosing, so the figure keeps up on its
+    own: beat it next week and the profile says so without being edited.
+    """
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="highlights",
+    )
+    exercise = models.ForeignKey(
+        Exercise,
+        on_delete=models.CASCADE,
+        related_name="profile_highlights",
+    )
+    position = models.PositiveSmallIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("position", "id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("owner", "exercise"),
+                name="unique_highlight_per_owner",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.owner}: {self.exercise}"
+
+
+def best_set_for(owner, exercise):
+    """The heaviest set this person has logged of one exercise.
+
+    Heaviest, with reps breaking the tie: that is the pair someone quotes when
+    asked what they lift, and it is what a card has room to print.
+
+    Only from finished sessions. A session still in progress has numbers in it
+    that may yet be corrected, and a profile is not the place to find out that
+    somebody mistyped a weight two minutes ago.
+
+    Returns None when nothing has been logged yet, which is the ordinary state
+    of a highlight chosen before the exercise has been trained.
+    """
+    return (
+        SetEntry.objects.filter(
+            session_exercise__session__repbase_user=owner,
+            session_exercise__exercise=exercise,
+            session_exercise__session__status=WorkoutSession.Status.COMPLETED,
+            weight_kg__isnull=False,
+            reps__isnull=False,
+        )
+        .select_related("session_exercise__session")
+        .order_by("-weight_kg", "-reps")
+        .first()
+    )

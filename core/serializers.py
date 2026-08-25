@@ -41,6 +41,12 @@ from .models import (
     WorkoutSession,
     WorkoutTemplate,
     MAX_FOOD_MEALS_PER_DAY,
+    MAX_PROFILE_HIGHLIGHTS,
+    MAX_PROFILE_PROMPTS,
+    ProfileHighlight,
+    ProfilePrompt,
+    best_set_for,
+    estimated_one_rep_max,
     Block,
     Follow,
     Post,
@@ -486,6 +492,116 @@ def replace_disciplines(profile, disciplines):
 #: Renders a Decimal the way DecimalField does, so a measurement has the same
 #: shape here as everywhere else in the API. Deliberately not a class
 #: attribute: DRF collects those as declared fields.
+class ProfilePromptSerializer(serializers.Serializer):
+    """One answered question, as anybody reading the profile sees it.
+
+    `question` goes out as a plain string and the readable wording comes with
+    it. A client draws the label, so a question added to the server after this
+    build shipped renders correctly on it rather than failing to decode, which
+    a closed enum in a response would guarantee.
+    """
+
+    question = serializers.CharField(read_only=True)
+    question_label = serializers.CharField(
+        source="get_question_display", read_only=True
+    )
+    answer = serializers.CharField(read_only=True)
+
+
+class ProfilePromptWriteSerializer(serializers.Serializer):
+    """One answer on its way in. Closed, unlike the response: a question the
+    server does not offer is a mistake worth reporting, not a value to keep."""
+
+    question = serializers.ChoiceField(choices=ProfilePrompt.Question.choices)
+    answer = serializers.CharField(max_length=140)
+
+    def validate_answer(self, value):
+        answer = value.strip()
+        if not answer:
+            raise serializers.ValidationError("Write something, or remove the question.")
+        return answer
+
+
+class ProfilePromptsRequestSerializer(serializers.Serializer):
+    """The whole set at once.
+
+    Replace rather than patch, because the screen behind this edits all three
+    together: sending the set that should exist afterwards cannot leave a
+    fourth answer behind that nobody can see to delete.
+    """
+
+    prompts = serializers.ListField(
+        child=ProfilePromptWriteSerializer(),
+        max_length=MAX_PROFILE_PROMPTS,
+        allow_empty=True,
+    )
+
+    def validate_prompts(self, value):
+        questions = [entry["question"] for entry in value]
+        if len(set(questions)) != len(questions):
+            raise serializers.ValidationError("Each question can only be answered once.")
+        return value
+
+
+class ProfileHighlightSerializer(serializers.Serializer):
+    """A featured lift, with the best set behind it.
+
+    Every figure is nullable together: choosing an exercise before training it
+    is the ordinary first state of a highlight, and the app draws "not logged
+    yet" rather than a zero that reads like a failed lift.
+    """
+
+    exercise = serializers.IntegerField(read_only=True)
+    exercise_name = serializers.CharField(read_only=True)
+    best_weight_kg = serializers.DecimalField(
+        max_digits=7, decimal_places=2, read_only=True, allow_null=True
+    )
+    best_reps = serializers.IntegerField(read_only=True, allow_null=True)
+    estimated_one_rep_max_kg = serializers.DecimalField(
+        max_digits=7, decimal_places=2, read_only=True, allow_null=True
+    )
+    performed_at = serializers.DateTimeField(read_only=True, allow_null=True)
+
+
+class ProfileHighlightsRequestSerializer(serializers.Serializer):
+    """Which exercises to feature, in the order they should appear."""
+
+    exercises = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        max_length=MAX_PROFILE_HIGHLIGHTS,
+        allow_empty=True,
+    )
+
+    def validate_exercises(self, value):
+        if len(set(value)) != len(value):
+            raise serializers.ValidationError("Each exercise can only be featured once.")
+        return value
+
+
+def highlight_payload(highlight):
+    """One highlight and its best set, ready to serialize.
+
+    The estimate comes back None above a dozen reps, where Epley stops meaning
+    much. That rule lives in `estimated_one_rep_max` and is not repeated here:
+    two copies of a threshold is one copy too many.
+    """
+    best = best_set_for(highlight.owner, highlight.exercise)
+    estimate = (
+        estimated_one_rep_max(best.weight_kg, best.reps) if best is not None else None
+    )
+    return {
+        "exercise": highlight.exercise_id,
+        "exercise_name": highlight.exercise.name,
+        "best_weight_kg": best.weight_kg if best else None,
+        "best_reps": best.reps if best else None,
+        "estimated_one_rep_max_kg": estimate,
+        "performed_at": (
+            best.session_exercise.session.ended_at
+            or best.session_exercise.session.created_at
+        ) if best else None,
+    }
+
+
 PUBLIC_KILOGRAMS = serializers.DecimalField(max_digits=6, decimal_places=2)
 
 #: Nutrition totals are derived, so they need rendering the same way a
@@ -508,6 +624,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     target_weight_kg = serializers.SerializerMethodField()
     profile_photo_url = serializers.SerializerMethodField()
     disciplines = serializers.SerializerMethodField()
+    prompts = serializers.SerializerMethodField()
 
     class Meta:
         model = RepbaseUser
@@ -519,6 +636,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
             "bio",
             "profile_photo_url",
             "disciplines",
+            "prompts",
             "gym",
             "gym_name",
             "gym_city",
@@ -538,6 +656,14 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     @extend_schema_field(serializers.ListField(child=serializers.CharField()))
     def get_disciplines(self, profile):
         return disciplines_for(profile)
+
+    # Prompts ride along on the profile because they are three short rows
+    # that prefetch with it. Highlights do not: each one costs a query
+    # into the set history, and a page of gym members would pay it per
+    # person. They have their own endpoint, so the cost is asked for.
+    @extend_schema_field(ProfilePromptSerializer(many=True))
+    def get_prompts(self, profile):
+        return ProfilePromptSerializer(profile.prompts.all(), many=True).data
 
     # `is_body_metrics_public` had nothing reading it: the public profile never
     # carried measurements at all, so the switch the user was offered did

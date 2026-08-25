@@ -22,7 +22,9 @@ from .views import (
     SavedFoodMealViewSet,
     LoginView,
     LogoutView,
+    MeHighlightsView,
     MePhotoView,
+    MePromptsView,
     MeView,
     RegisterView,
     RepbaseUserViewSet,
@@ -77,6 +79,8 @@ urlpatterns = [
     path("auth/logout/", LogoutView.as_view(), name="logout"),
     path("me/", MeView.as_view(), name="me"),
     path("me/photo/", MePhotoView.as_view(), name="me-photo"),
+    path("me/prompts/", MePromptsView.as_view(), name="me-prompts"),
+    path("me/highlights/", MeHighlightsView.as_view(), name="me-highlights"),
     path("food/goals/", NutritionGoalView.as_view(), name="nutrition-goals"),
     path(
         "sessions/training-stats/",

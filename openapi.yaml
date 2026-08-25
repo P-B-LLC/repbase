@@ -1794,6 +1794,54 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/me/highlights/:
+    get:
+      operationId: me_highlights_list
+      description: The lifts the signed-in user has chosen to show.
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileHighlight'
+          description: ''
+    put:
+      operationId: me_highlights_update
+      description: Replace the featured lifts with the exercises sent, in the order
+        sent. An empty list clears them.
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileHighlightsRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfileHighlightsRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfileHighlightsRequestRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileHighlight'
+          description: ''
   /api/v1/me/photo/:
     put:
       operationId: me_photo_update
@@ -1836,6 +1884,54 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RepbaseUser'
+          description: ''
+  /api/v1/me/prompts/:
+    get:
+      operationId: me_prompts_list
+      description: The questions the signed-in user has answered.
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfilePrompt'
+          description: ''
+    put:
+      operationId: me_prompts_update
+      description: Replace every answered question with the set sent. Sending an empty
+        list clears them.
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfilePromptsRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfilePromptsRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfilePromptsRequestRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfilePrompt'
           description: ''
   /api/v1/planner/:
     get:
@@ -2995,6 +3091,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/HealthImportResult'
           description: ''
+  /api/v1/sessions/previous-sets/:
+    get:
+      operationId: sessions_previous_sets_list
+      description: |-
+        What this user last lifted, per exercise.
+
+        One pass over their own set entries, newest first, keeping the first
+        occurrence of each (exercise, set number). The app used to do this by
+        reading recent sessions one at a time until it found one that had logged
+        something, which fails quietly on a run of sessions started and abandoned
+        -- and that run is nine long on real data.
+
+        Scoped to the caller throughout. Somebody else's numbers are not a hint,
+        they are somebody else's training.
+      parameters:
+      - in: query
+        name: exclude_session
+        schema:
+          type: integer
+        description: Ignore this session, which is the one being logged now.
+      - in: query
+        name: workout
+        schema:
+          type: integer
+        description: Only exercises in this workout. Narrows the answer to what the
+          screen is about to draw.
+      tags:
+      - sessions
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PreviousSet'
+          description: ''
   /api/v1/sessions/training-stats/:
     get:
       operationId: sessions_training_stats_retrieve
@@ -3283,6 +3419,165 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/social/comments/:
+    get:
+      operationId: social_comments_list
+      description: |-
+        Comments on a post.
+
+        Reading is governed by the post, not by the comment: if you may see the
+        post you may read what people said about it, and if you may not, its
+        comments are a 404 for the same reason the post is. Writing and deleting
+        belong to the comment's own author.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - in: query
+        name: post
+        schema:
+          type: integer
+        description: Only comments on this post.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPostCommentList'
+          description: ''
+    post:
+      operationId: social_comments_create
+      description: |-
+        Comments on a post.
+
+        Reading is governed by the post, not by the comment: if you may see the
+        post you may read what people said about it, and if you may not, its
+        comments are a 404 for the same reason the post is. Writing and deleting
+        belong to the comment's own author.
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostCommentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PostCommentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PostCommentRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostComment'
+          description: ''
+  /api/v1/social/comments/{id}/:
+    get:
+      operationId: social_comments_retrieve
+      description: |-
+        Comments on a post.
+
+        Reading is governed by the post, not by the comment: if you may see the
+        post you may read what people said about it, and if you may not, its
+        comments are a 404 for the same reason the post is. Writing and deleting
+        belong to the comment's own author.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post comment.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostComment'
+          description: ''
+    patch:
+      operationId: social_comments_partial_update
+      description: |-
+        Comments on a post.
+
+        Reading is governed by the post, not by the comment: if you may see the
+        post you may read what people said about it, and if you may not, its
+        comments are a 404 for the same reason the post is. Writing and deleting
+        belong to the comment's own author.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post comment.
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedPostCommentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedPostCommentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedPostCommentRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostComment'
+          description: ''
+    delete:
+      operationId: social_comments_destroy
+      description: |-
+        Comments on a post.
+
+        Reading is governed by the post, not by the comment: if you may see the
+        post you may read what people said about it, and if you may not, its
+        comments are a 404 for the same reason the post is. Writing and deleting
+        belong to the comment's own author.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post comment.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/social/feed/:
     get:
       operationId: social_feed_list
@@ -3478,6 +3773,122 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/social/posts/{id}/like/:
+    post:
+      operationId: social_posts_like_create
+      description: Like this post.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+    delete:
+      operationId: social_posts_like_destroy
+      description: Remove your like. Answers with the post, not 204.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+  /api/v1/social/posts/{id}/repost/:
+    post:
+      operationId: social_posts_repost_create
+      description: Pass this post on to your followers. Reposting a repost passes
+        on the original, and the original is what comes back.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+    delete:
+      operationId: social_posts_repost_destroy
+      description: Withdraw your repost. Answers with the post, not 204.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+  /api/v1/social/posts/{id}/save-workout/:
+    post:
+      operationId: social_posts_save_workout_create
+      description: Copy a posted workout into your own workouts. The exercises and
+        their set counts are taken; weights are not, because a workout you save is
+        a plan to follow rather than a record of somebody else's session.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedWorkoutResult'
+          description: ''
   /api/v1/step-counts/:
     get:
       operationId: step_counts_list
@@ -3694,6 +4105,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PaginatedPublicRepbaseUserList'
+          description: ''
+  /api/v1/users/{id}/highlights/:
+    get:
+      operationId: users_highlights_list
+      description: The lifts this user features, each with the best set they have
+        logged of it. Its own request because every highlight costs a look through
+        their set history.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this repbase user.
+        required: true
+      tags:
+      - users
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileHighlight'
           description: ''
   /api/v1/workout-exercises/:
     get:
@@ -4219,11 +4657,13 @@ components:
       - workout
       - meal
       - planner
+      - repost
       type: string
       description: |-
         * `workout` - Workout
         * `meal` - Meal
         * `planner` - Planner
+        * `repost` - Repost
     CreatePostRequest:
       type: object
       description: |-
@@ -4243,6 +4683,9 @@ components:
           type: string
           default: ''
           maxLength: 300
+        shows_weights:
+          type: boolean
+          default: true
         visibility:
           allOf:
           - $ref: '#/components/schemas/VisibilityEnum'
@@ -5142,6 +5585,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PlannerEntry'
+    PaginatedPostCommentList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/PostComment'
     PaginatedPostList:
       type: object
       required:
@@ -5589,6 +6055,24 @@ components:
         notes:
           type: string
           maxLength: 300
+    PatchedPostCommentRequest:
+      type: object
+      description: |-
+        A comment, and the replies hanging off it.
+
+        `replies` is filled only for a top-level comment, and is never more than
+        one deep because the model refuses a reply to a reply. The client can
+        therefore render a thread without walking anything.
+      properties:
+        post:
+          type: integer
+        parent:
+          type: integer
+          nullable: true
+        body:
+          type: string
+          minLength: 1
+          maxLength: 1000
     PatchedRepbaseUserRequest:
       type: object
       properties:
@@ -5628,6 +6112,10 @@ components:
           format: decimal
           pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
           nullable: true
+        daily_step_goal:
+          type: integer
+          maximum: 100000
+          minimum: 1000
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
         bio:
@@ -6051,6 +6539,32 @@ components:
         viewer_follows_author:
           type: boolean
           readOnly: true
+        shows_weights:
+          type: boolean
+          readOnly: true
+        viewer_is_author:
+          type: boolean
+          readOnly: true
+        like_count:
+          type: integer
+          readOnly: true
+        comment_count:
+          type: integer
+          readOnly: true
+        repost_count:
+          type: integer
+          readOnly: true
+        viewer_has_liked:
+          type: boolean
+          readOnly: true
+        viewer_has_reposted:
+          type: boolean
+          readOnly: true
+        repost_of:
+          allOf:
+          - $ref: '#/components/schemas/RepostedPost'
+          nullable: true
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -6062,17 +6576,95 @@ components:
       required:
       - author
       - caption
+      - comment_count
       - created_at
       - id
       - image_url
       - kind
+      - like_count
       - meal
       - planner
+      - repost_count
+      - repost_of
+      - shows_weights
       - source_id
       - updated_at
       - viewer_follows_author
+      - viewer_has_liked
+      - viewer_has_reposted
+      - viewer_is_author
       - visibility
       - workout
+    PostComment:
+      type: object
+      description: |-
+        A comment, and the replies hanging off it.
+
+        `replies` is filled only for a top-level comment, and is never more than
+        one deep because the model refuses a reply to a reply. The client can
+        therefore render a thread without walking anything.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        post:
+          type: integer
+        author:
+          allOf:
+          - $ref: '#/components/schemas/PublicRepbaseUser'
+          readOnly: true
+        parent:
+          type: integer
+          nullable: true
+        body:
+          type: string
+          maxLength: 1000
+        replies:
+          type: array
+          items:
+            $ref: '#/components/schemas/PostReply'
+          readOnly: true
+        viewer_is_author:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - author
+      - body
+      - created_at
+      - id
+      - post
+      - replies
+      - updated_at
+      - viewer_is_author
+    PostCommentRequest:
+      type: object
+      description: |-
+        A comment, and the replies hanging off it.
+
+        `replies` is filled only for a top-level comment, and is never more than
+        one deep because the model refuses a reply to a reply. The client can
+        therefore render a thread without walking anything.
+      properties:
+        post:
+          type: integer
+        parent:
+          type: integer
+          nullable: true
+        body:
+          type: string
+          minLength: 1
+          maxLength: 1000
+      required:
+      - body
+      - post
     PostMeal:
       type: object
       description: |-
@@ -6227,6 +6819,53 @@ components:
       - scheduled_date
       - scheduled_time
       - title
+    PostReply:
+      type: object
+      description: |-
+        A reply, as it appears nested under the comment it answers.
+
+        The same fields as a comment without `replies`, because a reply cannot
+        have any -- the model refuses a reply to a reply. Kept a separate class so
+        the contract can name the type instead of describing an array of anonymous
+        objects, which is what a self-referential field generates.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        post:
+          type: integer
+          readOnly: true
+        author:
+          allOf:
+          - $ref: '#/components/schemas/PublicRepbaseUser'
+          readOnly: true
+        parent:
+          type: integer
+          readOnly: true
+          nullable: true
+        body:
+          type: string
+          readOnly: true
+        viewer_is_author:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - author
+      - body
+      - created_at
+      - id
+      - parent
+      - post
+      - updated_at
+      - viewer_is_author
     PostWorkout:
       type: object
       description: |-
@@ -6371,6 +7010,92 @@ components:
       - top_set_weight_kg
       - total_reps
       - volume_kg
+    PreviousSet:
+      type: object
+      description: One set from the last time an exercise was done.
+      properties:
+        exercise:
+          type: integer
+          readOnly: true
+        set_number:
+          type: integer
+          readOnly: true
+        weight_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        reps:
+          type: integer
+          readOnly: true
+          nullable: true
+        performed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - exercise
+      - performed_at
+      - reps
+      - set_number
+      - weight_kg
+    ProfileHighlight:
+      type: object
+      description: |-
+        A featured lift, with the best set behind it.
+
+        Every figure is nullable together: choosing an exercise before training it
+        is the ordinary first state of a highlight, and the app draws "not logged
+        yet" rather than a zero that reads like a failed lift.
+      properties:
+        exercise:
+          type: integer
+          readOnly: true
+        exercise_name:
+          type: string
+          readOnly: true
+        best_weight_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        best_reps:
+          type: integer
+          readOnly: true
+          nullable: true
+        estimated_one_rep_max_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        performed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+      required:
+      - best_reps
+      - best_weight_kg
+      - estimated_one_rep_max_kg
+      - exercise
+      - exercise_name
+      - performed_at
+    ProfileHighlightsRequestRequest:
+      type: object
+      description: Which exercises to feature, in the order they should appear.
+      properties:
+        exercises:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          maxItems: 3
+      required:
+      - exercises
     ProfilePhotoUploadRequest:
       type: object
       description: |-
@@ -6389,6 +7114,60 @@ components:
       required:
       - content_type
       - image_base64
+    ProfilePrompt:
+      type: object
+      description: |-
+        One answered question, as anybody reading the profile sees it.
+
+        `question` goes out as a plain string and the readable wording comes with
+        it. A client draws the label, so a question added to the server after this
+        build shipped renders correctly on it rather than failing to decode, which
+        a closed enum in a response would guarantee.
+      properties:
+        question:
+          type: string
+          readOnly: true
+        question_label:
+          type: string
+          readOnly: true
+        answer:
+          type: string
+          readOnly: true
+      required:
+      - answer
+      - question
+      - question_label
+    ProfilePromptWriteRequest:
+      type: object
+      description: |-
+        One answer on its way in. Closed, unlike the response: a question the
+        server does not offer is a mistake worth reporting, not a value to keep.
+      properties:
+        question:
+          $ref: '#/components/schemas/QuestionEnum'
+        answer:
+          type: string
+          minLength: 1
+          maxLength: 140
+      required:
+      - answer
+      - question
+    ProfilePromptsRequestRequest:
+      type: object
+      description: |-
+        The whole set at once.
+
+        Replace rather than patch, because the screen behind this edits all three
+        together: sending the set that should exist afterwards cannot leave a
+        fourth answer behind that nobody can see to delete.
+      properties:
+        prompts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfilePromptWriteRequest'
+          maxItems: 3
+      required:
+      - prompts
     PublicRepbaseUser:
       type: object
       properties:
@@ -6415,6 +7194,11 @@ components:
           type: array
           items:
             type: string
+          readOnly: true
+        prompts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfilePrompt'
           readOnly: true
         gym:
           type: integer
@@ -6463,6 +7247,7 @@ components:
       - id
       - last_name
       - profile_photo_url
+      - prompts
       - target_weight_kg
       - username
       - weight_kg
@@ -6481,6 +7266,34 @@ components:
           type: boolean
         shows_target_weight:
           type: boolean
+    QuestionEnum:
+      enum:
+      - why_i_train
+      - current_goal
+      - favourite_lift
+      - hardest_part
+      - best_advice
+      - proudest
+      - rest_day
+      - pre_workout
+      - post_workout
+      - training_to
+      - one_more_rep
+      - training_partner
+      type: string
+      description: |-
+        * `why_i_train` - Why I train
+        * `current_goal` - What I am working towards
+        * `favourite_lift` - Favourite lift
+        * `hardest_part` - The hardest part for me
+        * `best_advice` - Best advice I have been given
+        * `proudest` - Proudest moment in the gym
+        * `rest_day` - A rest day looks like
+        * `pre_workout` - What I eat before training
+        * `post_workout` - What I eat after
+        * `training_to` - What I train to
+        * `one_more_rep` - What gets me one more rep
+        * `training_partner` - Looking for a training partner who
     RecentFood:
       type: object
       description: A food the user has logged before, for the picker.
@@ -6581,6 +7394,10 @@ components:
           format: decimal
           pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
           nullable: true
+        daily_step_goal:
+          type: integer
+          maximum: 100000
+          minimum: 1000
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
         bio:
@@ -6669,6 +7486,10 @@ components:
           format: decimal
           pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
           nullable: true
+        daily_step_goal:
+          type: integer
+          maximum: 100000
+          minimum: 1000
         unit_preference:
           $ref: '#/components/schemas/UnitPreferenceEnum'
         bio:
@@ -6692,6 +7513,62 @@ components:
       - first_name
       - last_name
       - username
+    RepostedPost:
+      type: object
+      description: |-
+        The original, as it appears inside a repost.
+
+        Deliberately not `PostSerializer`. That one carries `repost_of`, and a
+        serializer that contains itself is a schema no generator can express and a
+        depth no reader wants. A repost cannot be reposted, so one level is all
+        there is to show.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        author:
+          allOf:
+          - $ref: '#/components/schemas/PublicRepbaseUser'
+          readOnly: true
+        kind:
+          type: string
+          readOnly: true
+        image_url:
+          type: string
+          nullable: true
+          readOnly: true
+        caption:
+          type: string
+          readOnly: true
+        workout:
+          allOf:
+          - $ref: '#/components/schemas/PostWorkout'
+          readOnly: true
+          nullable: true
+        meal:
+          allOf:
+          - $ref: '#/components/schemas/PostMeal'
+          readOnly: true
+          nullable: true
+        planner:
+          allOf:
+          - $ref: '#/components/schemas/PostPlannerEntry'
+          readOnly: true
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - author
+      - caption
+      - created_at
+      - id
+      - image_url
+      - kind
+      - meal
+      - planner
+      - workout
     SavedFoodIngredient:
       type: object
       properties:
@@ -6810,6 +7687,32 @@ components:
       required:
       - ingredients
       - name
+    SavedWorkoutResult:
+      type: object
+      description: |-
+        What saving somebody else's posted workout produced.
+
+        The name is returned because it is not always the one on the post: a user
+        who already has a "Push Day" gets the copy under a name saying where it
+        came from, and the app has to be able to tell them so.
+      properties:
+        workout:
+          type: string
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        exercise_count:
+          type: integer
+          readOnly: true
+        renamed:
+          type: boolean
+          readOnly: true
+      required:
+      - exercise_count
+      - name
+      - renamed
+      - workout
     SessionCardioRequest:
       type: object
       description: A cardio finisher performed after a session's exercises.
