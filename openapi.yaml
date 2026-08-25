@@ -5317,6 +5317,16 @@ components:
       - ended_at
       - external_id
       - started_at
+    LiftEnum:
+      enum:
+      - bench
+      - squat
+      - deadlift
+      type: string
+      description: |-
+        * `bench` - Bench Press
+        * `squat` - Squat
+        * `deadlift` - Deadlift
     LoginRequest:
       type: object
       properties:
@@ -7047,25 +7057,32 @@ components:
     ProfileHighlight:
       type: object
       description: |-
-        A featured lift, with the best set behind it.
+        A featured lift and the set behind it.
 
-        Every figure is nullable together: choosing an exercise before training it
-        is the ordinary first state of a highlight, and the app draws "not logged
-        yet" rather than a zero that reads like a failed lift.
+        `source` is the important field. "logged" means the server read this out
+        of a finished session and can point at the day; "manual" means the person
+        typed it; "none" means there is nothing to show yet. A reader is told
+        which, because a number nobody logged must not look like one that was.
+
+        A plain string, not a closed enum, so a source added later does not stop an
+        older build decoding the profile around it.
       properties:
-        exercise:
-          type: integer
-          readOnly: true
-        exercise_name:
+        lift:
           type: string
           readOnly: true
-        best_weight_kg:
+        lift_label:
+          type: string
+          readOnly: true
+        source:
+          type: string
+          readOnly: true
+        weight_kg:
           type: string
           format: decimal
           pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
           readOnly: true
           nullable: true
-        best_reps:
+        reps:
           type: integer
           readOnly: true
           nullable: true
@@ -7080,25 +7097,47 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        exercise_name:
+          type: string
+          readOnly: true
+          nullable: true
       required:
-      - best_reps
-      - best_weight_kg
       - estimated_one_rep_max_kg
-      - exercise
       - exercise_name
+      - lift
+      - lift_label
       - performed_at
+      - reps
+      - source
+      - weight_kg
+    ProfileHighlightWriteRequest:
+      type: object
+      description: One featured lift on its way in.
+      properties:
+        lift:
+          $ref: '#/components/schemas/LiftEnum'
+        manual_weight_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          nullable: true
+        manual_reps:
+          type: integer
+          minimum: 1
+          nullable: true
+      required:
+      - lift
     ProfileHighlightsRequestRequest:
       type: object
-      description: Which exercises to feature, in the order they should appear.
+      description: Which lifts to feature, in the order they should appear.
       properties:
-        exercises:
+        highlights:
           type: array
           items:
-            type: integer
-            minimum: 1
+            $ref: '#/components/schemas/ProfileHighlightWriteRequest'
           maxItems: 3
       required:
-      - exercises
+      - highlights
     ProfilePhotoUploadRequest:
       type: object
       description: |-

@@ -285,7 +285,7 @@ class MeHighlightsView(APIView):
     @extend_schema(responses={200: ProfileHighlightSerializer(many=True)})
     def get(self, request):
         profile = profile_for(request.user)
-        highlights = profile.highlights.select_related("exercise")
+        highlights = profile.highlights.all()
         return Response(
             ProfileHighlightSerializer(
                 [highlight_payload(highlight) for highlight in highlights],
@@ -305,31 +305,24 @@ class MeHighlightsView(APIView):
         serializer = ProfileHighlightsRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         profile = profile_for(request.user)
-        wanted = serializer.validated_data["exercises"]
-
-        # Checked against what this person is allowed to use rather than
-        # against every row: a custom exercise belongs to whoever made it, and
-        # featuring somebody else's would put a name on a profile that its
-        # owner cannot see anywhere else in the app.
-        allowed = set(
-            Exercise.objects.filter(pk__in=wanted)
-            .filter(Q(created_by__isnull=True) | Q(created_by=profile))
-            .values_list("pk", flat=True)
-        )
-        missing = [pk for pk in wanted if pk not in allowed]
-        if missing:
-            raise ValidationError(
-                {"exercises": f"No exercise of yours with id {missing[0]}."}
-            )
+        wanted = serializer.validated_data["highlights"]
 
         with transaction.atomic():
+            # Replaced wholesale rather than reconciled: three rows is not
+            # worth a diff, and the screen behind this edits all of them.
             profile.highlights.all().delete()
             ProfileHighlight.objects.bulk_create([
-                ProfileHighlight(owner=profile, exercise_id=pk, position=index + 1)
-                for index, pk in enumerate(wanted)
+                ProfileHighlight(
+                    owner=profile,
+                    lift=entry["lift"],
+                    manual_weight_kg=entry.get("manual_weight_kg"),
+                    manual_reps=entry.get("manual_reps"),
+                    position=index + 1,
+                )
+                for index, entry in enumerate(wanted)
             ])
 
-        highlights = profile.highlights.select_related("exercise")
+        highlights = profile.highlights.all()
         return Response(
             ProfileHighlightSerializer(
                 [highlight_payload(highlight) for highlight in highlights],
@@ -440,7 +433,7 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["get"], pagination_class=None)
     def highlights(self, request, pk=None):
         target = self.get_object()
-        highlights = target.highlights.select_related("exercise")
+        highlights = target.highlights.all()
         return Response(
             ProfileHighlightSerializer(
                 [highlight_payload(highlight) for highlight in highlights],

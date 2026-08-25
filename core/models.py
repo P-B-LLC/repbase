@@ -2389,66 +2389,111 @@ class ProfilePrompt(models.Model):
         return f"{self.owner}: {self.get_question_display()}"
 
 
+#: Which exercise names count as each lift when reading a best set out of
+#: somebody's logs. Matched loosely on purpose: people name the same movement
+#: "Bench Press", "Barbell Bench" and "Flat Bench", and a profile that says
+#: nothing because the name did not match exactly is worse than one that
+#: occasionally matches a close cousin.
+LIFT_KEYWORDS = {
+    "bench": "bench",
+    "squat": "squat",
+    "deadlift": "deadlift",
+}
+
+
 class ProfileHighlight(models.Model):
-    """An exercise someone chose to show their best of.
+    """One of the three lifts, and what this person has to show for it.
 
-    Only the choice is stored. The set underneath is read out of their own
-    logged sessions whenever the profile is drawn, so a highlight is a claim
-    the database can check rather than a number anyone can type. Every other
-    app makes you assert a 405 deadlift; this one can show the set.
+    Three fixed lifts rather than any exercise: the point of a featured lift is
+    comparison, and a number is only comparable against the same movement. Two
+    profiles showing "Incline Chest" and "Lateral Raises" tell a reader nothing
+    about which of them is stronger.
 
-    Nothing is copied at the time of choosing, so the figure keeps up on its
-    own: beat it next week and the profile says so without being edited.
+    The figure comes from one of two places. Left alone it is read out of that
+    person's own finished sessions whenever the profile is drawn, so it keeps
+    up on its own -- beat it next week and the profile says so without being
+    edited, and the claim is one the database can check. Typed in, it is
+    whatever they say it is, and the response says so: a number nobody logged
+    must not be dressed up as one that was.
     """
+
+    class Lift(models.TextChoices):
+        BENCH = "bench", "Bench Press"
+        SQUAT = "squat", "Squat"
+        DEADLIFT = "deadlift", "Deadlift"
 
     owner = models.ForeignKey(
         RepbaseUser,
         on_delete=models.CASCADE,
         related_name="highlights",
     )
-    exercise = models.ForeignKey(
-        Exercise,
-        on_delete=models.CASCADE,
-        related_name="profile_highlights",
+    lift = models.CharField(max_length=10, choices=Lift.choices)
+    #: Typed in rather than logged. Both or neither: half of a set is not a
+    #: set, and "225 lb for an unknown number of reps" says less than nothing.
+    manual_weight_kg = models.DecimalField(
+        max_digits=7,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0)],
     )
+    manual_reps = models.PositiveIntegerField(null=True, blank=True)
     position = models.PositiveSmallIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ("position", "id")
         constraints = [
             models.UniqueConstraint(
-                fields=("owner", "exercise"),
-                name="unique_highlight_per_owner",
-            )
+                fields=("owner", "lift"),
+                name="unique_highlight_lift_per_owner",
+            ),
+            # Both or neither, in the database as well as the serializer.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(manual_weight_kg__isnull=True, manual_reps__isnull=True)
+                    | models.Q(manual_weight_kg__isnull=False, manual_reps__isnull=False)
+                ),
+                name="manual_highlight_is_whole",
+            ),
         ]
 
     def __str__(self):
-        return f"{self.owner}: {self.exercise}"
+        return f"{self.owner}: {self.get_lift_display()}"
 
 
-def best_set_for(owner, exercise):
-    """The heaviest set this person has logged of one exercise.
+def best_set_for(owner, lift):
+    """The heaviest set this person has logged of one of the three lifts.
 
     Heaviest, with reps breaking the tie: that is the pair someone quotes when
     asked what they lift, and it is what a card has room to print.
 
+    Matched on the exercise's name, because the app lets people name their own
+    movements and there is no canonical bench press row to point at. Loose
+    enough to catch "Barbell Bench Press", loose enough to catch "Romanian
+    Deadlift" too -- which is the price of not making everybody pick their
+    lifts off a fixed list before they can log anything.
+
     Only from finished sessions. A session still in progress has numbers in it
-    that may yet be corrected, and a profile is not the place to find out that
+    that may yet be corrected, and a profile is not the place to find out
     somebody mistyped a weight two minutes ago.
 
-    Returns None when nothing has been logged yet, which is the ordinary state
-    of a highlight chosen before the exercise has been trained.
+    Returns None when nothing matches, which is the ordinary state of a
+    highlight on somebody who has not logged that lift here.
     """
+    keyword = LIFT_KEYWORDS.get(lift)
+    if keyword is None:
+        return None
     return (
         SetEntry.objects.filter(
             session_exercise__session__repbase_user=owner,
-            session_exercise__exercise=exercise,
             session_exercise__session__status=WorkoutSession.Status.COMPLETED,
+            session_exercise__exercise__name__icontains=keyword,
             weight_kg__isnull=False,
             reps__isnull=False,
         )
-        .select_related("session_exercise__session")
+        .select_related("session_exercise__session", "session_exercise__exercise")
         .order_by("-weight_kg", "-reps")
         .first()
     )

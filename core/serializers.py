@@ -47,6 +47,7 @@ from .models import (
     today_for,
     ProfileHighlight,
     ProfilePrompt,
+    LIFT_KEYWORDS,
     best_set_for,
     estimated_one_rep_max,
     Block,
@@ -546,61 +547,109 @@ class ProfilePromptsRequestSerializer(serializers.Serializer):
 
 
 class ProfileHighlightSerializer(serializers.Serializer):
-    """A featured lift, with the best set behind it.
+    """A featured lift and the set behind it.
 
-    Every figure is nullable together: choosing an exercise before training it
-    is the ordinary first state of a highlight, and the app draws "not logged
-    yet" rather than a zero that reads like a failed lift.
+    `source` is the important field. "logged" means the server read this out
+    of a finished session and can point at the day; "manual" means the person
+    typed it; "none" means there is nothing to show yet. A reader is told
+    which, because a number nobody logged must not look like one that was.
+
+    A plain string, not a closed enum, so a source added later does not stop an
+    older build decoding the profile around it.
     """
 
-    exercise = serializers.IntegerField(read_only=True)
-    exercise_name = serializers.CharField(read_only=True)
-    best_weight_kg = serializers.DecimalField(
+    lift = serializers.CharField(read_only=True)
+    lift_label = serializers.CharField(read_only=True)
+    source = serializers.CharField(read_only=True)
+    weight_kg = serializers.DecimalField(
         max_digits=7, decimal_places=2, read_only=True, allow_null=True
     )
-    best_reps = serializers.IntegerField(read_only=True, allow_null=True)
+    reps = serializers.IntegerField(read_only=True, allow_null=True)
     estimated_one_rep_max_kg = serializers.DecimalField(
         max_digits=7, decimal_places=2, read_only=True, allow_null=True
     )
+    #: When it was lifted, and what it was called in the log. Both only for a
+    #: logged set: a typed number has no day and no exercise behind it.
     performed_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    exercise_name = serializers.CharField(read_only=True, allow_null=True)
+
+
+class ProfileHighlightWriteSerializer(serializers.Serializer):
+    """One featured lift on its way in."""
+
+    lift = serializers.ChoiceField(choices=ProfileHighlight.Lift.choices)
+    manual_weight_kg = serializers.DecimalField(
+        max_digits=7, decimal_places=2, required=False, allow_null=True,
+        min_value=Decimal("0"),
+    )
+    manual_reps = serializers.IntegerField(
+        required=False, allow_null=True, min_value=1,
+    )
+
+    def validate(self, attrs):
+        weight = attrs.get("manual_weight_kg")
+        reps = attrs.get("manual_reps")
+        # Both or neither. Half a set is not a set, and a weight with no rep
+        # count says less than nothing on a profile.
+        if (weight is None) != (reps is None):
+            raise serializers.ValidationError(
+                "Give both a weight and a rep count, or neither."
+            )
+        return attrs
 
 
 class ProfileHighlightsRequestSerializer(serializers.Serializer):
-    """Which exercises to feature, in the order they should appear."""
+    """Which lifts to feature, in the order they should appear."""
 
-    exercises = serializers.ListField(
-        child=serializers.IntegerField(min_value=1),
+    highlights = serializers.ListField(
+        child=ProfileHighlightWriteSerializer(),
         max_length=MAX_PROFILE_HIGHLIGHTS,
         allow_empty=True,
     )
 
-    def validate_exercises(self, value):
-        if len(set(value)) != len(value):
-            raise serializers.ValidationError("Each exercise can only be featured once.")
+    def validate_highlights(self, value):
+        lifts = [entry["lift"] for entry in value]
+        if len(set(lifts)) != len(lifts):
+            raise serializers.ValidationError("Each lift can only be featured once.")
         return value
 
 
 def highlight_payload(highlight):
-    """One highlight and its best set, ready to serialize.
+    """One featured lift, ready to serialize.
+
+    A logged set wins over a typed one. Somebody who types a number and then
+    logs a real set of the same lift should see the real one: it is the better
+    evidence, and leaving the typed number in place would quietly outrank it
+    forever.
 
     The estimate comes back None above a dozen reps, where Epley stops meaning
-    much. That rule lives in `estimated_one_rep_max` and is not repeated here:
-    two copies of a threshold is one copy too many.
+    much. That rule lives in `estimated_one_rep_max` and is not repeated here.
     """
-    best = best_set_for(highlight.owner, highlight.exercise)
-    estimate = (
-        estimated_one_rep_max(best.weight_kg, best.reps) if best is not None else None
-    )
-    return {
-        "exercise": highlight.exercise_id,
-        "exercise_name": highlight.exercise.name,
-        "best_weight_kg": best.weight_kg if best else None,
-        "best_reps": best.reps if best else None,
-        "estimated_one_rep_max_kg": estimate,
-        "performed_at": (
+    best = best_set_for(highlight.owner, highlight.lift)
+
+    if best is not None:
+        weight, reps, source = best.weight_kg, best.reps, "logged"
+        performed_at = (
             best.session_exercise.session.ended_at
             or best.session_exercise.session.created_at
-        ) if best else None,
+        )
+        exercise_name = best.session_exercise.exercise.name
+    elif highlight.manual_weight_kg is not None and highlight.manual_reps is not None:
+        weight, reps, source = highlight.manual_weight_kg, highlight.manual_reps, "manual"
+        performed_at, exercise_name = None, None
+    else:
+        weight, reps, source = None, None, "none"
+        performed_at, exercise_name = None, None
+
+    return {
+        "lift": highlight.lift,
+        "lift_label": highlight.get_lift_display(),
+        "source": source,
+        "weight_kg": weight,
+        "reps": reps,
+        "estimated_one_rep_max_kg": estimated_one_rep_max(weight, reps),
+        "performed_at": performed_at,
+        "exercise_name": exercise_name,
     }
 
 
