@@ -1092,6 +1092,7 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "kind",
             "title",
             "category",
+            "priority",
             "scheduled_date",
             "scheduled_time",
             "is_complete",

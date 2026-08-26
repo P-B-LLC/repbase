@@ -1197,6 +1197,19 @@ EVENT_CATEGORIES = frozenset(
 )
 
 
+#: High first, normal next, low last.
+#:
+#: An expression rather than a stored integer so the API can keep sending a
+#: word. A number would have to be mapped back to one at both ends, and the
+#: mapping would be the thing to get out of step.
+PRIORITY_RANK = models.Case(
+    models.When(priority="high", then=models.Value(0)),
+    models.When(priority="normal", then=models.Value(1)),
+    default=models.Value(2),
+    output_field=models.IntegerField(),
+)
+
+
 class PlannerEntry(models.Model):
     """Something the user has planned for a day.
 
@@ -1210,6 +1223,19 @@ class PlannerEntry(models.Model):
         TASK = "task", "Task"
         EVENT = "event", "Event"
 
+    class Priority(models.TextChoices):
+        """How much this one matters, relative to the rest of its day.
+
+        Three levels rather than a flag, because "not urgent" is a real
+        answer and folding it into NORMAL would make the two indistinguishable
+        once a day fills up. NORMAL is the default: a priority nobody chose
+        should not push anything around.
+        """
+
+        LOW = "low", "Low"
+        NORMAL = "normal", "Normal"
+        HIGH = "high", "High"
+
     owner = models.ForeignKey(
         RepbaseUser,
         on_delete=models.CASCADE,
@@ -1221,6 +1247,12 @@ class PlannerEntry(models.Model):
         max_length=20,
         choices=PlannerCategory.choices,
         default=PlannerCategory.OTHER,
+    )
+    #: Sorts the day rather than decorating it -- see ``PRIORITY_RANK``.
+    priority = models.CharField(
+        max_length=10,
+        choices=Priority.choices,
+        default=Priority.NORMAL,
     )
     scheduled_date = models.DateField(db_index=True)
     #: When it needs to be done. Null means the day is enough.
@@ -1243,9 +1275,14 @@ class PlannerEntry(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        # Untimed items first within a day, then by time: a day reads as
-        # "these at some point, these at these hours".
-        ordering = ("scheduled_date", "scheduled_time", "id")
+        # Within a day: what matters first, then untimed before timed, then by
+        # time -- a day reads as "this first, then these at some point, then
+        # these at these hours".
+        #
+        # Priority outranks the clock on purpose. A high-priority task is
+        # meant to be the first thing read whatever time was put on it, and
+        # ordering by time first would bury it under the morning.
+        ordering = ("scheduled_date", PRIORITY_RANK, "scheduled_time", "id")
         indexes = [
             models.Index(fields=("owner", "scheduled_date")),
         ]
