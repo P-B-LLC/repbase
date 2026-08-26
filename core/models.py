@@ -2323,6 +2323,67 @@ class WorkoutCycleSlot(models.Model):
         return f"{self.cycle_id} #{self.position}"
 
 
+class PostReport(models.Model):
+    """Someone flagging a post for a human to look at.
+
+    The reason is a fixed list rather than free text: a moderator triaging a
+    queue needs to sort and count, which prose does not allow, and a reporter
+    in the moment of wanting something gone should be choosing rather than
+    composing. ``detail`` is there for the case the list does not cover, and
+    is optional everywhere else.
+
+    One row per person per post. Reporting twice is not more true than
+    reporting once, and a second press of a button is far more likely to be
+    someone unsure it worked than someone with a second complaint.
+
+    Cascades with the post. A report about something that no longer exists is
+    not something anyone can act on.
+    """
+
+    class Reason(models.TextChoices):
+        SPAM = "spam", "Spam or misleading"
+        HARASSMENT = "harassment", "Harassment or bullying"
+        HATE = "hate", "Hate speech"
+        VIOLENCE = "violence", "Violence or threats"
+        NUDITY = "nudity", "Nudity or sexual content"
+        #: This app is about training and food, which is the ground unsafe
+        #: advice about both grows on. Worth its own reason rather than being
+        #: folded into "something else", where it would never be counted.
+        HARM = "harm", "Promotes self-harm or disordered eating"
+        ADVICE = "advice", "Dangerous or false advice"
+        OTHER = "other", "Something else"
+
+    post = models.ForeignKey(
+        Post,
+        on_delete=models.CASCADE,
+        related_name="reports",
+    )
+    reporter = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="post_reports",
+    )
+    reason = models.CharField(max_length=20, choices=Reason.choices)
+    #: Only ever read by a moderator, so it is not returned to anybody else.
+    detail = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("post", "reporter"),
+                name="one_report_per_person_per_post",
+            )
+        ]
+        indexes = [
+            models.Index(fields=("post", "created_at")),
+        ]
+
+    def __str__(self):
+        return f"{self.reason} on post {self.post_id}"
+
+
 class PostLike(models.Model):
     """One person's like of one post.
 

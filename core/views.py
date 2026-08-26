@@ -57,6 +57,8 @@ from .models import (
     ProfileHighlight,
     ProfilePrompt,
     PlannerCategory,
+    PostReport,
+    SavedFoodIngredient,
     SavedFoodMeal,
     PlannerEntry,
     WorkoutRecurrence,
@@ -133,6 +135,9 @@ from .serializers import (
     PostCommentSerializer,
     PostSerializer,
     PreviousSetSerializer,
+    PostReportResultSerializer,
+    ReportPostSerializer,
+    SavedMealResultSerializer,
     SavedWorkoutResultSerializer,
     UpdatePostSerializer,
 )
@@ -2128,7 +2133,15 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 {"post": "That workout has no exercises to save."}
             )
 
-        name = self._free_workout_name(owner, snapshot.title, source.author)
+        name = self._free_copy_name(
+            set(
+                WorkoutTemplate.objects.filter(owner=owner)
+                .values_list("name", flat=True)
+            ),
+            snapshot.title,
+            source.author,
+            "Workout",
+        )
         with transaction.atomic():
             template = WorkoutTemplate.objects.create(
                 owner=owner,
@@ -2171,19 +2184,126 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @extend_schema(
+        request=ReportPostSerializer,
+        responses={201: PostReportResultSerializer, 200: PostReportResultSerializer},
+        description=(
+            "Report a post for a moderator to look at. The reason comes from a "
+            "fixed list so reports can be counted; detail is optional. "
+            "Reporting a post you have already reported succeeds with 200 "
+            "rather than failing."
+        ),
+    )
+    @action(detail=True, methods=["post"], url_path="report")
+    def report(self, request, pk=None):
+        post = self.get_object()
+        reporter = self.owner_profile()
+        # Reporting your own post is not a thing anyone means to do, and the
+        # queue it would join is for complaints about other people.
+        if post.author_id == reporter.id:
+            raise ValidationError({"post": "You cannot report your own post."})
+
+        body = ReportPostSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+
+        _, created = PostReport.objects.get_or_create(
+            post=post,
+            reporter=reporter,
+            defaults={
+                "reason": body.validated_data["reason"],
+                "detail": body.validated_data.get("detail", ""),
+            },
+        )
+        return Response(
+            PostReportResultSerializer(
+                {
+                    "reason": body.validated_data["reason"],
+                    "already_reported": not created,
+                }
+            ).data,
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+    @extend_schema(
+        request=None,
+        responses={201: SavedMealResultSerializer},
+        description=(
+            "Copy a posted meal into your own saved meals. The foods and their "
+            "servings are taken whole, so applying it to a day later gives the "
+            "same numbers the post showed."
+        ),
+    )
+    @action(detail=True, methods=["post"], url_path="save-meal")
+    def save_meal(self, request, pk=None):
+        post = self.get_object()
+        owner = self.owner_profile()
+        # A repost carries nothing of its own; what is being saved is the meal
+        # in the post underneath it.
+        source = post.repost_of or post
+        snapshot = getattr(source, "meal", None)
+        if snapshot is None:
+            raise ValidationError({"post": "That post is not a meal."})
+
+        entries = list(snapshot.entries.all())
+        if not entries:
+            raise ValidationError({"post": "That meal has no food in it to save."})
+
+        name = self._free_copy_name(
+            set(
+                SavedFoodMeal.objects.filter(owner=owner)
+                .values_list("name", flat=True)
+            ),
+            snapshot.name,
+            source.author,
+            "Meal",
+        )
+        with transaction.atomic():
+            saved = SavedFoodMeal.objects.create(owner=owner, name=name)
+            # A straight copy: PostMealEntry mirrors SavedFoodIngredient field
+            # for field, per-serving split included, so nothing is recomputed
+            # and the saved meal cannot come out to a different total than the
+            # card it was taken from.
+            SavedFoodIngredient.objects.bulk_create(
+                SavedFoodIngredient(
+                    saved_meal=saved,
+                    name=entry.name,
+                    servings=entry.servings,
+                    calories=entry.calories,
+                    protein_grams=entry.protein_grams,
+                    carbohydrate_grams=entry.carbohydrate_grams,
+                    fat_grams=entry.fat_grams,
+                    position=position,
+                )
+                for position, entry in enumerate(entries, start=1)
+            )
+
+        return Response(
+            SavedMealResultSerializer(
+                {
+                    "meal": saved,
+                    "name": name,
+                    "item_count": len(entries),
+                    "renamed": name != snapshot.name,
+                },
+                context=self.get_serializer_context(),
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
     @staticmethod
-    def _free_workout_name(owner, title, author):
+    def _free_copy_name(taken, title, author, fallback):
         """A name this user does not already have.
 
-        Workout names are unique per user, so saving somebody's "Push Day"
-        when you have your own would either fail or quietly hand back yours.
+        Workouts and saved meals are both unique by name per user, so saving
+        somebody's "Push Day" -- or their "Meal 1", which everyone has -- when
+        you have your own would either fail or quietly hand back yours.
         Neither is what was asked for, so the copy is named after who it came
         from, and numbered after that.
+
+        One rule for both, because the awkward part is the numbering and two
+        copies of it would drift.
         """
-        base = (title or "Workout").strip() or "Workout"
-        taken = set(
-            WorkoutTemplate.objects.filter(owner=owner).values_list("name", flat=True)
-        )
+        base = (title or fallback).strip() or fallback
         if base not in taken:
             return base
 

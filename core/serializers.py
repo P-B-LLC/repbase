@@ -36,6 +36,7 @@ from .models import (
     SavedFoodMeal,
     UserDiscipline,
     PlannerEntry,
+    PostReport,
     TASK_CATEGORIES,
     WorkoutRecurrence,
     WorkoutSchedule,
@@ -2025,6 +2026,46 @@ class SavedWorkoutResultSerializer(serializers.Serializer):
     workout = serializers.PrimaryKeyRelatedField(read_only=True)
     name = serializers.CharField(read_only=True)
     exercise_count = serializers.IntegerField(read_only=True)
+    renamed = serializers.BooleanField(read_only=True)
+
+
+class ReportPostSerializer(serializers.Serializer):
+    """What a reporter sends.
+
+    ``reason`` is closed, because the whole point of the list is that reports
+    can be counted and triaged. ``detail`` is free text and optional, for the
+    case the list does not cover.
+    """
+
+    reason = serializers.ChoiceField(choices=PostReport.Reason.choices)
+    detail = serializers.CharField(
+        max_length=500, required=False, allow_blank=True, default=""
+    )
+
+
+class PostReportResultSerializer(serializers.Serializer):
+    """What came of reporting.
+
+    ``already_reported`` rather than an error on a second press: reporting
+    twice is far more often someone unsure the first one worked than someone
+    with a second complaint, and an error would tell them off for it.
+    """
+
+    reason = serializers.CharField(read_only=True)
+    already_reported = serializers.BooleanField(read_only=True)
+
+
+class SavedMealResultSerializer(serializers.Serializer):
+    """What saving somebody else's posted meal produced.
+
+    The same shape as `SavedWorkoutResultSerializer` and for the same reason:
+    saved meal names are unique per user, so the name it landed under is not
+    always the one on the post and the app has to be able to say so.
+    """
+
+    meal = serializers.PrimaryKeyRelatedField(read_only=True)
+    name = serializers.CharField(read_only=True)
+    item_count = serializers.IntegerField(read_only=True)
     renamed = serializers.BooleanField(read_only=True)
 
 
