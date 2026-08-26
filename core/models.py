@@ -1759,6 +1759,16 @@ class Post(models.Model):
         choices=Visibility.choices,
         default=Visibility.PUBLIC,
     )
+    #: Taken down by a moderator.
+    #:
+    #: A flag rather than a delete: a report that turns out to be wrong should
+    #: be reversible, and a post removed for cause is evidence if the same
+    #: account is reported again. Hidden posts leave every feed, including
+    #: their own author's — explaining the removal to them is a conversation
+    #: this app does not have yet, and showing it only to them would read as
+    #: though nothing had happened.
+    is_hidden = models.BooleanField(default=False)
+    hidden_at = models.DateTimeField(null=True, blank=True)
     #: Whether the author chose to show the weights they lifted.
     #:
     #: Recorded, but not consulted when rendering: a post that withholds them
@@ -2369,6 +2379,26 @@ class PostReport(models.Model):
     #: Only ever read by a moderator, so it is not returned to anybody else.
     detail = models.CharField(max_length=500, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    #: What a moderator decided, and when. Null means nobody has looked yet,
+    #: which is what makes the queue a queue: without it, a handled report and
+    #: a new one are the same row.
+    class Resolution(models.TextChoices):
+        NO_ACTION = "no_action", "Looked, no action needed"
+        HIDDEN = "hidden", "Post hidden"
+        DELETED = "deleted", "Post deleted"
+
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_post_reports",
+    )
+    resolution = models.CharField(
+        max_length=20, choices=Resolution.choices, blank=True
+    )
 
     class Meta:
         ordering = ("-created_at", "-id")

@@ -1,6 +1,7 @@
 from datetime import timedelta
 
 import base64
+import io
 import binascii
 import uuid
 from decimal import Decimal
@@ -104,7 +105,53 @@ def decode_uploaded_image(raw, field="image_base64"):
         raise serializers.ValidationError(
             {field: "That image is larger than 5 MB."}
         )
+    verify_is_an_image(decoded, field=field)
     return decoded
+
+
+#: What Pillow calls each format, mapped to the extension it should be stored
+#: under. Keyed on Pillow's own name rather than on a MIME type, because
+#: Pillow is the thing that read the bytes.
+PILLOW_FORMAT_EXTENSIONS = {
+    "JPEG": ".jpg",
+    "PNG": ".png",
+    "HEIF": ".heic",
+    "WEBP": ".webp",
+}
+
+
+def verify_is_an_image(decoded, field="image_base64"):
+    """Open the bytes and return the extension they deserve.
+
+    `content_type` is a label the client chose; this is what the file is. A
+    JPEG announced as a PNG was previously written to disk as `.png`, and
+    something that was not an image at all was written as whatever it claimed.
+
+    `Image.verify()` reads the header and checksums without decoding the
+    pixels, so a large photograph costs almost nothing here. It also leaves
+    the file object unusable afterwards, which is why the image is opened
+    from a fresh buffer if anything else needs it.
+    """
+    try:
+        from PIL import Image, UnidentifiedImageError
+    except ImportError:  # pragma: no cover - Pillow is a hard dependency
+        return None
+
+    try:
+        with Image.open(io.BytesIO(decoded)) as image:
+            detected = image.format
+            image.verify()
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError):
+        raise serializers.ValidationError(
+            {field: "That file is not an image we can read."}
+        )
+
+    extension = PILLOW_FORMAT_EXTENSIONS.get((detected or "").upper())
+    if extension is None:
+        raise serializers.ValidationError(
+            {field: "That image format is not one we accept."}
+        )
+    return extension
 
 
 class ProfilePhotoUploadSerializer(serializers.Serializer):
@@ -137,11 +184,17 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"image_base64": "That image is larger than 5 MB."}
             )
+        # The extension comes from the bytes, not from content_type, which is
+        # only ever the client's word for what it sent.
+        attrs["extension"] = verify_is_an_image(decoded)
         attrs["decoded"] = decoded
         return attrs
 
     def save_to(self, profile):
-        extension = ALLOWED_PHOTO_TYPES[self.validated_data["content_type"]]
+        extension = (
+            self.validated_data.get("extension")
+            or ALLOWED_PHOTO_TYPES[self.validated_data["content_type"]]
+        )
         # Replaced, not accumulated: the previous file would otherwise sit on
         # disk forever with nothing pointing at it.
         profile.profile_photo.delete(save=False)
@@ -2414,6 +2467,7 @@ class CreatePostSerializer(serializers.Serializer):
                 {"content_type": "Required when sending an image."}
             )
         attrs["decoded_image"] = decode_uploaded_image(raw)
+        attrs["image_extension"] = verify_is_an_image(attrs["decoded_image"])
         return attrs
 
     # There is deliberately no `validate` resolving `source_id` here. Which

@@ -31,6 +31,7 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -174,6 +175,10 @@ def profile_for(user):
 
 
 class RegisterView(APIView):
+    # Per address rather than per account, which is how throwaway accounts
+    # get made in bulk.
+    throttle_scope = "register"
+    throttle_classes = [ScopedRateThrottle]
     authentication_classes = []
     permission_classes = [AllowAny]
 
@@ -190,6 +195,11 @@ class RegisterView(APIView):
 class LoginView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
+    # Tighter than anything else. An unlimited password field is the whole
+    # attack, and somebody who has genuinely forgotten theirs does not try
+    # twenty times inside an hour.
+    throttle_scope = "login"
+    throttle_classes = [ScopedRateThrottle]
 
     @extend_schema(request=LoginSerializer, responses={200: AuthResponseSerializer})
     def post(self, request):
@@ -1657,6 +1667,11 @@ def visible_posts_for(viewer, queryset):
     return queryset.annotate(
         viewer_follows_author=Exists(follows_author),
         viewer_is_blocked=Exists(blocked_either_way),
+    ).exclude(
+        # Taken down by a moderator. Excluded before the visibility rules
+        # rather than inside them, so the author's own unconditional access
+        # below cannot put it back.
+        is_hidden=True
     ).filter(
         Q(author=viewer)
         | (
@@ -2062,6 +2077,9 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = posts_for_cards()
     serializer_class = PostSerializer
     permission_classes = [IsAuthenticated]
+    # Reading the feed is not the concern; writing something everybody else
+    # then sees is.
+    throttle_scope = "post"
     owner_lookup = "author"
     # PATCH without PUT. UpdateModelMixin brings both or neither, and a PUT here
     # would have to accept the snapshot fields it replaces, which is the one
@@ -2400,7 +2418,12 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         # out over the wire without the photo it was created with.
         decoded = payload.validated_data.get("decoded_image")
         if decoded is not None:
-            extension = ALLOWED_PHOTO_TYPES[payload.validated_data["content_type"]]
+            # What Pillow read out of the bytes, falling back to the
+            # client's label only if Pillow is somehow unavailable.
+            extension = (
+                payload.validated_data.get("image_extension")
+                or ALLOWED_PHOTO_TYPES[payload.validated_data["content_type"]]
+            )
             post.image.save(
                 f"{uuid.uuid4().hex}{extension}",
                 ContentFile(decoded),

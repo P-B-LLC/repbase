@@ -153,6 +153,29 @@ REST_FRAMEWORK = {
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.AnonRateThrottle',
+        'rest_framework.throttling.UserRateThrottle',
+        'rest_framework.throttling.ScopedRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        # Generous for a signed-in person: the app fans out a dozen or so
+        # calls on launch and a few per screen after that, so a ceiling low
+        # enough to bite normal use would be worse than none.
+        'user': os.environ.get('REPBASE_THROTTLE_USER', '1200/hour'),
+        # Anonymous traffic is registration, login and the schema. Nothing
+        # legitimate needs many.
+        'anon': os.environ.get('REPBASE_THROTTLE_ANON', '60/hour'),
+        # Tight on purpose. This is the one endpoint where the attempt is
+        # itself the attack, and a person who has forgotten their password
+        # does not try twenty times in a minute.
+        'login': os.environ.get('REPBASE_THROTTLE_LOGIN', '10/hour'),
+        # Registration from one address, which is how throwaway accounts get
+        # made in bulk.
+        'register': os.environ.get('REPBASE_THROTTLE_REGISTER', '10/day'),
+        # Writes that create content other people see.
+        'post': os.environ.get('REPBASE_THROTTLE_POST', '60/hour'),
+    },
 }
 
 SPECTACULAR_SETTINGS = {
