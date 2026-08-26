@@ -1197,6 +1197,16 @@ EVENT_CATEGORIES = frozenset(
 )
 
 
+#: The shortest and longest a planned block may run.
+#:
+#: Five minutes because a grid cannot draw less and still be read. A full day
+#: because past that it stops being one item on one day and becomes a span,
+#: which this model does not describe. A block may still cross midnight -- a
+#: party at 23:00 is a real thing to plan -- and is simply drawn to the bottom
+#: of its own day.
+MIN_PLANNER_DURATION_MINUTES = 5
+MAX_PLANNER_DURATION_MINUTES = 1440
+
 #: High first, normal next, low last.
 #:
 #: An expression rather than a stored integer so the API can keep sending a
@@ -1257,6 +1267,12 @@ class PlannerEntry(models.Model):
     scheduled_date = models.DateField(db_index=True)
     #: When it needs to be done. Null means the day is enough.
     scheduled_time = models.TimeField(null=True, blank=True)
+    #: How long it runs, in minutes. Null is the ordinary case: a reminder has
+    #: a moment, not a length. Set, it is what a calendar blocks out.
+    #:
+    #: Meaningless without a start, so the constraint below refuses one --
+    #: "an hour long, at no particular time" describes nothing.
+    duration_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
     #: Set when a task is ticked off, cleared when it is unticked. Kept as a
     #: timestamp rather than a flag so "when did I do this" stays answerable.
     completed_at = models.DateTimeField(null=True, blank=True)
@@ -1301,7 +1317,27 @@ class PlannerEntry(models.Model):
                 fields=("owner", "workout", "scheduled_date"),
                 condition=models.Q(kind="task", workout__isnull=False),
                 name="unique_workout_task_per_day",
-            )
+            ),
+            # A length with no start is not a block, it is a number. Guaranteed
+            # here rather than only in the serializer, because the pair has to
+            # stay true however the row was written.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(duration_minutes__isnull=True)
+                    | models.Q(scheduled_time__isnull=False)
+                ),
+                name="duration_needs_a_start_time",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    models.Q(duration_minutes__isnull=True)
+                    | models.Q(
+                        duration_minutes__gte=MIN_PLANNER_DURATION_MINUTES,
+                        duration_minutes__lte=MAX_PLANNER_DURATION_MINUTES,
+                    )
+                ),
+                name="duration_within_bounds",
+            ),
         ]
 
     def __str__(self):

@@ -42,6 +42,8 @@ from .models import (
     WorkoutSession,
     WorkoutTemplate,
     MAX_FOOD_MEALS_PER_DAY,
+    MAX_PLANNER_DURATION_MINUTES,
+    MIN_PLANNER_DURATION_MINUTES,
     MAX_PROFILE_HIGHLIGHTS,
     MAX_PROFILE_PROMPTS,
     today_for,
@@ -1083,6 +1085,15 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         source="workout.name", read_only=True, allow_null=True, default=None
     )
     is_complete = serializers.BooleanField(required=False)
+    # Declared rather than inferred: left to the model field, the schema
+    # advertised 0 to 2**63 and a generated client would happily send a
+    # number the server refuses. The bounds belong in the contract.
+    duration_minutes = serializers.IntegerField(
+        required=False,
+        allow_null=True,
+        min_value=MIN_PLANNER_DURATION_MINUTES,
+        max_value=MAX_PLANNER_DURATION_MINUTES,
+    )
 
     class Meta:
         model = PlannerEntry
@@ -1095,6 +1106,7 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "priority",
             "scheduled_date",
             "scheduled_time",
+            "duration_minutes",
             "is_complete",
             "completed_at",
             "workout",
@@ -1112,6 +1124,31 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
+    #: Cleared when a full update leaves them out.
+    #:
+    #: PUT replaces, and DRF's default is to leave an absent optional field
+    #: alone -- which makes PUT behave exactly like PATCH and leaves a client
+    #: with no way to take anything back off. That matters here because the
+    #: generated iOS client omits a nil rather than sending null, so "no time"
+    #: and "don't touch the time" look identical on the wire. Naming these two
+    #: is what lets a start time, or a length, be removed once it is set.
+    SCHEDULE_FIELDS_CLEARED_BY_PUT = ("scheduled_time", "duration_minutes")
+
+    def _resulting(self, attrs, field):
+        """What ``field`` will hold once this request has been applied.
+
+        A rule about a pair of fields has to be judged on what the row becomes,
+        and absence means different things depending on the verb: on a PATCH it
+        means "leave it", on a PUT it means "clear it".
+        """
+        if field in attrs:
+            return attrs[field]
+        if self.instance is None:
+            return None
+        if self.partial or field not in self.SCHEDULE_FIELDS_CLEARED_BY_PUT:
+            return getattr(self.instance, field)
+        return None
+
     def validate_title(self, value):
         title = value.strip()
         if not title:
@@ -1126,6 +1163,21 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
+        # A length needs a start. Checked against what the row will end up as
+        # rather than only what this request carries, so clearing the time on
+        # something an hour long is refused too -- otherwise a PATCH could
+        # leave the pair in the state the database constraint forbids, and the
+        # refusal would arrive as a 500 instead of a named field error.
+        duration = self._resulting(attrs, "duration_minutes")
+        start = self._resulting(attrs, "scheduled_time")
+        # The range is the field's own business. What is left here is the
+        # part no single field can see: a length is only meaningful next to a
+        # start, and either half can arrive in a different request.
+        if duration is not None and start is None:
+            raise serializers.ValidationError(
+                {"duration_minutes": "Give it a start time before a length."}
+            )
+
         # An event happens at a time; it is not something to tick off. Letting
         # one be "completed" would put a checkbox on a birthday.
         kind = attrs.get("kind", getattr(self.instance, "kind", None))
@@ -1203,6 +1255,12 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         return instance
 
     def update(self, instance, validated_data):
+        # PUT replaces: anything the client left out is gone, not merely
+        # unmentioned. Only the schedule pair, because those are the two a
+        # client has no other way to clear.
+        if not self.partial:
+            for field in self.SCHEDULE_FIELDS_CLEARED_BY_PUT:
+                validated_data.setdefault(field, None)
         has_completion = "is_complete" in validated_data
         is_complete = validated_data.pop("is_complete", False)
         for field, value in validated_data.items():
