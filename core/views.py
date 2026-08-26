@@ -58,6 +58,7 @@ from .models import (
     ProfilePrompt,
     PlannerCategory,
     PostReport,
+    ProfileSocialLink,
     SavedFoodIngredient,
     SavedFoodMeal,
     PlannerEntry,
@@ -119,6 +120,8 @@ from .serializers import (
     ProfilePhotoUploadSerializer,
     ProfilePromptSerializer,
     ProfilePromptsRequestSerializer,
+    ProfileSocialLinkSerializer,
+    ProfileSocialLinksRequestSerializer,
     highlight_payload,
     RecentFoodSerializer,
     SavedFoodMealSerializer,
@@ -282,6 +285,60 @@ class MePromptsView(APIView):
         )
 
 
+class MeSocialLinksView(APIView):
+    """The outbound accounts on the signed-in user profile.
+
+    Only ever this user own: the route carries no id, and the profile is read
+    from the token. There is no shape of request that addresses somebody
+    else links, which is a stronger guarantee than a permission check on one.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: ProfileSocialLinkSerializer(many=True)})
+    def get(self, request):
+        profile = profile_for(request.user)
+        return Response(
+            ProfileSocialLinkSerializer(profile.social_links.all(), many=True).data
+        )
+
+    @extend_schema(
+        request=ProfileSocialLinksRequestSerializer,
+        responses={200: ProfileSocialLinkSerializer(many=True)},
+        description=(
+            "Replace every social link with the set sent. Each entry may carry "
+            "a full https URL or a bare handle; a handle is turned into that "
+            "platform canonical URL. Sending an empty list removes them all."
+        ),
+    )
+    def put(self, request):
+        serializer = ProfileSocialLinksRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        profile = profile_for(request.user)
+
+        with transaction.atomic():
+            # Replaced wholesale rather than reconciled, as the prompts are.
+            # Six rows is not worth a diff, and a reconcile that goes wrong
+            # leaves a link on a profile whose owner has stopped seeing it.
+            profile.social_links.all().delete()
+            ProfileSocialLink.objects.bulk_create([
+                ProfileSocialLink(
+                    owner=profile,
+                    platform=entry["platform"],
+                    url=entry["url"],
+                    handle=entry["handle"],
+                    position=index + 1,
+                )
+                for index, entry in enumerate(
+                    serializer.validated_data["social_links"]
+                )
+            ])
+
+        return Response(
+            ProfileSocialLinkSerializer(profile.social_links.all(), many=True).data
+        )
+
+
 class MeHighlightsView(APIView):
     """The lifts the signed-in user has chosen to show."""
 
@@ -369,7 +426,7 @@ class MePhotoView(APIView):
 class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = (
         RepbaseUser.objects.select_related("user")
-        .prefetch_related("prompts")
+        .prefetch_related("prompts", "social_links")
         .order_by("-created_at")
     )
     serializer_class = PublicRepbaseUserSerializer

@@ -35,8 +35,12 @@ from .models import (
     SavedFoodIngredient,
     SavedFoodMeal,
     UserDiscipline,
+    MAX_PROFILE_SOCIAL_LINKS,
     PlannerEntry,
     PostReport,
+    ProfileSocialLink,
+    SocialLinkError,
+    normalise_social_link,
     TASK_CATEGORIES,
     WorkoutRecurrence,
     WorkoutSchedule,
@@ -528,6 +532,73 @@ class ProfilePromptWriteSerializer(serializers.Serializer):
         return answer
 
 
+class ProfileSocialLinkSerializer(serializers.ModelSerializer):
+    """One outbound account, as everybody else sees it.
+
+    Two fields only. The handle is the app own bookkeeping and the position is
+    how the list was ordered, neither of which anybody reading a profile has
+    any use for -- and the fewer fields leave here, the less there is to keep
+    consistent between this and the public serialiser.
+    """
+
+    class Meta:
+        model = ProfileSocialLink
+        fields = ["platform", "url"]
+
+
+class ProfileSocialLinkWriteSerializer(serializers.Serializer):
+    """One link on the way in.
+
+    ``url`` is a CharField rather than a URLField on purpose: it accepts a
+    handle as readily as an address, and the normaliser is what decides which
+    it got. A URLField here would refuse "@someone" before anything had a
+    chance to turn it into a URL.
+    """
+
+    platform = serializers.ChoiceField(choices=ProfileSocialLink.Platform.choices)
+    url = serializers.CharField(max_length=300, allow_blank=False)
+
+
+class ProfileSocialLinksRequestSerializer(serializers.Serializer):
+    """The whole set at once, like the prompts next door.
+
+    Replace rather than patch, for the same reason: the screen behind this
+    edits them together, and sending the set that should exist afterwards
+    cannot leave a seventh link behind that nobody can see to delete.
+    """
+
+    social_links = serializers.ListField(
+        child=ProfileSocialLinkWriteSerializer(),
+        max_length=MAX_PROFILE_SOCIAL_LINKS,
+        allow_empty=True,
+    )
+
+    def validate_social_links(self, value):
+        platforms = [entry["platform"] for entry in value]
+        if len(set(platforms)) != len(platforms):
+            raise serializers.ValidationError(
+                "Only one link per platform."
+            )
+
+        # Normalised here rather than in the view, so a bad link comes back as
+        # a field error naming the platform it belongs to -- which is what the
+        # editor needs to put the message beside the right row.
+        cleaned = []
+        errors = {}
+        for index, entry in enumerate(value):
+            try:
+                url, handle = normalise_social_link(entry["platform"], entry["url"])
+            except SocialLinkError as error:
+                errors[index] = {"url": [str(error)]}
+                continue
+            cleaned.append(
+                {"platform": entry["platform"], "url": url, "handle": handle}
+            )
+        if errors:
+            raise serializers.ValidationError(errors)
+        return cleaned
+
+
 class ProfilePromptsRequestSerializer(serializers.Serializer):
     """The whole set at once.
 
@@ -679,6 +750,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     profile_photo_url = serializers.SerializerMethodField()
     disciplines = serializers.SerializerMethodField()
     prompts = serializers.SerializerMethodField()
+    social_links = serializers.SerializerMethodField()
 
     class Meta:
         model = RepbaseUser
@@ -691,6 +763,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
             "profile_photo_url",
             "disciplines",
             "prompts",
+            "social_links",
             "gym",
             "gym_name",
             "gym_city",
@@ -718,6 +791,15 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     @extend_schema_field(ProfilePromptSerializer(many=True))
     def get_prompts(self, profile):
         return ProfilePromptSerializer(profile.prompts.all(), many=True).data
+
+    # Prefetched by the viewset alongside the prompts. Six rows at most, and a
+    # profile without them serialises as an empty list rather than as a missing
+    # key, so a client never has to tell "none" from "not sent".
+    @extend_schema_field(ProfileSocialLinkSerializer(many=True))
+    def get_social_links(self, profile):
+        return ProfileSocialLinkSerializer(
+            profile.social_links.all(), many=True
+        ).data
 
     # `is_body_metrics_public` had nothing reading it: the public profile never
     # carried measurements at all, so the switch the user was offered did
@@ -773,6 +855,11 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         max_length=64, required=False, allow_blank=True
     )
 
+    #: Read-only here. They are edited through me/social-links/, which replaces
+    #: the set in one request; letting a profile PATCH carry them too would be
+    #: two ways to write the same rows and one of them would drift.
+    social_links = ProfileSocialLinkSerializer(many=True, read_only=True)
+
 
     class Meta:
         model = RepbaseUser
@@ -798,6 +885,7 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "shows_height",
             "shows_weight",
             "shows_target_weight",
+            "social_links",
             "created_at",
             "updated_at",
         ]
@@ -812,6 +900,7 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "profile_photo_url",
             "gym_name",
             "gym_city",
+            "social_links",
             "created_at",
             "updated_at",
         ]

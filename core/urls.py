@@ -23,6 +23,7 @@ from .views import (
     LoginView,
     LogoutView,
     MeHighlightsView,
+    MeSocialLinksView,
     MePhotoView,
     MePromptsView,
     MeView,
@@ -81,6 +82,11 @@ urlpatterns = [
     path("me/photo/", MePhotoView.as_view(), name="me-photo"),
     path("me/prompts/", MePromptsView.as_view(), name="me-prompts"),
     path("me/highlights/", MeHighlightsView.as_view(), name="me-highlights"),
+    path(
+        "me/social-links/",
+        MeSocialLinksView.as_view(),
+        name="me-social-links",
+    ),
     path("food/goals/", NutritionGoalView.as_view(), name="nutrition-goals"),
     path(
         "sessions/training-stats/",

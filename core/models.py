@@ -1,8 +1,10 @@
 import math
 import pathlib
+import re
 import uuid
 from datetime import timedelta
 from decimal import Decimal
+from urllib.parse import urlparse, urlunparse
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
@@ -2464,6 +2466,185 @@ class PostComment(models.Model):
 #: How many questions one profile may answer. Three keeps a profile readable
 #: at a glance and makes choosing them an act of expression in itself; twelve
 #: answered questions is a form, not a profile.
+#: One per platform, and there are six platforms. Stated rather than left to
+#: the unique constraint so a request carrying two hundred rows is refused
+#: before any of it is looked at.
+MAX_PROFILE_SOCIAL_LINKS = 6
+
+#: Long enough for a real profile URL with a query on it, short enough that a
+#: pasted tracking monster is refused rather than stored.
+MAX_SOCIAL_LINK_URL_LENGTH = 300
+MAX_SOCIAL_LINK_HANDLE_LENGTH = 100
+
+#: What a handle may contain.
+#:
+#: Deliberately narrow. A handle is interpolated into a URL template, so
+#: anything that could carry a path, a scheme or a host out of it -- a slash, a
+#: colon, a space -- is refused here rather than escaped later.
+SOCIAL_HANDLE_PATTERN = re.compile(
+    r"^[A-Za-z0-9._-]{1,%d}$" % MAX_SOCIAL_LINK_HANDLE_LENGTH
+)
+
+#: The hosts each platform is actually served from.
+#:
+#: Checked because the label is what a reader trusts before they tap: a link
+#: badged Instagram that goes somewhere else is the whole problem. "website" is
+#: absent on purpose -- it is the one that may point anywhere, which is what it
+#: is for.
+SOCIAL_LINK_HOSTS = {
+    "instagram": ("instagram.com",),
+    "snapchat": ("snapchat.com",),
+    "tiktok": ("tiktok.com",),
+    "youtube": ("youtube.com", "youtu.be"),
+    #: Both, because the rename did not delete the links anybody already saved.
+    "x": ("x.com", "twitter.com"),
+}
+
+#: How a bare handle becomes a URL. "website" has no entry: no template turns a
+#: word into somebody own site.
+SOCIAL_LINK_HANDLE_URLS = {
+    "instagram": "https://www.instagram.com/{handle}",
+    "snapchat": "https://www.snapchat.com/add/{handle}",
+    "tiktok": "https://www.tiktok.com/@{handle}",
+    "youtube": "https://www.youtube.com/@{handle}",
+    "x": "https://x.com/{handle}",
+}
+
+
+class SocialLinkError(ValueError):
+    """A link that cannot be made safe, carrying a sentence fit to show."""
+
+
+def normalise_social_link(platform, value):
+    """Turn what somebody typed into a canonical https URL, and a handle.
+
+    Both forms are accepted because both are what people have to hand: the
+    address bar gives a URL, the app own profile page gives a handle. Returns
+    ``(url, handle)``; the handle is ``""`` when there is none worth keeping.
+
+    Refusal-first throughout. A profile link is a tap that leaves the app, so
+    anything not provably an ordinary https web address is rejected rather than
+    cleaned up and hoped about.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        raise SocialLinkError("Enter a link or a handle.")
+    if len(raw) > MAX_SOCIAL_LINK_URL_LENGTH:
+        raise SocialLinkError(
+            f"Keep it under {MAX_SOCIAL_LINK_URL_LENGTH} characters."
+        )
+    # Checked on the raw text before any parsing, because a parser is exactly
+    # what a crafted scheme is written to get past. javascript:, data: and
+    # every other scheme fail here rather than somewhere subtler.
+    head = raw.split("/")[0]
+    if ":" in head and not raw.lower().startswith(("http://", "https://")):
+        raise SocialLinkError("Links must start with https://.")
+
+    # A handle looks like a handle: no dot, no slash. Anything with either is
+    # an address, which somebody may simply have typed without its scheme.
+    looks_like_address = "/" in raw or "." in raw
+
+    if not looks_like_address:
+        template = SOCIAL_LINK_HANDLE_URLS.get(platform)
+        if template is None:
+            raise SocialLinkError("Enter the full address, like https://example.com.")
+        handle = raw.lstrip("@").strip()
+        if not SOCIAL_HANDLE_PATTERN.match(handle):
+            raise SocialLinkError(
+                "A handle can use letters, numbers, dots, dashes and underscores."
+            )
+        return template.format(handle=handle), handle
+
+    candidate = raw if "://" in raw else f"https://{raw.lstrip('/')}"
+    parsed = urlparse(candidate)
+
+    if parsed.scheme != "https":
+        raise SocialLinkError("Links must start with https://.")
+    if parsed.username or parsed.password:
+        raise SocialLinkError("Remove the username from the address.")
+
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if not host or "." not in host:
+        raise SocialLinkError("That does not look like a web address.")
+    # All-numeric is an IP literal, which no ordinary profile link is and which
+    # a host allow-list cannot vouch for.
+    if all(part.isdigit() for part in host.split(".")):
+        raise SocialLinkError("That does not look like a web address.")
+
+    allowed = SOCIAL_LINK_HOSTS.get(platform)
+    if allowed is not None:
+        if not any(host == name or host.endswith(f".{name}") for name in allowed):
+            label = dict(ProfileSocialLink.Platform.choices).get(platform, platform)
+            raise SocialLinkError(f"That is not a {label} address.")
+
+    # Rebuilt rather than passed through, so what is stored is only the parts
+    # that were checked. The fragment goes: it addresses a place inside a page
+    # and means nothing on a profile link.
+    path = parsed.path.rstrip("/")
+    url = urlunparse(("https", host, path, "", parsed.query, ""))
+    if len(url) > MAX_SOCIAL_LINK_URL_LENGTH:
+        raise SocialLinkError(
+            f"Keep it under {MAX_SOCIAL_LINK_URL_LENGTH} characters."
+        )
+
+    # The last path segment is the handle on every platform here. Kept only
+    # when it looks like one, because a deep link is not a handle.
+    tail = path.rsplit("/", 1)[-1].lstrip("@") if path else ""
+    handle = tail if tail and SOCIAL_HANDLE_PATTERN.match(tail) else ""
+    return url, handle
+
+
+class ProfileSocialLink(models.Model):
+    """One outbound account on somebody profile.
+
+    A row per platform rather than six columns on the profile: which platforms
+    are offered is a product decision that will keep changing, and a column
+    each means a migration every time one is added, plus a table of mostly
+    empty columns in between. The same reasoning as ``ProfilePrompt``, and for
+    the same kind of thing.
+
+    The URL is stored already canonical -- see ``normalise_social_link`` -- so
+    nothing downstream has to trust it or check it again. ``handle`` is kept
+    for the app own use and is never serialised out.
+    """
+
+    class Platform(models.TextChoices):
+        INSTAGRAM = "instagram", "Instagram"
+        SNAPCHAT = "snapchat", "Snapchat"
+        TIKTOK = "tiktok", "TikTok"
+        YOUTUBE = "youtube", "YouTube"
+        X = "x", "X"
+        WEBSITE = "website", "Website"
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="social_links",
+    )
+    platform = models.CharField(max_length=12, choices=Platform.choices)
+    url = models.URLField(max_length=MAX_SOCIAL_LINK_URL_LENGTH)
+    #: Internal. Lets an icon carry "@name" later without parsing the URL back
+    #: apart, and is never sent to anybody.
+    handle = models.CharField(max_length=MAX_SOCIAL_LINK_HANDLE_LENGTH, blank=True)
+    position = models.PositiveSmallIntegerField(default=1)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("position", "id")
+        constraints = [
+            # One per platform. Two Instagrams is not something anybody means
+            # to have, and the profile would print the icon twice.
+            models.UniqueConstraint(
+                fields=("owner", "platform"),
+                name="unique_social_link_per_owner",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.platform}: {self.url}"
+
+
 MAX_PROFILE_PROMPTS = 3
 
 #: How many lifts a profile may feature, for the same reason.
