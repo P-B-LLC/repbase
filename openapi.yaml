@@ -7312,30 +7312,54 @@ components:
       enum:
       - why_i_train
       - current_goal
-      - favourite_lift
-      - hardest_part
-      - best_advice
       - proudest
-      - rest_day
+      - hardest_part
+      - started_because
+      - training_changed
+      - favourite_lift
+      - skipped_lift
+      - one_more_rep
+      - best_advice
+      - training_to
+      - gym_pet_peeve
+      - warm_up
       - pre_workout
       - post_workout
-      - training_to
-      - one_more_rep
+      - worth_it
+      - on_repeat
+      - rest_day
+      - outside_gym
+      - recovery
+      - sunday
       - training_partner
+      - spot_me
+      - partner_never
       type: string
       description: |-
         * `why_i_train` - Why I train
         * `current_goal` - What I am working towards
-        * `favourite_lift` - Favourite lift
-        * `hardest_part` - The hardest part for me
-        * `best_advice` - Best advice I have been given
         * `proudest` - Proudest moment in the gym
-        * `rest_day` - A rest day looks like
+        * `hardest_part` - The hardest part for me
+        * `started_because` - I started training because
+        * `training_changed` - Training changed this about me
+        * `favourite_lift` - Favourite lift
+        * `skipped_lift` - The lift I skip if I can
+        * `one_more_rep` - What gets me one more rep
+        * `best_advice` - Best advice I have been given
+        * `training_to` - What I train to
+        * `gym_pet_peeve` - My gym pet peeve
+        * `warm_up` - My warm-up is
         * `pre_workout` - What I eat before training
         * `post_workout` - What I eat after
-        * `training_to` - What I train to
-        * `one_more_rep` - What gets me one more rep
+        * `worth_it` - Worth every calorie
+        * `on_repeat` - The meal I make on repeat
+        * `rest_day` - A rest day looks like
+        * `outside_gym` - Outside the gym you will find me
+        * `recovery` - How I actually recover
+        * `sunday` - My Sunday in three words
         * `training_partner` - Looking for a training partner who
+        * `spot_me` - Ask me to spot you if
+        * `partner_never` - A training partner should never
     RecentFood:
       type: object
       description: A food the user has logged before, for the picker.

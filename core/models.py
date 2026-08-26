@@ -2350,18 +2350,39 @@ class ProfilePrompt(models.Model):
     """
 
     class Question(models.TextChoices):
+        # Why you train
         WHY_I_TRAIN = "why_i_train", "Why I train"
         CURRENT_GOAL = "current_goal", "What I am working towards"
-        FAVOURITE_LIFT = "favourite_lift", "Favourite lift"
-        HARDEST_PART = "hardest_part", "The hardest part for me"
-        BEST_ADVICE = "best_advice", "Best advice I have been given"
         PROUDEST = "proudest", "Proudest moment in the gym"
-        REST_DAY = "rest_day", "A rest day looks like"
+        HARDEST_PART = "hardest_part", "The hardest part for me"
+        STARTED_BECAUSE = "started_because", "I started training because"
+        TRAINING_CHANGED = "training_changed", "Training changed this about me"
+
+        # In the gym
+        FAVOURITE_LIFT = "favourite_lift", "Favourite lift"
+        SKIPPED_LIFT = "skipped_lift", "The lift I skip if I can"
+        ONE_MORE_REP = "one_more_rep", "What gets me one more rep"
+        BEST_ADVICE = "best_advice", "Best advice I have been given"
+        TRAINING_TO = "training_to", "What I train to"
+        GYM_PET_PEEVE = "gym_pet_peeve", "My gym pet peeve"
+        WARM_UP = "warm_up", "My warm-up is"
+
+        # Food
         PRE_WORKOUT = "pre_workout", "What I eat before training"
         POST_WORKOUT = "post_workout", "What I eat after"
-        TRAINING_TO = "training_to", "What I train to"
-        ONE_MORE_REP = "one_more_rep", "What gets me one more rep"
+        WORTH_IT = "worth_it", "Worth every calorie"
+        ON_REPEAT = "on_repeat", "The meal I make on repeat"
+
+        # Rest of your life
+        REST_DAY = "rest_day", "A rest day looks like"
+        OUTSIDE_GYM = "outside_gym", "Outside the gym you will find me"
+        RECOVERY = "recovery", "How I actually recover"
+        SUNDAY = "sunday", "My Sunday in three words"
+
+        # Training together
         TRAINING_PARTNER = "training_partner", "Looking for a training partner who"
+        SPOT_ME = "spot_me", "Ask me to spot you if"
+        PARTNER_NEVER = "partner_never", "A training partner should never"
 
     owner = models.ForeignKey(
         RepbaseUser,
