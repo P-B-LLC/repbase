@@ -1,7 +1,9 @@
+from unittest import mock
 from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
+from django.core.cache import cache
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APITestCase
@@ -10,6 +12,7 @@ from .models import (
     Exercise,
     Gym,
     ProfileSocialLink,
+    PasswordResetCode,
     RepbaseUser,
     SessionExercise,
     SetEntry,
@@ -411,3 +414,238 @@ class ProfileSocialLinkTests(RepbaseAPITestMixin, APITestCase):
         self.authenticate(self.other_token)
         public = self.client.get(f"/api/v1/users/{self.profile.id}/")
         self.assertEqual(public.data["social_links"], [])
+
+
+class PasswordResetTests(APITestCase):
+    """Finding 04: a forgotten password used to lock the account forever.
+
+    The cases worth writing down are the ones where the endpoint has to give
+    nothing away. A wrong code and an address nobody has registered must be
+    indistinguishable, or the reset flow becomes the account enumerator the
+    login endpoint deliberately is not.
+    """
+
+    REQUEST = "/api/v1/auth/password-reset/"
+    CONFIRM = "/api/v1/auth/password-reset/confirm/"
+    EMAIL = "forgetful@example.invalid"
+    OLD_PASSWORD = "the-old-one-12345"
+    NEW_PASSWORD = "a-brand-new-one-98765"
+
+    def setUp(self):
+        cache.clear()
+        self.user = User.objects.create_user(
+            username="forgetful", email=self.EMAIL, password=self.OLD_PASSWORD
+        )
+        RepbaseUser.objects.get_or_create(user=self.user)
+        self.sent = []
+
+    def tearDown(self):
+        cache.clear()
+
+    def ask(self, email=None):
+        """Ask for a code and read it back out of the email that was sent."""
+        self.sent = []
+
+        def capture(**kwargs):
+            self.sent.append(kwargs)
+            return 1
+
+        with mock.patch("core.views.send_mail", side_effect=capture):
+            response = self.client.post(
+                self.REQUEST, {"email": email or self.EMAIL}, format="json"
+            )
+        code = self.sent[0]["message"].split("code is ")[1][:6] if self.sent else None
+        return response, code
+
+    def live_code(self):
+        return PasswordResetCode.objects.filter(
+            user=self.user, used_at__isnull=True
+        ).first()
+
+    # --- asking ---------------------------------------------------------
+
+    def test_unknown_address_is_indistinguishable(self):
+        response, code = self.ask("nobody@example.invalid")
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.sent, [])
+        self.assertFalse(PasswordResetCode.objects.exists())
+
+    def test_known_address_is_emailed_six_digits(self):
+        response, code = self.ask()
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.sent[0]["recipient_list"], [self.EMAIL])
+        self.assertRegex(code, r"^\d{6}$")
+
+    def test_the_code_is_not_stored_in_the_clear(self):
+        _, code = self.ask()
+        self.assertFalse(
+            PasswordResetCode.objects.filter(code_hash=code).exists(),
+            "a database dump should not be a list of live reset codes",
+        )
+
+    def test_asking_twice_leaves_only_the_newer_code_live(self):
+        _, first = self.ask()
+        _, second = self.ask()
+        self.assertNotEqual(first, second)
+        self.assertEqual(
+            PasswordResetCode.objects.filter(
+                user=self.user, used_at__isnull=True
+            ).count(),
+            1,
+        )
+        stale = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": first, "new_password": self.NEW_PASSWORD},
+            format="json",
+        )
+        self.assertEqual(stale.status_code, 400)
+
+    # --- confirming -----------------------------------------------------
+
+    def test_the_right_code_sets_the_password(self):
+        _, code = self.ask()
+        response = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": code, "new_password": self.NEW_PASSWORD},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password(self.NEW_PASSWORD))
+        self.assertFalse(self.user.check_password(self.OLD_PASSWORD))
+
+    def test_a_reset_signs_the_other_sessions_out(self):
+        stale = Token.objects.create(user=self.user).key
+        _, code = self.ask()
+        response = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": code, "new_password": self.NEW_PASSWORD},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Token.objects.filter(key=stale).exists())
+        self.assertEqual(Token.objects.filter(user=self.user).count(), 1)
+        self.assertNotEqual(response.data["token"], stale)
+        self.assertTrue(response.data["user"]["username"])
+
+    def test_a_code_works_once(self):
+        _, code = self.ask()
+        self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": code, "new_password": self.NEW_PASSWORD},
+            format="json",
+        )
+        again = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": code, "new_password": "different-one-4321"},
+            format="json",
+        )
+        self.assertEqual(again.status_code, 400)
+
+    def test_an_expired_code_is_refused(self):
+        _, code = self.ask()
+        entry = self.live_code()
+        entry.expires_at = timezone.now() - timedelta(seconds=1)
+        entry.save(update_fields=["expires_at"])
+        response = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": code, "new_password": self.NEW_PASSWORD},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_a_wrong_guess_is_counted(self):
+        """The counter has to survive the refusal that records it.
+
+        It did not, once: the increment was saved inside the same atomic block
+        the ValidationError unwound, so every wrong guess rolled back its own
+        tally and the ceiling below could never be reached.
+        """
+        _, code = self.ask()
+        wrong = "000000" if code != "000000" else "111111"
+        response = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": wrong, "new_password": self.NEW_PASSWORD},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.live_code().attempts, 1)
+
+    def test_enough_wrong_guesses_spend_the_code(self):
+        _, code = self.ask()
+        wrong = "000000" if code != "000000" else "111111"
+        for _ in range(PasswordResetCode.MAX_ATTEMPTS):
+            self.client.post(
+                self.CONFIRM,
+                {"email": self.EMAIL, "code": wrong, "new_password": self.NEW_PASSWORD},
+                format="json",
+            )
+        self.assertIsNone(self.live_code())
+        burned = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": code, "new_password": self.NEW_PASSWORD},
+            format="json",
+        )
+        self.assertEqual(burned.status_code, 400, "even the right code is dead now")
+
+    def test_an_unknown_address_reads_like_a_wrong_code(self):
+        _, code = self.ask()
+        wrong = "000000" if code != "000000" else "111111"
+        mistyped = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": wrong, "new_password": self.NEW_PASSWORD},
+            format="json",
+        )
+        stranger = self.client.post(
+            self.CONFIRM,
+            {
+                "email": "nobody@example.invalid",
+                "code": wrong,
+                "new_password": self.NEW_PASSWORD,
+            },
+            format="json",
+        )
+        self.assertEqual(stranger.status_code, mistyped.status_code)
+        self.assertEqual(stranger.data, mistyped.data)
+
+    def test_a_reset_is_not_a_way_round_the_password_rules(self):
+        _, code = self.ask()
+        response = self.client.post(
+            self.CONFIRM,
+            {"email": self.EMAIL, "code": code, "new_password": "password"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIsNotNone(self.live_code(), "a refused password should not burn it")
+
+    # --- throttling -----------------------------------------------------
+
+    def test_asking_over_and_over_is_refused(self):
+        codes = []
+        with mock.patch("core.views.send_mail", return_value=1):
+            for _ in range(9):
+                codes.append(
+                    self.client.post(
+                        self.REQUEST, {"email": self.EMAIL}, format="json"
+                    ).status_code
+                )
+        self.assertIn(429, codes)
+        self.assertEqual(codes[0], 204)
+
+    def test_confirming_is_not_capped_below_the_attempt_ceiling(self):
+        """Both endpoints once shared one budget, which made MAX_ATTEMPTS moot.
+
+        Five wrong guesses cannot be made if the sixth call of any kind is
+        refused, so the two scopes are separate.
+        """
+        _, code = self.ask()
+        wrong = "000000" if code != "000000" else "111111"
+        codes = [
+            self.client.post(
+                self.CONFIRM,
+                {"email": self.EMAIL, "code": wrong, "new_password": self.NEW_PASSWORD},
+                format="json",
+            ).status_code
+            for _ in range(PasswordResetCode.MAX_ATTEMPTS)
+        ]
+        self.assertNotIn(429, codes)

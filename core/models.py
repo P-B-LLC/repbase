@@ -2889,3 +2889,51 @@ def today_for(profile):
     deriving a date from "now" has to ask this instead.
     """
     return timezone.localtime(timezone.now(), zone_for(profile)).date()
+
+
+class PasswordResetCode(models.Model):
+    """A short code emailed to someone who cannot sign in.
+
+    Hashed, never stored in the clear: a six digit code is guessable enough
+    that a database dump containing live ones would be worth stealing, and
+    there is no reason the server ever needs to read it back.
+
+    Short-lived and single use. The attempt counter is what makes six digits
+    defensible — a million codes is a lot to a person and nothing to a script,
+    so the ceiling is on tries rather than on the keyspace.
+    """
+
+    #: How long a code is good for. Long enough to switch to a mail app and
+    #: back, short enough that a code left in an inbox is not a standing key.
+    LIFETIME = timedelta(minutes=15)
+    #: Wrong guesses before the code is spent. Someone mistyping needs two or
+    #: three; anything past five is not typing.
+    MAX_ATTEMPTS = 5
+
+    user = models.ForeignKey(
+        "auth.User",
+        on_delete=models.CASCADE,
+        related_name="password_reset_codes",
+    )
+    code_hash = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    #: Set when the code is spent, whether by being used or by being guessed
+    #: at too often. Either way it cannot be used again.
+    used_at = models.DateTimeField(null=True, blank=True)
+    attempts = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ("-created_at",)
+        indexes = [models.Index(fields=("user", "-created_at"))]
+
+    def __str__(self):
+        return f"reset code for {self.user_id}"
+
+    @property
+    def is_live(self):
+        return (
+            self.used_at is None
+            and self.attempts < self.MAX_ATTEMPTS
+            and timezone.now() < self.expires_at
+        )

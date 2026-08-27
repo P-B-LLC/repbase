@@ -2871,3 +2871,33 @@ class CycleShiftResultSerializer(serializers.Serializer):
     removed = serializers.IntegerField()
     scheduled = serializers.IntegerField()
     kept = serializers.IntegerField()
+
+
+class PasswordResetRequestSerializer(serializers.Serializer):
+    """Asking for a code.
+
+    Takes an email and nothing else, and the view answers the same way
+    whether or not an account has it. Telling an unauthenticated caller which
+    addresses are registered turns this into a way to enumerate the userbase.
+    """
+
+    email = serializers.EmailField()
+
+
+class PasswordResetConfirmSerializer(serializers.Serializer):
+    """Spending a code on a new password.
+
+    The email comes back with it so the code is only ever checked against the
+    account it was issued for; a code good for whoever happens to present it
+    would be a six digit skeleton key.
+    """
+
+    email = serializers.EmailField()
+    code = serializers.CharField(min_length=6, max_length=6)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate_new_password(self, value):
+        # The same rules registration applies. A reset is not a way around
+        # the password policy.
+        password_validation.validate_password(value)
+        return value

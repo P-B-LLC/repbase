@@ -175,6 +175,16 @@ REST_FRAMEWORK = {
         'register': os.environ.get('REPBASE_THROTTLE_REGISTER', '10/day'),
         # Writes that create content other people see.
         'post': os.environ.get('REPBASE_THROTTLE_POST', '60/hour'),
+        # Asking for a reset code, and guessing at one. Both are cheap to
+        # attempt and expensive to get wrong, and neither is something a
+        # person does repeatedly.
+        'password_reset': os.environ.get('REPBASE_THROTTLE_RESET', '6/hour'),
+        # Wider, because a person who mistypes a code needs several
+        # tries and the code itself only allows five before it is
+        # spent. Five tries at six codes is the honest ceiling.
+        'password_reset_confirm': os.environ.get(
+            'REPBASE_THROTTLE_RESET_CONFIRM', '30/hour'
+        ),
     },
 }
 

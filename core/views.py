@@ -1,7 +1,12 @@
+import secrets
 import uuid
 from datetime import timedelta
 from decimal import Decimal
 
+from django.conf import settings
+from django.contrib.auth.hashers import check_password, make_password
+from django.core.mail import send_mail
+from django.contrib.auth import get_user_model
 from django.core.files.base import ContentFile
 from django.db import models, transaction
 from django.utils.dateparse import parse_date
@@ -69,6 +74,7 @@ from .models import (
     WorkoutTemplate,
     Block,
     Follow,
+    PasswordResetCode,
     Post,
     PostComment,
     PostLike,
@@ -137,6 +143,8 @@ from .serializers import (
     BlockSerializer,
     CreatePostSerializer,
     PostCommentSerializer,
+    PasswordResetConfirmSerializer,
+    PasswordResetRequestSerializer,
     PostSerializer,
     PreviousSetSerializer,
     PostReportResultSerializer,
@@ -167,6 +175,9 @@ def health(request):
 def repbase_users(request):
     users = RepbaseUser.objects.select_related("user").order_by("-created_at")
     return render(request, "core/repbase_users.html", {"users": users})
+
+
+User = get_user_model()
 
 
 def profile_for(user):
@@ -210,6 +221,149 @@ class LoginView(APIView):
         token, _ = Token.objects.get_or_create(user=user)
         response = AuthResponseSerializer({"token": token.key, "user": profile})
         return Response(response.data)
+
+
+class PasswordResetRequestView(APIView):
+    """Send a code to an address, if it belongs to somebody.
+
+    Always answers 204, whether or not it found an account. The alternative
+    tells an unauthenticated caller which email addresses are registered here,
+    which is worth more to somebody enumerating a userbase than the clearer
+    message is worth to a person who mistyped their own address.
+
+    Any code already outstanding for that account is spent first, so asking
+    twice does not leave two live codes.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_scope = "password_reset"
+    throttle_classes = [ScopedRateThrottle]
+
+    @extend_schema(
+        request=PasswordResetRequestSerializer,
+        responses={204: None},
+        description=(
+            "Emails a six digit reset code. Answers 204 whether or not the "
+            "address belongs to an account."
+        ),
+    )
+    def post(self, request):
+        payload = PasswordResetRequestSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        email = payload.validated_data["email"]
+
+        user = User.objects.filter(email__iexact=email).first()
+        if user is not None:
+            with transaction.atomic():
+                PasswordResetCode.objects.filter(
+                    user=user, used_at__isnull=True
+                ).update(used_at=timezone.now())
+
+                code = f"{secrets.randbelow(1_000_000):06d}"
+                PasswordResetCode.objects.create(
+                    user=user,
+                    code_hash=make_password(code),
+                    expires_at=timezone.now() + PasswordResetCode.LIFETIME,
+                )
+            minutes = int(PasswordResetCode.LIFETIME.total_seconds() // 60)
+            send_mail(
+                subject="Your Repbase reset code",
+                message=(
+                    f"Your Repbase password reset code is {code}.\n\n"
+                    f"It works once and expires in {minutes} minutes. "
+                    "If you did not ask to reset your password, you can "
+                    "ignore this email and nothing will change."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PasswordResetConfirmView(APIView):
+    """Set a new password with a code.
+
+    On success every existing token is deleted and a fresh one issued. Someone
+    resetting a password has often lost control of the account, and leaving
+    the old sessions signed in would leave whoever they are worried about
+    signed in too.
+    """
+
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    # Its own scope, wider than asking for a code. Sharing one budget with the
+    # request endpoint capped the pair at six calls an hour between them, so
+    # the five wrong guesses the model allows could never actually be made.
+    throttle_scope = "password_reset_confirm"
+    throttle_classes = [ScopedRateThrottle]
+
+    @extend_schema(
+        request=PasswordResetConfirmSerializer,
+        responses={200: AuthResponseSerializer},
+        description=(
+            "Sets a new password using the emailed code, signs every other "
+            "session out, and returns a fresh token."
+        ),
+    )
+    def post(self, request):
+        payload = PasswordResetConfirmSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        email = payload.validated_data["email"]
+        submitted = payload.validated_data["code"]
+
+        invalid = ValidationError(
+            {"code": "That code is wrong or has expired. Ask for a new one."}
+        )
+
+        user = User.objects.filter(email__iexact=email).first()
+        if user is None:
+            # The same words as a wrong code, for the same reason the request
+            # endpoint says nothing: an address that is not registered should
+            # not be distinguishable from one that is.
+            raise invalid
+
+        with transaction.atomic():
+            entry = (
+                PasswordResetCode.objects.select_for_update()
+                .filter(user=user, used_at__isnull=True)
+                .order_by("-created_at")
+                .first()
+            )
+            live = entry is not None and entry.is_live
+            correct = live and check_password(submitted, entry.code_hash)
+
+            if live and not correct:
+                entry.attempts += 1
+                # Spent rather than merely counted, so the ceiling cannot be
+                # walked around by asking for the row again.
+                if entry.attempts >= PasswordResetCode.MAX_ATTEMPTS:
+                    entry.used_at = timezone.now()
+                entry.save(update_fields=["attempts", "used_at"])
+
+            if correct:
+                entry.used_at = timezone.now()
+                entry.save(update_fields=["used_at"])
+
+                user.set_password(payload.validated_data["new_password"])
+                user.save(update_fields=["password"])
+
+                Token.objects.filter(user=user).delete()
+                token = Token.objects.create(user=user)
+
+        # Outside the transaction on purpose. Raising from inside it rolls the
+        # block back, which would undo the attempt counter with the same
+        # exception that was supposed to record it -- a ceiling that resets
+        # itself on every wrong guess is not a ceiling.
+        if not correct:
+            raise invalid
+
+        profile = profile_for(user)
+        return Response(
+            AuthResponseSerializer({"token": token.key, "user": profile}).data
+        )
 
 
 class RotateTokenView(APIView):
