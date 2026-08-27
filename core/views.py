@@ -245,6 +245,38 @@ class ServiceUnavailable(APIException):
     default_code = "service_unavailable"
 
 
+def _weekly_goal(owner, week_start):
+    """How many sessions this week is meant to hold.
+
+    It used to be however many were on the schedule, which made it a goal that
+    could not be missed: whatever you planned became the target, so the card
+    read "goal met" the moment the week was laid out and never said anything
+    again. A number that moves to wherever you already are is a description,
+    not a goal.
+
+    The personalization flow asks for this outright -- "workouts each week" --
+    and until now did nothing with the answer. So the answer is the goal.
+
+    An account that has never been through that flow keeps the old behaviour
+    rather than dropping to nothing. It is still a weak goal, but it is the
+    one that account has always had, and a beta is a bad place to have
+    somebody's dashboard change because of a question they were never asked.
+    """
+    chosen = (
+        Personalization.objects.filter(repbase_user=owner)
+        .values_list("weekly_target", flat=True)
+        .first()
+    )
+    if chosen is not None:
+        return chosen
+
+    return WorkoutSchedule.objects.filter(
+        owner=owner,
+        scheduled_date__gte=week_start,
+        scheduled_date__lt=week_start + timedelta(days=7),
+    ).count()
+
+
 class PersonalizationView(APIView):
     """Read and update what somebody wants from Repbase.
 
@@ -3237,11 +3269,7 @@ class TrainingStatsView(APIView):
                     "current_streak_weeks": current_streak,
                     "best_streak_weeks": best_streak,
                     "six_week_counts": six_weeks,
-                    "weekly_goal": WorkoutSchedule.objects.filter(
-                        owner=owner,
-                        scheduled_date__gte=this_week,
-                        scheduled_date__lt=this_week + timedelta(days=7),
-                    ).count(),
+                    "weekly_goal": _weekly_goal(owner, this_week),
                 }
             ).data
         )

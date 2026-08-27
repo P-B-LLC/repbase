@@ -20,6 +20,7 @@ from .models import (
     SessionExercise,
     SetEntry,
     WorkoutExercise,
+    WorkoutSchedule,
     WorkoutSession,
     WorkoutTemplate,
 )
@@ -1010,3 +1011,72 @@ class PersonalizationTests(RepbaseAPITestMixin, APITestCase):
     def test_signing_in_is_required(self):
         anonymous = APIClient()
         self.assertIn(anonymous.get(self.URL).status_code, (401, 403))
+
+
+class WeeklyGoalTests(RepbaseAPITestMixin, APITestCase):
+    """Where the number on the weekly goal card comes from.
+
+    It used to be a count of what was already scheduled, which is a goal that
+    is met the moment the week is planned.
+    """
+
+    URL = "/api/v1/sessions/training-stats/"
+
+    def setUp(self):
+        self.user, self.profile, token = self.create_account("goal_probe")
+        self.authenticate(token)
+
+    def _stats(self):
+        response = self.client.get(self.URL)
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def _schedule(self, count):
+        template = WorkoutTemplate.objects.create(
+            owner=self.profile, name="Session", workout_type="lifting"
+        )
+        monday = timezone.localdate() - timedelta(days=timezone.localdate().weekday())
+        for offset in range(count):
+            WorkoutSchedule.objects.create(
+                owner=self.profile,
+                workout=template,
+                scheduled_date=monday + timedelta(days=offset),
+            )
+
+    def test_the_chosen_target_is_the_goal(self):
+        self.client.patch(
+            "/api/v1/me/personalization/", {"weekly_target": 5}, format="json"
+        )
+        self.assertEqual(self._stats()["weekly_goal"], 5)
+
+    def test_the_target_wins_over_what_is_scheduled(self):
+        """The whole point. Planning two sessions against a target of five is
+        three short, and the card should say so rather than call it done."""
+        self._schedule(2)
+        self.client.patch(
+            "/api/v1/me/personalization/", {"weekly_target": 5}, format="json"
+        )
+        self.assertEqual(self._stats()["weekly_goal"], 5)
+
+    def test_a_target_of_none_is_respected(self):
+        """Nought is an answer -- somebody who is not aiming at a count -- and
+        must not fall through to the old behaviour."""
+        self._schedule(3)
+        self.client.patch(
+            "/api/v1/me/personalization/", {"weekly_target": 0}, format="json"
+        )
+        self.assertEqual(self._stats()["weekly_goal"], 0)
+
+    def test_an_account_that_never_answered_keeps_the_old_behaviour(self):
+        """No dashboard changes under somebody because of a question they were
+        never asked."""
+        self._schedule(3)
+        self.assertEqual(self._stats()["weekly_goal"], 3)
+
+    def test_one_accounts_target_is_not_anothers(self):
+        self.client.patch(
+            "/api/v1/me/personalization/", {"weekly_target": 7}, format="json"
+        )
+        _, _, other = self.create_account("goal_other")
+        self.authenticate(other)
+        self.assertEqual(self._stats()["weekly_goal"], 0)
