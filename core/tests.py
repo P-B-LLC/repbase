@@ -770,12 +770,14 @@ class FoodSearchNormalisationTests(SimpleTestCase):
         self.assertEqual(food["calories"], Decimal("469.00"))
         self.assertEqual(food["serving_description"], "1 CHICKEN BREAST (284 g)")
 
-    def test_a_branded_food_without_a_label_falls_back_to_per_100g(self):
-        """Which is what a search response actually returns.
+    def test_a_branded_food_is_scaled_to_its_own_serving(self):
+        """The usual case, because search never returns labelNutrients.
 
-        labelNutrients only comes back from the single-food endpoint, so every
-        branded search result lands here. The serving has to say so, or a row
-        meaning 100 g gets logged as though it meant a packet.
+        foodNutrients is per 100 g and the response says a serving weighs
+        284 g, which is enough to state the food as one of its own servings
+        rather than as a weight nobody eats in. The same packet carries the
+        label figures on the single-food endpoint, so the arithmetic can be
+        checked against them: 469 kcal, 58 g of protein, 3.01 and 23.0.
         """
         food = food_sources.normalize({
             "fdcId": 2187885,
@@ -788,9 +790,55 @@ class FoodSearchNormalisationTests(SimpleTestCase):
             "foodNutrients": [
                 {"nutrientId": 1008, "value": 165.0},
                 {"nutrientId": 1003, "value": 20.42},
+                {"nutrientId": 1005, "value": 1.06},
+                {"nutrientId": 1004, "value": 8.1},
             ],
         })
+        self.assertEqual(food["serving_description"], "1 CHICKEN BREAST (284 g)")
+        # Within the rounding the packet itself does.
+        self.assertEqual(food["calories"], Decimal("468.60"))
+        self.assertEqual(food["protein_grams"], Decimal("57.99"))
+        self.assertEqual(food["carbohydrate_grams"], Decimal("3.01"))
+        self.assertEqual(food["fat_grams"], Decimal("23.00"))
+
+    def test_a_branded_food_with_no_serving_weight_stays_per_100g(self):
+        """Nothing to scale by, so nothing is invented."""
+        food = food_sources.normalize({
+            "fdcId": 6,
+            "description": "MYSTERY SNACK",
+            "dataType": "Branded",
+            "foodNutrients": [{"nutrientId": 1008, "value": 165.0}],
+        })
         self.assertEqual(food["calories"], Decimal("165.00"))
+        self.assertEqual(food["serving_description"], "100 g")
+
+    def test_a_serving_measured_in_millilitres_is_not_treated_as_grams(self):
+        """A drink states its serving in ml, and ml are not grams.
+
+        Scaling per-100g figures by a volume assumes the food weighs a gram
+        per millilitre, which is true of water and of very little else.
+        """
+        food = food_sources.normalize({
+            "fdcId": 7,
+            "description": "ORANGE JUICE",
+            "dataType": "Branded",
+            "servingSize": 240.0,
+            "servingSizeUnit": "ml",
+            "householdServingFullText": "1 CUP",
+            "foodNutrients": [{"nutrientId": 1008, "value": 45.0}],
+        })
+        self.assertEqual(food["calories"], Decimal("45.00"))
+        self.assertEqual(food["serving_description"], "100 g")
+
+    def test_a_generic_food_stays_per_100g(self):
+        """FoodData Central holds portions for these and does not return them
+        from search, so there is nothing to scale by."""
+        food = food_sources.normalize({
+            "fdcId": 8,
+            "description": "Chicken, breast, boneless, skinless, raw",
+            "dataType": "Foundation",
+            "foodNutrients": [{"nutrientId": 1008, "value": 120.0}],
+        })
         self.assertEqual(food["serving_description"], "100 g")
 
     def test_shouted_names_are_made_readable(self):

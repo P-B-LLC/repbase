@@ -136,19 +136,36 @@ def normalize(raw):
     data_type = raw.get("dataType") or ""
     brand = (raw.get("brandName") or raw.get("brandOwner") or "").strip()
 
+    nutrition = None
+    serving = "100 g"
+
     if data_type == "Branded":
+        # Best: the figures printed on the packet. Only the single-food
+        # endpoint returns these, so in practice a search result falls past it.
         nutrition = _from_label(raw.get("labelNutrients") or {})
-        serving = _branded_serving(raw)
-    else:
-        nutrition = None
-        serving = "100 g"
+        if nutrition is not None:
+            serving = _branded_serving(raw)
+
+        if nutrition is None:
+            # Next best, and the usual case. foodNutrients is per 100 g and
+            # the response says how many grams a serving is, which is enough
+            # to state the food as one serving of itself rather than as a
+            # weight nobody eats in. Checked against a packet that carries
+            # both: 165 kcal per 100 g at a 284 g serving computes to 468.60,
+            # and the label says 469.
+            grams = _decimal(raw.get("servingSize"))
+            unit = (raw.get("servingSizeUnit") or "").strip().lower()
+            per_hundred = _from_nutrients(raw.get("foodNutrients") or [])
+            if per_hundred is not None and grams and grams > 0 and unit == "g":
+                nutrition = _scale(per_hundred, grams / 100)
+                serving = _branded_serving(raw)
 
     if nutrition is None:
-        # Either a generic record, or a branded one whose label block is
-        # missing or empty. Both are per 100 g in foodNutrients.
+        # A generic record, or a branded one that states no serving weight.
+        # FoodData Central holds portions for generic foods but does not
+        # return them from search, so these stay per 100 g and say so.
         nutrition = _from_nutrients(raw.get("foodNutrients") or [])
-        if data_type == "Branded":
-            serving = "100 g"
+        serving = "100 g"
 
     if nutrition is None:
         return None
@@ -239,6 +256,14 @@ def _burn(values):
         return None
     total = sum((amount or Decimal("0")) * factor for amount, factor in grams)
     return total.quantize(Decimal("0.01"))
+
+
+def _scale(nutrition, factor):
+    """Per 100 g figures restated for a serving of `factor` hundred grams."""
+    return {
+        field: (value * factor).quantize(Decimal("0.01"))
+        for field, value in nutrition.items()
+    }
 
 
 def _clamp(nutrition):
