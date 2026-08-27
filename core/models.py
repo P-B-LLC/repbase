@@ -2891,6 +2891,42 @@ def today_for(profile):
     return timezone.localtime(timezone.now(), zone_for(profile)).date()
 
 
+class FoodSearchCache(models.Model):
+    """What FoodData Central said about a search term, kept for a while.
+
+    Not an optimisation. FoodData Central rates by IP, and every request from
+    here leaves the same one, so the whole userbase shares a single allowance
+    of a thousand an hour. Without this, a few dozen people searching at once
+    would spend it and everybody's search would start failing at the same
+    moment. Cached, a term anyone has looked up recently costs nothing.
+
+    A week, because the data is public-domain reference material that changes
+    on the timescale of a survey, not a day.
+    """
+
+    LIFETIME = timedelta(days=7)
+
+    #: Case- and space-folded, so "Chicken  Breast" and "chicken breast" are
+    #: one entry rather than two.
+    term = models.CharField(max_length=200, unique=True)
+    payload = models.JSONField()
+    fetched_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("-fetched_at",)
+
+    def __str__(self):
+        return self.term
+
+    @property
+    def is_fresh(self):
+        return timezone.now() - self.fetched_at < self.LIFETIME
+
+    @staticmethod
+    def normalize(term):
+        return " ".join((term or "").split()).lower()
+
+
 class PasswordResetCode(models.Model):
     """A short code emailed to someone who cannot sign in.
 

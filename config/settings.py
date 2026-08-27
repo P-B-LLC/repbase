@@ -179,6 +179,10 @@ REST_FRAMEWORK = {
         # attempt and expensive to get wrong, and neither is something a
         # person does repeatedly.
         'password_reset': os.environ.get('REPBASE_THROTTLE_RESET', '6/hour'),
+        # Per person, so one of them cannot spend the FoodData Central
+        # allowance the whole userbase shares. Generous, because the
+        # cache absorbs anything anyone has searched for lately.
+        'food_search': os.environ.get('REPBASE_THROTTLE_FOOD', '120/hour'),
         # Wider, because a person who mistypes a code needs several
         # tries and the code itself only allows five before it is
         # spent. Five tries at six codes is the honest ceiling.
@@ -230,5 +234,12 @@ else:
             },
         },
     }
+
+# FoodData Central. Free, and rate limited per IP -- which is one IP for
+# everybody once the lookup is proxied through here, so FoodSearchCache is
+# what keeps the allowance from being spent by a handful of people.
+# DEMO_KEY works without signing up and allows 30 requests an hour, which
+# is enough to develop against and not enough to ship on.
+USDA_FDC_API_KEY = os.getenv("USDA_FDC_API_KEY", "DEMO_KEY")
 
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@repbase.local')

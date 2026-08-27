@@ -4,12 +4,15 @@ from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
+from django.test import SimpleTestCase
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
+from . import food_sources
 from .models import (
     Exercise,
+    FoodSearchCache,
     Gym,
     ProfileSocialLink,
     PasswordResetCode,
@@ -649,3 +652,229 @@ class PasswordResetTests(APITestCase):
             for _ in range(PasswordResetCode.MAX_ATTEMPTS)
         ]
         self.assertNotIn(429, codes)
+
+
+class FoodSearchNormalisationTests(SimpleTestCase):
+    """Reading FoodData Central without getting the numbers wrong.
+
+    Every case here is one that returns a plausible number rather than an
+    error, which is why it is worth a test: nothing crashes, the food log is
+    just quietly incorrect.
+    """
+
+    def test_energy_is_matched_by_id_not_by_name(self):
+        """The trap that would make every calorie 4.2 times too high.
+
+        Two nutrients on the same food are both called Energy: 1008 in
+        kilocalories and 1062 in kilojoules. The search endpoint lists the
+        kilojoules, so anything matching on the name reads 1101 where the
+        answer is 263.
+        """
+        food = food_sources.normalize({
+            "fdcId": 171515,
+            "description": "Chicken breast tenders, breaded, uncooked",
+            "dataType": "SR Legacy",
+            "foodNutrients": [
+                {"nutrientId": 1062, "nutrientName": "Energy", "value": 1101.0},
+                {"nutrientId": 1008, "nutrientName": "Energy", "value": 263.0},
+                {"nutrientId": 1003, "value": 14.73},
+                {"nutrientId": 1005, "value": 15.01},
+                {"nutrientId": 1004, "value": 15.75},
+            ],
+        })
+        self.assertEqual(food["calories"], Decimal("263.00"))
+
+    def test_energy_order_does_not_matter(self):
+        """Same food with the kilojoules listed second."""
+        food = food_sources.normalize({
+            "fdcId": 1,
+            "description": "Anything",
+            "dataType": "SR Legacy",
+            "foodNutrients": [
+                {"nutrientId": 1008, "nutrientName": "Energy", "value": 263.0},
+                {"nutrientId": 1062, "nutrientName": "Energy", "value": 1101.0},
+            ],
+        })
+        self.assertEqual(food["calories"], Decimal("263.00"))
+
+    def test_kilojoules_are_converted_when_calories_are_absent(self):
+        food = food_sources.normalize({
+            "fdcId": 2,
+            "description": "Only kilojoules",
+            "dataType": "SR Legacy",
+            "foodNutrients": [{"nutrientId": 1062, "value": 1101.0}],
+        })
+        # 1101 / 4.184
+        self.assertEqual(food["calories"], Decimal("263.15"))
+
+    def test_calories_are_burned_from_macros_as_a_last_resort(self):
+        """Raw skinless chicken breast states protein and fat and no energy."""
+        food = food_sources.normalize({
+            "fdcId": 2646170,
+            "description": "Chicken, breast, boneless, skinless, raw",
+            "dataType": "Foundation",
+            "foodNutrients": [
+                {"nutrientId": 1003, "value": 22.5},
+                {"nutrientId": 1005, "value": 0.0},
+                {"nutrientId": 1004, "value": 1.93},
+            ],
+        })
+        # 22.5 x 4 + 0 x 4 + 1.93 x 9
+        self.assertEqual(food["calories"], Decimal("107.37"))
+
+    def test_a_food_with_nothing_in_it_is_dropped(self):
+        self.assertIsNone(food_sources.normalize({
+            "fdcId": 3,
+            "description": "Nothing known",
+            "dataType": "Foundation",
+            "foodNutrients": [],
+        }))
+
+    def test_negative_carbohydrate_is_clamped(self):
+        """Carbohydrate by difference can land under zero on a wet food."""
+        food = food_sources.normalize({
+            "fdcId": 4,
+            "description": "Chicken, breast, meat and skin, raw",
+            "dataType": "Foundation",
+            "foodNutrients": [
+                {"nutrientId": 1008, "value": 126.9},
+                {"nutrientId": 1003, "value": 21.4},
+                {"nutrientId": 1005, "value": -0.43},
+                {"nutrientId": 1004, "value": 4.78},
+            ],
+        })
+        self.assertEqual(food["carbohydrate_grams"], Decimal("0"))
+
+    def test_a_branded_label_is_read_per_serving(self):
+        """165 kcal per 100 g and 469 per serving are both right.
+
+        The packet says 469, so that is what a person reading the packet
+        should be offered, and the serving it means is said out loud.
+        """
+        food = food_sources.normalize({
+            "fdcId": 2187885,
+            "description": "CHICKEN BREAST",
+            "dataType": "Branded",
+            "brandName": "GIANT EAGLE",
+            "servingSize": 284.0,
+            "servingSizeUnit": "g",
+            "householdServingFullText": "1 CHICKEN BREAST",
+            "labelNutrients": {
+                "calories": {"value": 469},
+                "protein": {"value": 58.0},
+                "carbohydrates": {"value": 3.01},
+                "fat": {"value": 23.0},
+            },
+            "foodNutrients": [{"nutrientId": 1008, "value": 165.0}],
+        })
+        self.assertEqual(food["calories"], Decimal("469.00"))
+        self.assertEqual(food["serving_description"], "1 CHICKEN BREAST (284 g)")
+
+    def test_a_branded_food_without_a_label_falls_back_to_per_100g(self):
+        """Which is what a search response actually returns.
+
+        labelNutrients only comes back from the single-food endpoint, so every
+        branded search result lands here. The serving has to say so, or a row
+        meaning 100 g gets logged as though it meant a packet.
+        """
+        food = food_sources.normalize({
+            "fdcId": 2187885,
+            "description": "CHICKEN BREAST",
+            "dataType": "Branded",
+            "brandName": "GIANT EAGLE",
+            "servingSize": 284.0,
+            "servingSizeUnit": "g",
+            "householdServingFullText": "1 CHICKEN BREAST",
+            "foodNutrients": [
+                {"nutrientId": 1008, "value": 165.0},
+                {"nutrientId": 1003, "value": 20.42},
+            ],
+        })
+        self.assertEqual(food["calories"], Decimal("165.00"))
+        self.assertEqual(food["serving_description"], "100 g")
+
+    def test_shouted_names_are_made_readable(self):
+        food = food_sources.normalize({
+            "fdcId": 5,
+            "description": "CHICKEN BREAST",
+            "dataType": "Branded",
+            "foodNutrients": [{"nutrientId": 1008, "value": 165.0}],
+        })
+        self.assertEqual(food["name"], "Chicken Breast")
+
+
+class FoodSearchViewTests(RepbaseAPITestMixin, APITestCase):
+    """The endpoint in front of it: caching, and what happens when it is down."""
+
+    URL = "/api/v1/food/search/"
+
+    SAMPLE = [{
+        "source_id": "usda:1",
+        "name": "Oats",
+        "brand": "",
+        "serving_description": "100 g",
+        "calories": Decimal("389.00"),
+        "protein_grams": Decimal("16.90"),
+        "carbohydrate_grams": Decimal("66.30"),
+        "fat_grams": Decimal("6.90"),
+    }]
+
+    def setUp(self):
+        cache.clear()
+        FoodSearchCache.objects.all().delete()
+        _, _, token = self.create_account('food_probe')
+        self.authenticate(token)
+
+    def test_a_short_query_asks_nobody(self):
+        with mock.patch("core.views.food_sources.search") as upstream:
+            response = self.client.get(self.URL, {"q": "o"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
+        upstream.assert_not_called()
+
+    def test_a_search_is_fetched_once_and_then_cached(self):
+        with mock.patch(
+            "core.views.food_sources.search", return_value=self.SAMPLE
+        ) as upstream:
+            first = self.client.get(self.URL, {"q": "oats"})
+            second = self.client.get(self.URL, {"q": "  OATS  "})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.data, second.data)
+        # Case and spacing fold, so this is one term and not three.
+        upstream.assert_called_once()
+        self.assertEqual(FoodSearchCache.objects.count(), 1)
+
+    def test_a_stale_answer_beats_no_answer(self):
+        """Reference nutrition does not go off. A week-old figure for oats is
+        still the figure for oats, and is worth more than an error."""
+        with mock.patch("core.views.food_sources.search", return_value=self.SAMPLE):
+            self.client.get(self.URL, {"q": "oats"})
+
+        entry = FoodSearchCache.objects.get(term="oats")
+        entry.fetched_at = timezone.now() - FoodSearchCache.LIFETIME - timedelta(days=1)
+        entry.save(update_fields=["fetched_at"])
+
+        with mock.patch(
+            "core.views.food_sources.search",
+            side_effect=food_sources.FoodSourceUnavailable("down"),
+        ):
+            response = self.client.get(self.URL, {"q": "oats"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["name"], "Oats")
+
+    def test_upstream_down_with_nothing_cached_is_503(self):
+        """Not 500. The request was fine; the answer is elsewhere and away."""
+        with mock.patch(
+            "core.views.food_sources.search",
+            side_effect=food_sources.FoodSourceUnavailable("down"),
+        ):
+            response = self.client.get(self.URL, {"q": "oats"})
+        self.assertEqual(response.status_code, 503)
+
+    def test_signing_in_is_required(self):
+        anonymous = APIClient()
+        response = anonymous.get(self.URL, {"q": "oats"})
+        self.assertIn(response.status_code, (401, 403))

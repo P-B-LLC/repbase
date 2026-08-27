@@ -2873,6 +2873,26 @@ class CycleShiftResultSerializer(serializers.Serializer):
     kept = serializers.IntegerField()
 
 
+class FoodSearchResultSerializer(serializers.Serializer):
+    """One food from the public catalogue, in the shape the app logs.
+
+    Deliberately the same four figures a FoodEntry holds, and nothing else the
+    app would have to learn. Nutrition is carried as a string for the same
+    reason every other nutrition figure here is: a calorie count that travels
+    as a JSON number comes back from some parsers as 232.99999999999997.
+    """
+
+    source_id = serializers.CharField()
+    name = serializers.CharField()
+    brand = serializers.CharField(allow_blank=True)
+    #: What the figures below are for -- "1 slice (28 g)", or "100 g".
+    serving_description = serializers.CharField()
+    calories = serializers.DecimalField(max_digits=8, decimal_places=2)
+    protein_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
+    carbohydrate_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
+    fat_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
+
+
 class PasswordResetRequestSerializer(serializers.Serializer):
     """Asking for a code.
 

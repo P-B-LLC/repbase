@@ -32,7 +32,12 @@ from drf_spectacular.utils import (
     extend_schema_view,
 )
 from rest_framework import mixins, pagination, status, viewsets
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import (
+    APIException,
+    NotFound,
+    PermissionDenied,
+    ValidationError,
+)
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -41,6 +46,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
+from . import food_sources
 from .models import (
     BodyWeightEntry,
     DailyStepCount,
@@ -74,6 +80,7 @@ from .models import (
     WorkoutTemplate,
     Block,
     Follow,
+    FoodSearchCache,
     PasswordResetCode,
     Post,
     PostComment,
@@ -143,6 +150,7 @@ from .serializers import (
     BlockSerializer,
     CreatePostSerializer,
     PostCommentSerializer,
+    FoodSearchResultSerializer,
     PasswordResetConfirmSerializer,
     PasswordResetRequestSerializer,
     PostSerializer,
@@ -221,6 +229,78 @@ class LoginView(APIView):
         token, _ = Token.objects.get_or_create(user=user)
         response = AuthResponseSerializer({"token": token.key, "user": profile})
         return Response(response.data)
+
+
+class ServiceUnavailable(APIException):
+    """Something upstream is down, and it is not the caller's fault.
+
+    503 rather than 500: the request was fine, the answer is simply not
+    available at the moment, and the difference decides whether the app tells
+    somebody to try again or that something is broken.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_code = "service_unavailable"
+
+
+class FoodSearchView(APIView):
+    """Look a food up in FoodData Central.
+
+    Proxied rather than called from the app, for four reasons that all point
+    the same way: the API key stays here; every device is not separately
+    telling a third party what its owner is eating; the results can be cached
+    against a rate limit that is shared by everybody; and the reading of the
+    upstream response -- which is where the wrong numbers come from -- happens
+    once, in one place, with tests around it.
+    """
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "food_search"
+    throttle_classes = [ScopedRateThrottle]
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="q",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                required=True,
+                description="What to search for. Two characters or more.",
+            )
+        ],
+        responses={200: FoodSearchResultSerializer(many=True)},
+        description=(
+            "Searches USDA FoodData Central and returns foods in the shape a "
+            "food entry is logged in. Results are cached for a week."
+        ),
+    )
+    def get(self, request):
+        term = FoodSearchCache.normalize(request.query_params.get("q", ""))
+        if len(term) < 2:
+            return Response([])
+
+        cached = FoodSearchCache.objects.filter(term=term).first()
+        if cached is not None and cached.is_fresh:
+            return Response(cached.payload)
+
+        try:
+            foods = food_sources.search(term)
+        except food_sources.FoodSourceUnavailable:
+            # A stale answer beats no answer: the figures are reference data,
+            # and a week-old calorie count for oats is still the calorie count
+            # for oats.
+            if cached is not None:
+                return Response(cached.payload)
+            raise ServiceUnavailable(
+                "The food database could not be reached. You can still reuse a "
+                "food you have logged before, or enter one by hand."
+            )
+
+        payload = FoodSearchResultSerializer(foods, many=True).data
+        FoodSearchCache.objects.update_or_create(
+            term=term, defaults={"payload": payload}
+        )
+        return Response(payload)
 
 
 class PasswordResetRequestView(APIView):
