@@ -33,6 +33,7 @@ from .models import (
     FoodMeal,
     Gym,
     NutritionGoal,
+    Personalization,
     SavedFoodIngredient,
     SavedFoodMeal,
     UserDiscipline,
@@ -2871,6 +2872,40 @@ class CycleShiftResultSerializer(serializers.Serializer):
     removed = serializers.IntegerField()
     scheduled = serializers.IntegerField()
     kept = serializers.IntegerField()
+
+
+class PersonalizationSerializer(serializers.ModelSerializer):
+    """The five answers, as the app already spells them.
+
+    The two lists are checked for shape but not for membership: they hold
+    whatever the app currently offers, and a choice retired from the app
+    should not turn an existing account into a validation error on read.
+    """
+
+    intents = serializers.ListField(
+        child=serializers.CharField(max_length=60), required=False, allow_empty=True
+    )
+    training_types = serializers.ListField(
+        child=serializers.CharField(max_length=60), required=False, allow_empty=True
+    )
+
+    class Meta:
+        model = Personalization
+        fields = (
+            "intents",
+            "training_types",
+            "weekly_target",
+            "experience",
+            "emphasis",
+        )
+
+    def validate_weekly_target(self, value):
+        # A week has seven days. Nought is a person who has not decided yet.
+        if not 0 <= value <= 7:
+            raise serializers.ValidationError(
+                "A weekly target is between 0 and 7 sessions."
+            )
+        return value
 
 
 class FoodSearchResultSerializer(serializers.Serializer):

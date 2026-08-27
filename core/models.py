@@ -2891,6 +2891,45 @@ def today_for(profile):
     return timezone.localtime(timezone.now(), zone_for(profile)).date()
 
 
+class Personalization(models.Model):
+    """What somebody said they wanted from Repbase when they first opened it.
+
+    The flow asked five questions and then wrote the answers to UserDefaults,
+    which meant they belonged to a phone rather than to a person: gone on
+    reinstall, absent on a second device, and invisible to the server that was
+    supposed to use them. Asking somebody what they want and then not keeping
+    it is worse than not asking.
+
+    The values are stored as the strings the app already uses, and the choices
+    are not constrained here. A list of intents is a product decision that
+    will change more often than a migration should, and a stored answer that
+    no longer appears in the app is a dead string rather than a broken row.
+
+    One per account, like nutrition goals.
+    """
+
+    repbase_user = models.OneToOneField(
+        "core.RepbaseUser",
+        on_delete=models.CASCADE,
+        related_name="personalization",
+    )
+    #: What they are here for. Several may be chosen.
+    intents = models.JSONField(default=list, blank=True)
+    #: The disciplines they train.
+    training_types = models.JSONField(default=list, blank=True)
+    #: Sessions a week they are aiming at.
+    weekly_target = models.PositiveSmallIntegerField(default=3)
+    #: How long they have been training.
+    experience = models.CharField(max_length=40, blank=True)
+    #: What home should lead with.
+    emphasis = models.CharField(max_length=40, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"personalization for {self.repbase_user_id}"
+
+
 class FoodSearchCache(models.Model):
     """What FoodData Central said about a search term, kept for a while.
 

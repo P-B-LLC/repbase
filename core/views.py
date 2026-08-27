@@ -82,6 +82,7 @@ from .models import (
     Follow,
     FoodSearchCache,
     PasswordResetCode,
+    Personalization,
     Post,
     PostComment,
     PostLike,
@@ -152,6 +153,7 @@ from .serializers import (
     PostCommentSerializer,
     FoodSearchResultSerializer,
     PasswordResetConfirmSerializer,
+    PersonalizationSerializer,
     PasswordResetRequestSerializer,
     PostSerializer,
     PreviousSetSerializer,
@@ -241,6 +243,39 @@ class ServiceUnavailable(APIException):
 
     status_code = status.HTTP_503_SERVICE_UNAVAILABLE
     default_code = "service_unavailable"
+
+
+class PersonalizationView(APIView):
+    """Read and update what somebody wants from Repbase.
+
+    Created on first read rather than at sign-up, so an account that has never
+    finished the flow answers with the defaults instead of a 404 the app would
+    have to special-case.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(responses={200: PersonalizationSerializer})
+    def get(self, request):
+        return Response(PersonalizationSerializer(self._record(request)).data)
+
+    @extend_schema(
+        request=PersonalizationSerializer,
+        responses={200: PersonalizationSerializer},
+        description="Updates only the answers included in the request.",
+    )
+    def patch(self, request):
+        serializer = PersonalizationSerializer(
+            self._record(request), data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+    def _record(self, request):
+        profile = profile_for(request.user)
+        record, _ = Personalization.objects.get_or_create(repbase_user=profile)
+        return record
 
 
 class FoodSearchView(APIView):

@@ -926,3 +926,87 @@ class FoodSearchViewTests(RepbaseAPITestMixin, APITestCase):
         anonymous = APIClient()
         response = anonymous.get(self.URL, {"q": "oats"})
         self.assertIn(response.status_code, (401, 403))
+
+
+class PersonalizationTests(RepbaseAPITestMixin, APITestCase):
+    """The five answers the first-run flow asks for, kept on the account.
+
+    They used to go to UserDefaults, which meant they belonged to a phone
+    rather than to a person.
+    """
+
+    URL = "/api/v1/me/personalization/"
+
+    def setUp(self):
+        _, _, token = self.create_account("personal_probe")
+        self.authenticate(token)
+
+    def test_an_account_that_has_never_answered_reads_defaults(self):
+        """Not a 404. An account that has not finished the flow has answers
+        anyway -- the ones the flow starts on -- and a screen should not have
+        to tell the difference."""
+        response = self.client.get(self.URL)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["intents"], [])
+        self.assertEqual(response.data["weekly_target"], 3)
+
+    def test_answers_are_saved_and_read_back(self):
+        saved = self.client.patch(
+            self.URL,
+            {
+                "intents": ["Consistency", "Strength"],
+                "training_types": ["Running"],
+                "weekly_target": 5,
+                "experience": "Experienced",
+                "emphasis": "Training",
+            },
+            format="json",
+        )
+        self.assertEqual(saved.status_code, 200)
+
+        read = self.client.get(self.URL)
+        self.assertEqual(read.data["intents"], ["Consistency", "Strength"])
+        self.assertEqual(read.data["training_types"], ["Running"])
+        self.assertEqual(read.data["weekly_target"], 5)
+        self.assertEqual(read.data["experience"], "Experienced")
+        self.assertEqual(read.data["emphasis"], "Training")
+
+    def test_a_partial_update_leaves_the_rest_alone(self):
+        self.client.patch(
+            self.URL,
+            {"intents": ["Community"], "weekly_target": 6},
+            format="json",
+        )
+        self.client.patch(self.URL, {"weekly_target": 2}, format="json")
+
+        read = self.client.get(self.URL)
+        self.assertEqual(read.data["weekly_target"], 2)
+        self.assertEqual(read.data["intents"], ["Community"])
+
+    def test_a_weekly_target_outside_a_week_is_refused(self):
+        for value in (8, 100):
+            response = self.client.patch(
+                self.URL, {"weekly_target": value}, format="json"
+            )
+            self.assertEqual(response.status_code, 400, value)
+
+    def test_a_choice_the_app_no_longer_offers_still_reads(self):
+        """Retiring an option from the app should not break the accounts that
+        chose it. The list is checked for shape, not for membership."""
+        self.client.patch(
+            self.URL, {"intents": ["Something Retired"]}, format="json"
+        )
+        read = self.client.get(self.URL)
+        self.assertEqual(read.data["intents"], ["Something Retired"])
+
+    def test_answers_belong_to_the_account_that_gave_them(self):
+        self.client.patch(self.URL, {"weekly_target": 7}, format="json")
+
+        _, _, other = self.create_account("personal_other")
+        self.authenticate(other)
+        response = self.client.get(self.URL)
+        self.assertEqual(response.data["weekly_target"], 3)
+
+    def test_signing_in_is_required(self):
+        anonymous = APIClient()
+        self.assertIn(anonymous.get(self.URL).status_code, (401, 403))
