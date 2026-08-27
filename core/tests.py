@@ -948,41 +948,37 @@ class PersonalizationTests(RepbaseAPITestMixin, APITestCase):
         to tell the difference."""
         response = self.client.get(self.URL)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["intents"], [])
+        self.assertEqual(response.data["training_types"], [])
         self.assertEqual(response.data["weekly_target"], 3)
 
     def test_answers_are_saved_and_read_back(self):
         saved = self.client.patch(
             self.URL,
             {
-                "intents": ["Consistency", "Strength"],
-                "training_types": ["Running"],
+                "training_types": ["Running", "Cycling"],
                 "weekly_target": 5,
-                "experience": "Experienced",
-                "emphasis": "Training",
+                "emphasis": "Nutrition",
             },
             format="json",
         )
         self.assertEqual(saved.status_code, 200)
 
         read = self.client.get(self.URL)
-        self.assertEqual(read.data["intents"], ["Consistency", "Strength"])
-        self.assertEqual(read.data["training_types"], ["Running"])
+        self.assertEqual(read.data["training_types"], ["Running", "Cycling"])
         self.assertEqual(read.data["weekly_target"], 5)
-        self.assertEqual(read.data["experience"], "Experienced")
-        self.assertEqual(read.data["emphasis"], "Training")
+        self.assertEqual(read.data["emphasis"], "Nutrition")
 
     def test_a_partial_update_leaves_the_rest_alone(self):
         self.client.patch(
             self.URL,
-            {"intents": ["Community"], "weekly_target": 6},
+            {"training_types": ["Swimming"], "weekly_target": 6},
             format="json",
         )
         self.client.patch(self.URL, {"weekly_target": 2}, format="json")
 
         read = self.client.get(self.URL)
         self.assertEqual(read.data["weekly_target"], 2)
-        self.assertEqual(read.data["intents"], ["Community"])
+        self.assertEqual(read.data["training_types"], ["Swimming"])
 
     def test_a_weekly_target_outside_a_week_is_refused(self):
         for value in (8, 100):
@@ -995,10 +991,10 @@ class PersonalizationTests(RepbaseAPITestMixin, APITestCase):
         """Retiring an option from the app should not break the accounts that
         chose it. The list is checked for shape, not for membership."""
         self.client.patch(
-            self.URL, {"intents": ["Something Retired"]}, format="json"
+            self.URL, {"training_types": ["Something Retired"]}, format="json"
         )
         read = self.client.get(self.URL)
-        self.assertEqual(read.data["intents"], ["Something Retired"])
+        self.assertEqual(read.data["training_types"], ["Something Retired"])
 
     def test_answers_belong_to_the_account_that_gave_them(self):
         self.client.patch(self.URL, {"weekly_target": 7}, format="json")

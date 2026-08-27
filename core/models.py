@@ -2906,6 +2906,14 @@ class Personalization(models.Model):
     no longer appears in the app is a dead string rather than a broken row.
 
     One per account, like nutrition goals.
+
+    Two answers have been removed rather than kept against a future use.
+    "Intents" was asked twice, on two different pages, in two different
+    wordings, and set the same field both times. "Experience" was collected to
+    "tune language and suggested starting points", which was never built and is
+    a content project rather than a feature. Both were stored, neither was ever
+    read, and a question nobody acts on costs more than it saves: it makes the
+    questions that do something look decorative too.
     """
 
     repbase_user = models.OneToOneField(
@@ -2913,15 +2921,11 @@ class Personalization(models.Model):
         on_delete=models.CASCADE,
         related_name="personalization",
     )
-    #: What they are here for. Several may be chosen.
-    intents = models.JSONField(default=list, blank=True)
     #: The disciplines they train.
     training_types = models.JSONField(default=list, blank=True)
-    #: Sessions a week they are aiming at.
+    #: Sessions a week they are aiming at. Drives the weekly goal.
     weekly_target = models.PositiveSmallIntegerField(default=3)
-    #: How long they have been training.
-    experience = models.CharField(max_length=40, blank=True)
-    #: What home should lead with.
+    #: Which chapter home opens on.
     emphasis = models.CharField(max_length=40, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

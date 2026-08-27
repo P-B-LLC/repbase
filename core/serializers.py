@@ -2875,16 +2875,13 @@ class CycleShiftResultSerializer(serializers.Serializer):
 
 
 class PersonalizationSerializer(serializers.ModelSerializer):
-    """The five answers, as the app already spells them.
+    """The three answers, as the app already spells them.
 
-    The two lists are checked for shape but not for membership: they hold
-    whatever the app currently offers, and a choice retired from the app
-    should not turn an existing account into a validation error on read.
+    The list is checked for shape but not for membership: it holds whatever
+    the app currently offers, and a choice retired from the app should not turn
+    an existing account into a validation error on read.
     """
 
-    intents = serializers.ListField(
-        child=serializers.CharField(max_length=60), required=False, allow_empty=True
-    )
     training_types = serializers.ListField(
         child=serializers.CharField(max_length=60), required=False, allow_empty=True
     )
@@ -2892,10 +2889,8 @@ class PersonalizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Personalization
         fields = (
-            "intents",
             "training_types",
             "weekly_target",
-            "experience",
             "emphasis",
         )
 
