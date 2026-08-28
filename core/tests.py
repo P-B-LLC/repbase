@@ -1076,3 +1076,318 @@ class WeeklyGoalTests(RepbaseAPITestMixin, APITestCase):
         _, _, other = self.create_account("goal_other")
         self.authenticate(other)
         self.assertEqual(self._stats()["weekly_goal"], 0)
+
+
+class RotationSwitchingTests(RepbaseAPITestMixin, APITestCase):
+    """One rotation at a time, chosen deliberately, writing the calendar."""
+
+    CYCLES = "/api/v1/cycles/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("rotator")
+        self.authenticate(self.token)
+        self.push = self.workout("Push Day")
+        self.pull = self.workout("Pull Day")
+        self.legs = self.workout("Leg Day")
+
+    def workout(self, name):
+        response = self.client.post(
+            "/api/v1/workouts/", {"name": name, "workout_type": "lifting"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data["id"]
+
+    def rotation(self, name, workout_ids, **extra):
+        body = {
+            "name": name,
+            "length": len(workout_ids),
+            "anchor_date": str(timezone.now().date()),
+            "slots": [
+                {"position": index + 1, "workout": workout_id}
+                for index, workout_id in enumerate(workout_ids)
+            ],
+        }
+        body.update(extra)
+        return self.client.post(self.CYCLES, body, format="json")
+
+    # ------------------------------------------------- saving writes the days
+
+    def test_saving_a_rotation_fills_the_calendar(self):
+        # The whole complaint: a rotation saved and the calendar stayed empty,
+        # because only plan-ahead ever wrote rows.
+        response = self.rotation("PPL", [self.push, self.pull, self.legs])
+        self.assertEqual(response.status_code, 201, response.data)
+
+        today = timezone.now().date()
+        rows = WorkoutSchedule.objects.filter(owner=self.profile)
+        self.assertGreater(rows.count(), 0, "saving wrote no schedule rows")
+        self.assertEqual(
+            rows.filter(scheduled_date=today).first().workout_id,
+            self.push,
+            "day 1 of the rotation should land on today",
+        )
+        # Written for every day of the horizon, not just the first turn.
+        self.assertGreaterEqual(rows.count(), 50)
+        self.assertTrue(all(r.source_cycle_id for r in rows), "rows must name their cycle")
+
+    # --------------------------------------------------- one at a time
+
+    def test_a_second_rotation_takes_over_from_the_first(self):
+        first = self.rotation("PPL", [self.push, self.pull, self.legs])
+        second = self.rotation("Upper/Lower", [self.push, self.legs])
+        self.assertEqual(second.status_code, 201, second.data)
+
+        cycles = {c["id"]: c for c in [first.data, second.data]}
+        self.assertEqual(len(cycles), 2)
+
+        from core.models import WorkoutCycle
+        self.assertFalse(
+            WorkoutCycle.objects.get(id=first.data["id"]).is_active,
+            "the first rotation should have been closed",
+        )
+        self.assertTrue(WorkoutCycle.objects.get(id=second.data["id"]).is_active)
+
+        # And the first one's future days are gone, not left in next week.
+        self.assertEqual(
+            WorkoutSchedule.objects.filter(
+                owner=self.profile, source_cycle_id=first.data["id"],
+                scheduled_date__gte=timezone.now().date(),
+            ).count(),
+            0,
+        )
+
+    def test_switching_back_restarts_the_rotation_today(self):
+        first = self.rotation("PPL", [self.push, self.pull, self.legs])
+        self.rotation("Upper/Lower", [self.push, self.legs])
+
+        response = self.client.post(f"{self.CYCLES}{first.data['id']}/activate/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["is_active"])
+
+        today = timezone.now().date()
+        from core.models import WorkoutCycle
+        revived = WorkoutCycle.objects.get(id=first.data["id"])
+        self.assertEqual(revived.anchor_date, today, "day 1 should land on today")
+        self.assertIsNone(revived.effective_until)
+
+        self.assertEqual(
+            WorkoutSchedule.objects.filter(
+                owner=self.profile, scheduled_date=today
+            ).first().workout_id,
+            self.push,
+        )
+
+    def test_only_one_rotation_is_ever_active(self):
+        for index in range(3):
+            self.rotation(f"Block {index}", [self.push, self.pull])
+        from core.models import WorkoutCycle
+        self.assertEqual(
+            WorkoutCycle.objects.filter(
+                owner=self.profile, effective_until__isnull=True
+            ).count(),
+            1,
+        )
+
+    def test_an_ended_rotation_is_still_listed_and_switchable(self):
+        first = self.rotation("PPL", [self.push, self.pull, self.legs])
+        self.rotation("Upper/Lower", [self.push, self.legs])
+
+        # Hidden by default, which is why activate looks past the filter.
+        default = self.client.get(self.CYCLES)
+        ids = [c["id"] for c in default.data["results"]]
+        self.assertNotIn(first.data["id"], ids)
+
+        including = self.client.get(f"{self.CYCLES}?include_ended=true")
+        ids = [c["id"] for c in including.data["results"]]
+        self.assertIn(first.data["id"], ids)
+
+    # -------------------------------------------- the weekly repeat clash
+
+    def test_a_repeating_workout_is_refused_and_named(self):
+        rule = self.client.post(
+            "/api/v1/recurrences/",
+            {"workout": self.push, "weekday": 0},
+            format="json",
+        )
+        self.assertEqual(rule.status_code, 201, rule.data)
+
+        response = self.rotation("PPL", [self.push, self.pull])
+        self.assertEqual(response.status_code, 400)
+        # Named, so the app can offer to stop exactly these rather than
+        # sending somebody off to find them.
+        self.assertIn("conflicting_workouts", response.data)
+        self.assertEqual(response.data["conflicting_workouts"], ["Push Day"])
+
+    def test_agreeing_to_stop_the_repeat_saves_the_rotation(self):
+        self.client.post(
+            "/api/v1/recurrences/", {"workout": self.push, "weekday": 0},
+            format="json",
+        )
+
+        response = self.rotation(
+            "PPL", [self.push, self.pull], stop_conflicting_repeats=True
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+
+        from core.models import WorkoutRecurrence
+        self.assertEqual(
+            WorkoutRecurrence.objects.filter(
+                owner=self.profile, workout_id=self.push,
+                effective_until__isnull=True,
+            ).count(),
+            0,
+            "the weekly repeat should have been closed",
+        )
+        # Closed, not deleted: weeks already planned keep resolving.
+        self.assertEqual(
+            WorkoutRecurrence.objects.filter(owner=self.profile).count(), 1
+        )
+
+    def test_a_refused_rotation_leaves_the_repeat_alone(self):
+        # The stop happens inside the save's transaction, so a rotation that
+        # fails must not have ended somebody's weekly repeat on the way.
+        self.client.post(
+            "/api/v1/recurrences/", {"workout": self.push, "weekday": 0},
+            format="json",
+        )
+        response = self.rotation("PPL", [self.push, self.pull])
+        self.assertEqual(response.status_code, 400)
+
+        from core.models import WorkoutRecurrence
+        self.assertEqual(
+            WorkoutRecurrence.objects.filter(
+                owner=self.profile, effective_until__isnull=True
+            ).count(),
+            1,
+            "a refused rotation must not have stopped the repeat",
+        )
+
+
+class RotationHandoverTests(RepbaseAPITestMixin, APITestCase):
+    """Switching rotations on a date you pick, not the moment you tap."""
+
+    CYCLES = "/api/v1/cycles/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("switcher")
+        self.authenticate(self.token)
+        self.push = self.workout("Push Day")
+        self.pull = self.workout("Pull Day")
+        self.squat = self.workout("Squat Day")
+
+    def workout(self, name):
+        r = self.client.post(
+            "/api/v1/workouts/", {"name": name, "workout_type": "lifting"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data["id"]
+
+    def rotation(self, name, ids):
+        r = self.client.post(
+            self.CYCLES,
+            {
+                "name": name,
+                "length": len(ids),
+                "anchor_date": str(timezone.now().date()),
+                "slots": [
+                    {"position": i + 1, "workout": w} for i, w in enumerate(ids)
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data
+
+    def scheduled_on(self, day):
+        return set(
+            WorkoutSchedule.objects.filter(
+                owner=self.profile, scheduled_date=day
+            ).values_list("workout_id", flat=True)
+        )
+
+    def test_the_old_rotation_runs_until_the_new_one_starts(self):
+        today = timezone.now().date()
+        handover = today + timedelta(days=14)
+
+        old = self.rotation("Old block", [self.push, self.pull])
+        new = self.rotation("New block", [self.squat])
+        # Creating the second one took over immediately, so put the first back
+        # and then schedule the real handover from it.
+        self.client.post(f"{self.CYCLES}{old['id']}/activate/", {}, format="json")
+
+        response = self.client.post(
+            f"{self.CYCLES}{new['id']}/activate/",
+            {"start_on": str(handover)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+
+        # The whole point: the fortnight in between still belongs to the old
+        # rotation rather than being cleared the moment the switch was made.
+        self.assertEqual(self.scheduled_on(today), {self.push})
+        self.assertEqual(self.scheduled_on(today + timedelta(days=1)), {self.pull})
+        # Day 13 of a two-day rotation anchored on today is slot 2.
+        self.assertEqual(self.scheduled_on(handover - timedelta(days=1)), {self.pull})
+
+        # And from the handover on, it is the new one, on its own day 1.
+        self.assertEqual(self.scheduled_on(handover), {self.squat})
+        self.assertEqual(self.scheduled_on(handover + timedelta(days=1)), {self.squat})
+
+    def test_the_old_rotation_is_closed_at_the_handover_not_today(self):
+        today = timezone.now().date()
+        handover = today + timedelta(days=10)
+
+        old = self.rotation("Old block", [self.push, self.pull])
+        new = self.rotation("New block", [self.squat])
+        self.client.post(f"{self.CYCLES}{old['id']}/activate/", {}, format="json")
+        self.client.post(
+            f"{self.CYCLES}{new['id']}/activate/",
+            {"start_on": str(handover)}, format="json",
+        )
+
+        from core.models import WorkoutCycle
+        self.assertEqual(
+            WorkoutCycle.objects.get(id=old["id"]).effective_until, handover
+        )
+        revived = WorkoutCycle.objects.get(id=new["id"])
+        self.assertEqual(revived.effective_from, handover)
+        self.assertEqual(revived.anchor_date, handover)
+        self.assertIsNone(revived.effective_until)
+
+    def test_no_start_date_means_today(self):
+        old = self.rotation("Old block", [self.push, self.pull])
+        new = self.rotation("New block", [self.squat])
+        self.client.post(f"{self.CYCLES}{old['id']}/activate/", {}, format="json")
+
+        response = self.client.post(f"{self.CYCLES}{new['id']}/activate/", {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.scheduled_on(timezone.now().date()), {self.squat})
+
+    def test_a_start_date_in_the_past_is_refused(self):
+        new = self.rotation("New block", [self.squat])
+        response = self.client.post(
+            f"{self.CYCLES}{new['id']}/activate/",
+            {"start_on": str(timezone.now().date() - timedelta(days=1))},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("start_on", response.data)
+
+    def test_days_already_trained_are_left_alone(self):
+        # A handover must never reach backwards into what has been done.
+        today = timezone.now().date()
+        old = self.rotation("Old block", [self.push, self.pull])
+        past = WorkoutSchedule.objects.create(
+            owner=self.profile,
+            workout_id=self.push,
+            scheduled_date=today - timedelta(days=3),
+        )
+
+        new = self.rotation("New block", [self.squat])
+        self.client.post(
+            f"{self.CYCLES}{new['id']}/activate/",
+            {"start_on": str(today + timedelta(days=5))}, format="json",
+        )
+        self.assertTrue(WorkoutSchedule.objects.filter(id=past.id).exists())

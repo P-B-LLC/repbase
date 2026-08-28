@@ -48,6 +48,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
 from .models import (
+    CYCLE_MATERIALIZE_DAYS,
     BodyWeightEntry,
     DailyStepCount,
     Gear,
@@ -107,6 +108,7 @@ from .serializers import (
     GearSerializer,
     CycleShiftResultSerializer,
     CycleShiftSerializer,
+    CycleActivateSerializer,
     CyclePlanAheadSerializer,
     WorkoutCycleSerializer,
     HealthImportResultSerializer,
@@ -3296,7 +3298,92 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         # whatever was planned then.
         owner = self.owner_profile()
         today = today_for(owner)
-        serializer.save(owner=owner, effective_from=today)
+        with transaction.atomic():
+            # Making a rotation is choosing it. Two rotations both writing
+            # days would put two workouts on the same date with nothing saying
+            # which plan either came from.
+            self._retire_active_cycles(owner, today)
+            cycle = serializer.save(owner=owner, effective_from=today)
+            # Written now rather than on a later plan-ahead, so the calendar
+            # fills in the moment the rotation is saved.
+            self._materialize(cycle, today + timedelta(days=CYCLE_MATERIALIZE_DAYS))
+
+    def _retire_active_cycles(self, owner, handover, keeping=None):
+        """Closes whatever rotation is running, as of `handover`.
+
+        Closing alone is not enough: the days it already wrote stay on the
+        calendar, so switching would leave the old plan sitting in next week.
+        Only days from the handover forward are removed -- everything before it
+        belongs to the rotation still running until then, and days already
+        trained are history either way.
+        """
+        running = WorkoutCycle.objects.filter(
+            owner=owner, effective_until__isnull=True
+        )
+        if keeping is not None:
+            running = running.exclude(pk=keeping.pk)
+        running = list(running)
+        if not running:
+            return
+
+        WorkoutSchedule.objects.filter(
+            owner=owner,
+            source_cycle__in=running,
+            scheduled_date__gte=handover,
+        ).delete()
+        for cycle in running:
+            cycle.effective_until = handover
+            cycle.save(update_fields=["effective_until", "updated_at"])
+
+    @extend_schema(
+        request=CycleActivateSerializer,
+        responses=WorkoutCycleSerializer,
+        description=(
+            "Make this the rotation you are on, from `start_on` -- today if "
+            "it is left out. Whatever is running keeps its days right up to "
+            "that date and is closed there; this one begins at day 1 on it, "
+            "and the calendar is written forward from there."
+        ),
+    )
+    @action(detail=True, methods=["post"])
+    def activate(self, request, pk=None):
+        owner = self.owner_profile()
+        today = today_for(owner)
+        # Ended rotations are switchable back to, so this looks past the
+        # default filter that hides them.
+        cycle = get_object_or_404(
+            self.scope_to_owner(WorkoutCycle.objects.all()), pk=pk
+        )
+
+        body = CycleActivateSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        start_on = body.validated_data.get("start_on") or today
+        if start_on < today:
+            raise ValidationError(
+                {"start_on": "A rotation cannot start before today."}
+            )
+
+        with transaction.atomic():
+            # The rotation on the way out keeps every day up to the handover,
+            # so the weeks between now and the switch stay planned.
+            self._retire_active_cycles(owner, start_on, keeping=cycle)
+            # Day 1 lands on the start date. Picking a rotation is saying
+            # "this is what I am doing from here", and resuming one mid-way
+            # through a turn nobody remembers being on is a stranger answer.
+            cycle.anchor_date = start_on
+            cycle.effective_from = start_on
+            cycle.effective_until = None
+            cycle.materialized_through = None
+            cycle.save(update_fields=[
+                "anchor_date", "effective_from", "effective_until",
+                "materialized_through", "updated_at",
+            ])
+            self._materialize(
+                cycle, start_on + timedelta(days=CYCLE_MATERIALIZE_DAYS)
+            )
+
+        cycle.refresh_from_db()
+        return Response(self.get_serializer(cycle).data)
 
     @extend_schema(
         request=CyclePlanAheadSerializer,

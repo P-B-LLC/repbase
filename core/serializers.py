@@ -2725,6 +2725,7 @@ class WorkoutCycleSerializer(serializers.ModelSerializer):
             "name",
             "length",
             "anchor_date",
+            "stop_conflicting_repeats",
             "effective_from",
             "effective_until",
             "is_active",
@@ -2775,19 +2776,65 @@ class WorkoutCycleSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "That workout does not belong to this user."
                 )
-            # A workout driven by both a weekly repeat and a rotation would
-            # have two generators writing the same dates, each undoing the
-            # other's idea of the plan.
-            if WorkoutRecurrence.objects.filter(
-                owner=owner,
-                workout=workout,
-                effective_until__isnull=True,
-            ).exists():
-                raise serializers.ValidationError(
-                    f"{workout.name} already repeats weekly. Stop the weekly "
-                    "repeat before putting it in a rotation."
-                )
         return value
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        owner = self.context["request"].user.repbase_profile
+
+        # A workout driven by both a weekly repeat and a rotation would have
+        # two generators writing the same dates, each undoing the other's idea
+        # of the plan. So one of them has to go -- and rather than refusing and
+        # leaving the user to find the weekly repeat themselves, the app can
+        # ask, and send `stop_conflicting_repeats` when they say yes.
+        slots = attrs.get("slots")
+        if slots is None:
+            return attrs
+
+        clashing = WorkoutRecurrence.objects.filter(
+            owner=owner,
+            workout__in=[
+                slot["workout"] for slot in slots if slot.get("workout") is not None
+            ],
+            effective_until__isnull=True,
+        ).select_related("workout")
+
+        if clashing and not attrs.get("stop_conflicting_repeats"):
+            names = sorted({rule.workout.name for rule in clashing})
+            joined = names[0] if len(names) == 1 else ", ".join(names)
+            raise serializers.ValidationError(
+                {
+                    "slots": (
+                        f"{joined} already repeats weekly. Stop the weekly "
+                        "repeat before putting it in a rotation."
+                    ),
+                    # Named so the app can offer to stop them rather than
+                    # making somebody go and find them.
+                    "conflicting_workouts": names,
+                }
+            )
+
+        # Carried to create/update, which closes them inside the same
+        # transaction that writes the rotation. Stopping them here would end
+        # somebody's weekly repeat for a rotation that then failed to save.
+        self._repeats_to_stop = list(clashing)
+        return attrs
+
+    #: Write-only. Says the user has been asked and agreed, so the weekly
+    #: repeats standing in the way may be closed as part of this save.
+    stop_conflicting_repeats = serializers.BooleanField(
+        write_only=True, required=False, default=False
+    )
+
+    def _stop_clashing_repeats(self, owner):
+        """Ends the weekly repeats this rotation is replacing.
+
+        Closed rather than deleted, the same as stopping one by hand: weeks
+        already trained keep resolving through whatever was planned then.
+        """
+        for rule in getattr(self, "_repeats_to_stop", []):
+            rule.effective_until = today_for(owner)
+            rule.save(update_fields=["effective_until", "updated_at"])
 
     def _write_slots(self, cycle, slots):
         cycle.slots.all().delete()
@@ -2804,12 +2851,16 @@ class WorkoutCycleSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         slots = validated_data.pop("slots", [])
+        validated_data.pop("stop_conflicting_repeats", None)
         cycle = WorkoutCycle.objects.create(**validated_data)
+        self._stop_clashing_repeats(cycle.owner)
         self._write_slots(cycle, slots)
         return cycle
 
     def update(self, instance, validated_data):
         slots = validated_data.pop("slots", None)
+        validated_data.pop("stop_conflicting_repeats", None)
+        self._stop_clashing_repeats(instance.owner)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()
@@ -2856,6 +2907,18 @@ class CyclePlanAheadSerializer(serializers.Serializer):
     """How far forward to write schedule rows."""
 
     through = serializers.DateField()
+
+
+class CycleActivateSerializer(serializers.Serializer):
+    """When the new rotation takes over.
+
+    Optional, and today when it is left out. A date in the future is the point
+    of it: the rotation you are on keeps running right up to that day, so
+    switching is something you plan rather than something that happens to next
+    week the moment you tap.
+    """
+
+    start_on = serializers.DateField(required=False)
 
 
 class CycleShiftSerializer(serializers.Serializer):

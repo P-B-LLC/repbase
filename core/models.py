@@ -1209,6 +1209,14 @@ EVENT_CATEGORIES = frozenset(
 MIN_PLANNER_DURATION_MINUTES = 5
 MAX_PLANNER_DURATION_MINUTES = 1440
 
+#: How far ahead a rotation writes schedule rows when it is saved or switched
+#: to.
+#:
+#: Eight weeks: long enough that the calendar looks planned rather than empty
+#: the moment you scroll, short enough that switching rotations does not have
+#: to unpick half a year. `plan-ahead` extends it on request.
+CYCLE_MATERIALIZE_DAYS = 56
+
 #: High first, normal next, low last.
 #:
 #: An expression rather than a stored integer so the API can keep sending a
