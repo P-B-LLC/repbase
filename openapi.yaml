@@ -41,6 +41,58 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/auth/password-reset/:
+    post:
+      operationId: auth_password_reset_create
+      description: Emails a six digit reset code. Answers 204 whether or not the address
+        belongs to an account.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequestRequest'
+        required: true
+      security:
+      - {}
+      responses:
+        '204':
+          description: No response body
+  /api/v1/auth/password-reset/confirm/:
+    post:
+      operationId: auth_password_reset_confirm_create
+      description: Sets a new password using the emailed code, signs every other session
+        out, and returns a fresh token.
+      tags:
+      - auth
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirmRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirmRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirmRequest'
+        required: true
+      security:
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+          description: ''
   /api/v1/auth/register/:
     post:
       operationId: auth_register_create
@@ -239,6 +291,13 @@ paths:
       operationId: cycles_list
       description: Rotations that repeat every N days rather than every week.
       parameters:
+      - in: query
+        name: include_ended
+        schema:
+          type: boolean
+        description: Include rotations that have been closed. Off by default, because
+          most screens want the one you are on -- but a list you choose from needs
+          the ones you are not.
       - name: page
         required: false
         in: query
@@ -392,6 +451,43 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/cycles/{id}/activate/:
+    post:
+      operationId: cycles_activate_create
+      description: Make this the rotation you are on, from `start_on` -- today if
+        it is left out. Whatever is running keeps its days right up to that date and
+        is closed there; this one begins at day 1 on it, and the calendar is written
+        forward from there.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout cycle.
+        required: true
+      tags:
+      - cycles
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CycleActivateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CycleActivateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CycleActivateRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutCycle'
+          description: ''
   /api/v1/cycles/{id}/plan-ahead/:
     post:
       operationId: cycles_plan_ahead_create
@@ -1303,6 +1399,32 @@ paths:
                 items:
                   $ref: '#/components/schemas/FoodMeal'
           description: ''
+  /api/v1/food/search/:
+    get:
+      operationId: food_search_list
+      description: Searches USDA FoodData Central and returns foods in the shape a
+        food entry is logged in. Results are cached for a week.
+      parameters:
+      - in: query
+        name: q
+        schema:
+          type: string
+        description: What to search for. Two characters or more.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FoodSearchResult'
+          description: ''
   /api/v1/gear/:
     get:
       operationId: gear_list
@@ -1842,6 +1964,53 @@ paths:
                 items:
                   $ref: '#/components/schemas/ProfileHighlight'
           description: ''
+  /api/v1/me/personalization/:
+    get:
+      operationId: me_personalization_retrieve
+      description: |-
+        Read and update what somebody wants from Repbase.
+
+        Created on first read rather than at sign-up, so an account that has never
+        finished the flow answers with the defaults instead of a 404 the app would
+        have to special-case.
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Personalization'
+          description: ''
+    patch:
+      operationId: me_personalization_partial_update
+      description: Updates only the answers included in the request.
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedPersonalizationRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedPersonalizationRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedPersonalizationRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Personalization'
+          description: ''
   /api/v1/me/photo/:
     put:
       operationId: me_photo_update
@@ -1932,6 +2101,60 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ProfilePrompt'
+          description: ''
+  /api/v1/me/social-links/:
+    get:
+      operationId: me_social_links_list
+      description: |-
+        The outbound accounts on the signed-in user profile.
+
+        Only ever this user own: the route carries no id, and the profile is read
+        from the token. There is no shape of request that addresses somebody
+        else links, which is a stronger guarantee than a permission check on one.
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileSocialLink'
+          description: ''
+    put:
+      operationId: me_social_links_update
+      description: Replace every social link with the set sent. Each entry may carry
+        a full https URL or a bare handle; a handle is turned into that platform canonical
+        URL. Sending an empty list removes them all.
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileSocialLinksRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ProfileSocialLinksRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ProfileSocialLinksRequestRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ProfileSocialLink'
           description: ''
   /api/v1/planner/:
     get:
@@ -2471,6 +2694,24 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/schedules/clear/:
+    post:
+      operationId: schedules_clear_create
+      description: Remove every planned workout, past days included. Workouts already
+        logged are untouched -- training is recorded separately from the plan. Refused
+        while a rotation is running, because a rotation owns the calendar it fills.
+      tags:
+      - schedules
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClearScheduleResult'
+          description: ''
   /api/v1/schedules/plan-week/:
     post:
       operationId: schedules_plan_week_create
@@ -3818,6 +4059,49 @@ paths:
               schema:
                 $ref: '#/components/schemas/Post'
           description: ''
+  /api/v1/social/posts/{id}/report/:
+    post:
+      operationId: social_posts_report_create
+      description: Report a post for a moderator to look at. The reason comes from
+        a fixed list so reports can be counted; detail is optional. Reporting a post
+        you have already reported succeeds with 200 rather than failing.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportPostRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ReportPostRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ReportPostRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostReportResult'
+          description: ''
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostReportResult'
+          description: ''
   /api/v1/social/posts/{id}/repost/:
     post:
       operationId: social_posts_repost_create
@@ -3863,6 +4147,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Post'
+          description: ''
+  /api/v1/social/posts/{id}/save-meal/:
+    post:
+      operationId: social_posts_save_meal_create
+      description: Copy a posted meal into your own saved meals. The foods and their
+        servings are taken whole, so applying it to a day later gives the same numbers
+        the post showed.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedMealResult'
           description: ''
   /api/v1/social/posts/{id}/save-workout/:
     post:
@@ -4640,6 +4949,15 @@ components:
         * `travel` - Travel
         * `social` - Social
         * `other` - Other
+    ClearScheduleResult:
+      type: object
+      description: How many planned days were cleared.
+      properties:
+        cleared:
+          type: integer
+          readOnly: true
+      required:
+      - cleared
     ContentTypeEnum:
       enum:
       - image/heic
@@ -4698,6 +5016,19 @@ components:
       required:
       - kind
       - source_id
+    CycleActivateRequest:
+      type: object
+      description: |-
+        When the new rotation takes over.
+
+        Optional, and today when it is left out. A date in the future is the point
+        of it: the rotation you are on keeps running right up to that day, so
+        switching is something you plan rather than something that happens to next
+        week the moment you tap.
+      properties:
+        start_on:
+          type: string
+          format: date
     CyclePlanAheadRequest:
       type: object
       description: How far forward to write schedule rows.
@@ -5101,6 +5432,49 @@ components:
       required:
       - date
       - name
+    FoodSearchResult:
+      type: object
+      description: |-
+        One food from the public catalogue, in the shape the app logs.
+
+        Deliberately the same four figures a FoodEntry holds, and nothing else the
+        app would have to learn. Nutrition is carried as a string for the same
+        reason every other nutrition figure here is: a calorie count that travels
+        as a JSON number comes back from some parsers as 232.99999999999997.
+      properties:
+        source_id:
+          type: string
+        name:
+          type: string
+        brand:
+          type: string
+        serving_description:
+          type: string
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+      required:
+      - brand
+      - calories
+      - carbohydrate_grams
+      - fat_grams
+      - name
+      - protein_grams
+      - serving_description
+      - source_id
     Gear:
       type: object
       properties:
@@ -5890,6 +6264,46 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/WorkoutTemplate'
+    PasswordResetConfirmRequest:
+      type: object
+      description: |-
+        Spending a code on a new password.
+
+        The email comes back with it so the code is only ever checked against the
+        account it was issued for; a code good for whoever happens to present it
+        would be a six digit skeleton key.
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+        code:
+          type: string
+          minLength: 6
+          maxLength: 6
+        new_password:
+          type: string
+          writeOnly: true
+          minLength: 8
+      required:
+      - code
+      - email
+      - new_password
+    PasswordResetRequestRequest:
+      type: object
+      description: |-
+        Asking for a code.
+
+        Takes an email and nothing else, and the view answers the same way
+        whether or not an account has it. Telling an unauthenticated caller which
+        addresses are registered turns this into a way to enumerate the userbase.
+      properties:
+        email:
+          type: string
+          format: email
+          minLength: 1
+      required:
+      - email
     PatchedBodyWeightEntryRequest:
       type: object
       properties:
@@ -6031,6 +6445,29 @@ components:
           type: string
           format: decimal
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+    PatchedPersonalizationRequest:
+      type: object
+      description: |-
+        The three answers, as the app already spells them.
+
+        The list is checked for shape but not for membership: it holds whatever
+        the app currently offers, and a choice retired from the app should not turn
+        an existing account into a validation error on read.
+      properties:
+        training_types:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 60
+        weekly_target:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        emphasis:
+          type: string
+          maxLength: 40
     PatchedPlannerEntryRequest:
       type: object
       description: |-
@@ -6050,12 +6487,19 @@ components:
           maxLength: 150
         category:
           $ref: '#/components/schemas/CategoryEnum'
+        priority:
+          $ref: '#/components/schemas/PriorityEnum'
         scheduled_date:
           type: string
           format: date
         scheduled_time:
           type: string
           format: time
+          nullable: true
+        duration_minutes:
+          type: integer
+          maximum: 1440
+          minimum: 5
           nullable: true
         is_complete:
           type: boolean
@@ -6234,6 +6678,10 @@ components:
         anchor_date:
           type: string
           format: date
+        stop_conflicting_repeats:
+          type: boolean
+          writeOnly: true
+          default: false
         slots:
           type: array
           items:
@@ -6355,6 +6803,28 @@ components:
       description: |-
         * `heaviest_weight` - heaviest_weight
         * `best_estimated_1rm` - best_estimated_1rm
+    Personalization:
+      type: object
+      description: |-
+        The three answers, as the app already spells them.
+
+        The list is checked for shape but not for membership: it holds whatever
+        the app currently offers, and a choice retired from the app should not turn
+        an existing account into a validation error on read.
+      properties:
+        training_types:
+          type: array
+          items:
+            type: string
+            maxLength: 60
+        weekly_target:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 0
+          format: int64
+        emphasis:
+          type: string
+          maxLength: 40
     PlanWeekRequest:
       type: object
       description: Which week to fill in from the user's weekly repeats.
@@ -6389,12 +6859,19 @@ components:
           maxLength: 150
         category:
           $ref: '#/components/schemas/CategoryEnum'
+        priority:
+          $ref: '#/components/schemas/PriorityEnum'
         scheduled_date:
           type: string
           format: date
         scheduled_time:
           type: string
           format: time
+          nullable: true
+        duration_minutes:
+          type: integer
+          maximum: 1440
+          minimum: 5
           nullable: true
         is_complete:
           type: boolean
@@ -6457,12 +6934,19 @@ components:
           maxLength: 150
         category:
           $ref: '#/components/schemas/CategoryEnum'
+        priority:
+          $ref: '#/components/schemas/PriorityEnum'
         scheduled_date:
           type: string
           format: date
         scheduled_time:
           type: string
           format: time
+          nullable: true
+        duration_minutes:
+          type: integer
+          maximum: 1440
+          minimum: 5
           nullable: true
         is_complete:
           type: boolean
@@ -6492,6 +6976,22 @@ components:
       required:
       - end
       - start
+    PlatformEnum:
+      enum:
+      - instagram
+      - snapchat
+      - tiktok
+      - youtube
+      - x
+      - website
+      type: string
+      description: |-
+        * `instagram` - Instagram
+        * `snapchat` - Snapchat
+        * `tiktok` - TikTok
+        * `youtube` - YouTube
+        * `x` - X
+        * `website` - Website
     Post:
       type: object
       description: |-
@@ -6879,6 +7379,24 @@ components:
       - post
       - updated_at
       - viewer_is_author
+    PostReportResult:
+      type: object
+      description: |-
+        What came of reporting.
+
+        ``already_reported`` rather than an error on a second press: reporting
+        twice is far more often someone unsure the first one worked than someone
+        with a second complaint, and an error would tell them off for it.
+      properties:
+        reason:
+          type: string
+          readOnly: true
+        already_reported:
+          type: boolean
+          readOnly: true
+      required:
+      - already_reported
+      - reason
     PostWorkout:
       type: object
       description: |-
@@ -7054,6 +7572,16 @@ components:
       - reps
       - set_number
       - weight_kg
+    PriorityEnum:
+      enum:
+      - low
+      - normal
+      - high
+      type: string
+      description: |-
+        * `low` - Low
+        * `normal` - Normal
+        * `high` - High
     ProfileHighlight:
       type: object
       description: |-
@@ -7210,6 +7738,80 @@ components:
           maxItems: 3
       required:
       - prompts
+    ProfileSocialLink:
+      type: object
+      description: |-
+        One outbound account, as everybody else sees it.
+
+        Two fields only. The handle is the app own bookkeeping and the position is
+        how the list was ordered, neither of which anybody reading a profile has
+        any use for -- and the fewer fields leave here, the less there is to keep
+        consistent between this and the public serialiser.
+      properties:
+        platform:
+          $ref: '#/components/schemas/PlatformEnum'
+        url:
+          type: string
+          format: uri
+          maxLength: 300
+      required:
+      - platform
+      - url
+    ProfileSocialLinkRequest:
+      type: object
+      description: |-
+        One outbound account, as everybody else sees it.
+
+        Two fields only. The handle is the app own bookkeeping and the position is
+        how the list was ordered, neither of which anybody reading a profile has
+        any use for -- and the fewer fields leave here, the less there is to keep
+        consistent between this and the public serialiser.
+      properties:
+        platform:
+          $ref: '#/components/schemas/PlatformEnum'
+        url:
+          type: string
+          format: uri
+          minLength: 1
+          maxLength: 300
+      required:
+      - platform
+      - url
+    ProfileSocialLinkWriteRequest:
+      type: object
+      description: |-
+        One link on the way in.
+
+        ``url`` is a CharField rather than a URLField on purpose: it accepts a
+        handle as readily as an address, and the normaliser is what decides which
+        it got. A URLField here would refuse "@someone" before anything had a
+        chance to turn it into a URL.
+      properties:
+        platform:
+          $ref: '#/components/schemas/PlatformEnum'
+        url:
+          type: string
+          minLength: 1
+          maxLength: 300
+      required:
+      - platform
+      - url
+    ProfileSocialLinksRequestRequest:
+      type: object
+      description: |-
+        The whole set at once, like the prompts next door.
+
+        Replace rather than patch, for the same reason: the screen behind this
+        edits them together, and sending the set that should exist afterwards
+        cannot leave a seventh link behind that nobody can see to delete.
+      properties:
+        social_links:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfileSocialLinkWriteRequest'
+          maxItems: 6
+      required:
+      - social_links
     PublicRepbaseUser:
       type: object
       properties:
@@ -7241,6 +7843,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ProfilePrompt'
+          readOnly: true
+        social_links:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfileSocialLink'
           readOnly: true
         gym:
           type: integer
@@ -7290,6 +7897,7 @@ components:
       - last_name
       - profile_photo_url
       - prompts
+      - social_links
       - target_weight_kg
       - username
       - weight_kg
@@ -7360,6 +7968,26 @@ components:
         * `training_partner` - Looking for a training partner who
         * `spot_me` - Ask me to spot you if
         * `partner_never` - A training partner should never
+    ReasonEnum:
+      enum:
+      - spam
+      - harassment
+      - hate
+      - violence
+      - nudity
+      - harm
+      - advice
+      - other
+      type: string
+      description: |-
+        * `spam` - Spam or misleading
+        * `harassment` - Harassment or bullying
+        * `hate` - Hate speech
+        * `violence` - Violence or threats
+        * `nudity` - Nudity or sexual content
+        * `harm` - Promotes self-harm or disordered eating
+        * `advice` - Dangerous or false advice
+        * `other` - Something else
     RecentFood:
       type: object
       description: A food the user has logged before, for the picker.
@@ -7497,6 +8125,11 @@ components:
           type: boolean
         shows_target_weight:
           type: boolean
+        social_links:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProfileSocialLink'
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7514,6 +8147,7 @@ components:
       - id
       - last_name
       - profile_photo_url
+      - social_links
       - updated_at
       - username
     RepbaseUserRequest:
@@ -7585,6 +8219,23 @@ components:
       - first_name
       - last_name
       - username
+    ReportPostRequest:
+      type: object
+      description: |-
+        What a reporter sends.
+
+        ``reason`` is closed, because the whole point of the list is that reports
+        can be counted and triaged. ``detail`` is free text and optional, for the
+        case the list does not cover.
+      properties:
+        reason:
+          $ref: '#/components/schemas/ReasonEnum'
+        detail:
+          type: string
+          default: ''
+          maxLength: 500
+      required:
+      - reason
     RepostedPost:
       type: object
       description: |-
@@ -7759,6 +8410,32 @@ components:
       required:
       - ingredients
       - name
+    SavedMealResult:
+      type: object
+      description: |-
+        What saving somebody else's posted meal produced.
+
+        The same shape as `SavedWorkoutResultSerializer` and for the same reason:
+        saved meal names are unique per user, so the name it landed under is not
+        always the one on the post and the app has to be able to say so.
+      properties:
+        meal:
+          type: string
+          readOnly: true
+        name:
+          type: string
+          readOnly: true
+        item_count:
+          type: integer
+          readOnly: true
+        renamed:
+          type: boolean
+          readOnly: true
+      required:
+      - item_count
+      - meal
+      - name
+      - renamed
     SavedWorkoutResult:
       type: object
       description: |-
@@ -8184,6 +8861,10 @@ components:
         anchor_date:
           type: string
           format: date
+        stop_conflicting_repeats:
+          type: boolean
+          writeOnly: true
+          default: false
         slots:
           type: array
           items:

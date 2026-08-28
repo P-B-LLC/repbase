@@ -1487,19 +1487,46 @@ class ScheduleClearingTests(RepbaseAPITestMixin, APITestCase):
 
     # ------------------------------------------------- clearing by hand
 
-    def test_clearing_empties_the_schedule_from_today(self):
+    def test_clearing_empties_the_whole_schedule(self):
         today = timezone.now().date()
-        past = self.booked(self.push, today - timedelta(days=2))
+        self.booked(self.push, today - timedelta(days=2))
         self.booked(self.push, today)
         self.booked(self.pull, today + timedelta(days=5))
 
         response = self.client.post(self.CLEAR, {}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data["cleared"], 2)
+        # Past days go too. Clearing by hand is "start from scratch", and a
+        # calendar still showing last month's abandoned plan is not scratch.
+        self.assertEqual(response.data["cleared"], 3)
         self.assertEqual(
-            WorkoutSchedule.objects.filter(owner=self.profile).count(), 1
+            WorkoutSchedule.objects.filter(owner=self.profile).count(), 0
         )
-        self.assertTrue(WorkoutSchedule.objects.filter(id=past.id).exists())
+
+    def test_clearing_keeps_workouts_already_logged(self):
+        # The point of the feature: throwing away the plan must never throw
+        # away the training. Sessions carry no link to the schedule row that
+        # planned them, and this is the test that holds those two apart.
+        today = timezone.now().date()
+        self.booked(self.push, today - timedelta(days=3))
+        self.booked(self.pull, today + timedelta(days=1))
+        logged = WorkoutSession.objects.create(
+            repbase_user=self.profile,
+            workout_id=self.push,
+            status=WorkoutSession.Status.COMPLETED,
+        )
+
+        response = self.client.post(self.CLEAR, {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            WorkoutSchedule.objects.filter(owner=self.profile).count(), 0
+        )
+
+        logged.refresh_from_db()
+        self.assertEqual(logged.status, WorkoutSession.Status.COMPLETED)
+        self.assertEqual(logged.workout_id, self.push)
+        self.assertEqual(
+            WorkoutSession.objects.filter(repbase_user=self.profile).count(), 1
+        )
 
     def test_clearing_is_refused_while_a_rotation_is_running(self):
         # A rotation would write the days straight back, so the honest answer

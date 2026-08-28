@@ -3279,7 +3279,17 @@ class TrainingStatsView(APIView):
 
 
 class ClearScheduleView(APIView):
-    """Empties the schedule from today, so somebody can start again.
+    """Empties the schedule completely, so somebody can start again.
+
+    Every planned day goes, past ones included. A plan somebody has thrown
+    away should not leave a half-followed week sitting behind them in the
+    calendar; starting from scratch means an empty one.
+
+    What was actually trained is untouched, and cannot be reached from here.
+    A logged workout is a WorkoutSession, which carries no link to the
+    schedule row that planned it -- so history, streaks and totals all survive
+    this, and a day trained without ever being planned was never in this
+    table to begin with.
 
     Offered only while no rotation is running. A rotation is the thing that
     fills the calendar, so with one in force this would delete days it would
@@ -3293,14 +3303,14 @@ class ClearScheduleView(APIView):
         request=None,
         responses={200: ClearScheduleResultSerializer},
         description=(
-            "Remove every planned workout from today onward. Days already "
-            "trained are untouched. Refused while a rotation is running, "
-            "because a rotation owns the calendar it fills."
+            "Remove every planned workout, past days included. Workouts "
+            "already logged are untouched -- training is recorded separately "
+            "from the plan. Refused while a rotation is running, because a "
+            "rotation owns the calendar it fills."
         ),
     )
     def post(self, request):
         owner = profile_for(request.user)
-        today = today_for(owner)
 
         if WorkoutCycle.objects.filter(
             owner=owner, effective_until__isnull=True
@@ -3314,12 +3324,8 @@ class ClearScheduleView(APIView):
                 }
             )
 
-        cleared = clear_schedule_from(owner, today)
-        return Response(
-            ClearScheduleResultSerializer(
-                {"cleared": cleared, "from_date": today}
-            ).data
-        )
+        cleared = clear_whole_schedule(owner)
+        return Response(ClearScheduleResultSerializer({"cleared": cleared}).data)
 
 
 def clear_schedule_from(owner, day):
@@ -3329,6 +3335,23 @@ def clear_schedule_from(owner, day):
     record rather than a plan -- rewriting them would be rewriting history.
     """
     rows = WorkoutSchedule.objects.filter(owner=owner, scheduled_date__gte=day)
+    count = rows.count()
+    rows.delete()
+    return count
+
+
+def clear_whole_schedule(owner):
+    """Removes every planned workout, whatever its date. Returns how many.
+
+    Unlike `clear_schedule_from`, this reaches backwards as well. The two are
+    deliberately separate: a rotation handover only ever takes the calendar
+    from the day it starts, because the weeks before it still belong to the
+    rotation running until then.
+
+    Training is not touched and cannot be -- a WorkoutSession stands on its
+    own, with no foreign key to the schedule row that planned it.
+    """
+    rows = WorkoutSchedule.objects.filter(owner=owner)
     count = rows.count()
     rows.delete()
     return count
