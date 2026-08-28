@@ -1450,12 +1450,14 @@ class ScheduleClearingTests(RepbaseAPITestMixin, APITestCase):
             self.push,
         )
 
-    def test_clearing_never_reaches_backwards(self):
+    def test_clearing_never_reaches_past_the_starting_week(self):
+        # A first rotation owns the week it starts, so it does clear days
+        # earlier in that week -- but never a week that is already finished.
         today = timezone.now().date()
-        trained = self.booked(self.pull, today - timedelta(days=4))
+        monday = today - timedelta(days=today.weekday())
+        last_week = self.booked(self.pull, monday - timedelta(days=2))
         self.rotation("PPL", [self.push])
-        # What is behind is a record, not a plan.
-        self.assertTrue(WorkoutSchedule.objects.filter(id=trained.id).exists())
+        self.assertTrue(WorkoutSchedule.objects.filter(id=last_week.id).exists())
 
     def test_switching_clears_only_from_the_handover(self):
         today = timezone.now().date()
@@ -1524,3 +1526,100 @@ class ScheduleClearingTests(RepbaseAPITestMixin, APITestCase):
         )
         self.client.post(self.CLEAR, {}, format="json")
         self.assertTrue(WorkoutSchedule.objects.filter(id=theirs.id).exists())
+
+
+class RotationStartingWeekTests(RepbaseAPITestMixin, APITestCase):
+    """Which days a rotation clears depends on what it is replacing."""
+
+    CYCLES = "/api/v1/cycles/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("weeker")
+        self.authenticate(self.token)
+        self.push = self.workout("Push Day")
+        self.pull = self.workout("Pull Day")
+
+    def workout(self, name):
+        r = self.client.post(
+            "/api/v1/workouts/", {"name": name, "workout_type": "lifting"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data["id"]
+
+    def rotation(self, name, ids):
+        r = self.client.post(
+            self.CYCLES,
+            {
+                "name": name, "length": len(ids),
+                "anchor_date": str(timezone.now().date()),
+                "slots": [{"position": i + 1, "workout": w} for i, w in enumerate(ids)],
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data
+
+    def test_a_first_rotation_empties_the_week_it_starts(self):
+        # A hand-made plan filling Monday to Thursday, with the rotation
+        # starting today: the week must not read as two plans at once.
+        today = timezone.now().date()
+        monday = today - timedelta(days=today.weekday())
+        earlier = [
+            WorkoutSchedule.objects.create(
+                owner=self.profile, workout_id=self.pull,
+                scheduled_date=monday + timedelta(days=offset),
+            )
+            for offset in range(today.weekday())
+        ]
+
+        self.rotation("PPL", [self.push])
+
+        for row in earlier:
+            self.assertFalse(
+                WorkoutSchedule.objects.filter(id=row.id).exists(),
+                f"{row.scheduled_date} should have been cleared",
+            )
+        # Nothing from the old plan is left anywhere in the week.
+        week = WorkoutSchedule.objects.filter(
+            owner=self.profile,
+            scheduled_date__gte=monday,
+            scheduled_date__lt=monday + timedelta(days=7),
+        )
+        self.assertTrue(all(r.source_cycle_id for r in week))
+
+    def test_it_does_not_reach_into_the_week_before(self):
+        today = timezone.now().date()
+        monday = today - timedelta(days=today.weekday())
+        last_week = WorkoutSchedule.objects.create(
+            owner=self.profile, workout_id=self.pull,
+            scheduled_date=monday - timedelta(days=1),
+        )
+        self.rotation("PPL", [self.push])
+        self.assertTrue(WorkoutSchedule.objects.filter(id=last_week.id).exists())
+
+    def test_a_handover_keeps_the_outgoing_rotation_days(self):
+        # Rotation to rotation is the other case: the one on the way out keeps
+        # every day up to the date, including earlier in the handover week.
+        today = timezone.now().date()
+        first = self.rotation("First", [self.push])
+        second = self.rotation("Second", [self.pull])
+        self.client.post(f"{self.CYCLES}{first['id']}/activate/", {}, format="json")
+
+        handover = today + timedelta(days=9)
+        monday_of_handover = handover - timedelta(days=handover.weekday())
+        # A day the outgoing rotation owns, earlier in the handover's week.
+        if monday_of_handover < handover:
+            before = WorkoutSchedule.objects.filter(
+                owner=self.profile, scheduled_date=monday_of_handover
+            ).first()
+            self.assertIsNotNone(before, "the first rotation should have filled it")
+
+            self.client.post(
+                f"{self.CYCLES}{second['id']}/activate/",
+                {"start_on": str(handover)}, format="json",
+            )
+            self.assertTrue(
+                WorkoutSchedule.objects.filter(id=before.id).exists(),
+                "a handover must not clear back to the start of the week",
+            )

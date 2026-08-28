@@ -3395,13 +3395,28 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         weeks it has not written before, deliberately, so that a day somebody
         cleared stays cleared.
         """
-        cleared = clear_schedule_from(owner, handover)
-
         running = WorkoutCycle.objects.filter(
             owner=owner, effective_until__isnull=True
         )
         if keeping is not None:
             running = running.exclude(pk=keeping.pk)
+        running = list(running)
+
+        # Where the clearing starts depends on what was there before, because
+        # the two cases want different things.
+        #
+        # Coming from a hand-made weekly plan, the rotation owns the week it
+        # starts: a rotation beginning on Friday over a plan that still fills
+        # Monday to Thursday reads as two plans at once, which is the state
+        # this rule exists to prevent. So the week is emptied and the rotation
+        # fills what is left of it.
+        #
+        # Coming from another rotation, the one on the way out keeps its days
+        # right up to the handover -- that is what makes switching something
+        # you can schedule rather than something that happens immediately.
+        clear_from = handover if running else week_start_for(handover)
+
+        cleared = clear_schedule_from(owner, clear_from)
         for cycle in running:
             cycle.effective_until = handover
             cycle.save(update_fields=["effective_until", "updated_at"])
