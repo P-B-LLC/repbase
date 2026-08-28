@@ -1391,3 +1391,136 @@ class RotationHandoverTests(RepbaseAPITestMixin, APITestCase):
             {"start_on": str(today + timedelta(days=5))}, format="json",
         )
         self.assertTrue(WorkoutSchedule.objects.filter(id=past.id).exists())
+
+
+class ScheduleClearingTests(RepbaseAPITestMixin, APITestCase):
+    """A rotation owns the calendar it starts on, and clearing it by hand."""
+
+    CYCLES = "/api/v1/cycles/"
+    CLEAR = "/api/v1/schedules/clear/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("clearer")
+        self.authenticate(self.token)
+        self.push = self.workout("Push Day")
+        self.pull = self.workout("Pull Day")
+
+    def workout(self, name):
+        r = self.client.post(
+            "/api/v1/workouts/", {"name": name, "workout_type": "lifting"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data["id"]
+
+    def booked(self, workout_id, day):
+        return WorkoutSchedule.objects.create(
+            owner=self.profile, workout_id=workout_id, scheduled_date=day
+        )
+
+    def rotation(self, name, ids):
+        r = self.client.post(
+            self.CYCLES,
+            {
+                "name": name, "length": len(ids),
+                "anchor_date": str(timezone.now().date()),
+                "slots": [{"position": i + 1, "workout": w} for i, w in enumerate(ids)],
+            },
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data
+
+    # ------------------------------------- a rotation starts on a clean slate
+
+    def test_starting_a_rotation_clears_what_was_booked(self):
+        today = timezone.now().date()
+        # Booked by hand, which the old behaviour left in place: rotation days
+        # landed among them and the week read as two plans at once.
+        by_hand = self.booked(self.pull, today + timedelta(days=2))
+
+        self.rotation("PPL", [self.push])
+        self.assertFalse(WorkoutSchedule.objects.filter(id=by_hand.id).exists())
+
+        # And the rotation filled the day instead.
+        self.assertEqual(
+            WorkoutSchedule.objects.filter(
+                owner=self.profile, scheduled_date=today + timedelta(days=2)
+            ).first().workout_id,
+            self.push,
+        )
+
+    def test_clearing_never_reaches_backwards(self):
+        today = timezone.now().date()
+        trained = self.booked(self.pull, today - timedelta(days=4))
+        self.rotation("PPL", [self.push])
+        # What is behind is a record, not a plan.
+        self.assertTrue(WorkoutSchedule.objects.filter(id=trained.id).exists())
+
+    def test_switching_clears_only_from_the_handover(self):
+        today = timezone.now().date()
+        handover = today + timedelta(days=10)
+
+        first = self.rotation("First", [self.push])
+        second = self.rotation("Second", [self.pull])
+        self.client.post(f"{self.CYCLES}{first['id']}/activate/", {}, format="json")
+
+        # A day booked by hand between now and the handover survives it.
+        keeper = self.booked(self.pull, today + timedelta(days=3))
+        self.client.post(
+            f"{self.CYCLES}{second['id']}/activate/",
+            {"start_on": str(handover)}, format="json",
+        )
+        self.assertTrue(
+            WorkoutSchedule.objects.filter(id=keeper.id).exists(),
+            "days before the handover belong to the rotation still running",
+        )
+        # From the handover on, the new rotation owns it.
+        self.assertEqual(
+            WorkoutSchedule.objects.filter(
+                owner=self.profile, scheduled_date=handover
+            ).first().workout_id,
+            self.pull,
+        )
+
+    # ------------------------------------------------- clearing by hand
+
+    def test_clearing_empties_the_schedule_from_today(self):
+        today = timezone.now().date()
+        past = self.booked(self.push, today - timedelta(days=2))
+        self.booked(self.push, today)
+        self.booked(self.pull, today + timedelta(days=5))
+
+        response = self.client.post(self.CLEAR, {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["cleared"], 2)
+        self.assertEqual(
+            WorkoutSchedule.objects.filter(owner=self.profile).count(), 1
+        )
+        self.assertTrue(WorkoutSchedule.objects.filter(id=past.id).exists())
+
+    def test_clearing_is_refused_while_a_rotation_is_running(self):
+        # A rotation would write the days straight back, so the honest answer
+        # is to say what actually needs changing.
+        self.rotation("PPL", [self.push])
+        response = self.client.post(self.CLEAR, {}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("schedule", response.data)
+        self.assertGreater(
+            WorkoutSchedule.objects.filter(owner=self.profile).count(), 0
+        )
+
+    def test_clearing_an_empty_schedule_is_fine(self):
+        response = self.client.post(self.CLEAR, {}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["cleared"], 0)
+
+    def test_clearing_is_only_ever_your_own(self):
+        other_user, other_profile, other_token = self.create_account("bystander")
+        theirs = WorkoutSchedule.objects.create(
+            owner=other_profile,
+            workout_id=self.push,
+            scheduled_date=timezone.now().date() + timedelta(days=1),
+        )
+        self.client.post(self.CLEAR, {}, format="json")
+        self.assertTrue(WorkoutSchedule.objects.filter(id=theirs.id).exists())

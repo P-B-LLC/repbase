@@ -22,6 +22,7 @@ from .views import (
     SavedFoodMealViewSet,
     LoginView,
     LogoutView,
+    ClearScheduleView,
     MeHighlightsView,
     MeSocialLinksView,
     MePhotoView,
@@ -102,6 +103,11 @@ urlpatterns = [
     path("me/photo/", MePhotoView.as_view(), name="me-photo"),
     path("me/prompts/", MePromptsView.as_view(), name="me-prompts"),
     path("me/highlights/", MeHighlightsView.as_view(), name="me-highlights"),
+    path(
+        "schedules/clear/",
+        ClearScheduleView.as_view(),
+        name="clear-schedule",
+    ),
     path(
         "me/social-links/",
         MeSocialLinksView.as_view(),

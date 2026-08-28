@@ -2909,6 +2909,13 @@ class CyclePlanAheadSerializer(serializers.Serializer):
     through = serializers.DateField()
 
 
+class ClearScheduleResultSerializer(serializers.Serializer):
+    """How many planned days were cleared."""
+
+    cleared = serializers.IntegerField(read_only=True)
+    from_date = serializers.DateField(read_only=True)
+
+
 class CycleActivateSerializer(serializers.Serializer):
     """When the new rotation takes over.
 

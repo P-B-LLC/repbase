@@ -109,6 +109,7 @@ from .serializers import (
     CycleShiftResultSerializer,
     CycleShiftSerializer,
     CycleActivateSerializer,
+    ClearScheduleResultSerializer,
     CyclePlanAheadSerializer,
     WorkoutCycleSerializer,
     HealthImportResultSerializer,
@@ -3277,6 +3278,62 @@ class TrainingStatsView(APIView):
         )
 
 
+class ClearScheduleView(APIView):
+    """Empties the schedule from today, so somebody can start again.
+
+    Offered only while no rotation is running. A rotation is the thing that
+    fills the calendar, so with one in force this would delete days it would
+    immediately write back -- and the way to change what a rotation puts down
+    is to change the rotation.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        request=None,
+        responses={200: ClearScheduleResultSerializer},
+        description=(
+            "Remove every planned workout from today onward. Days already "
+            "trained are untouched. Refused while a rotation is running, "
+            "because a rotation owns the calendar it fills."
+        ),
+    )
+    def post(self, request):
+        owner = profile_for(request.user)
+        today = today_for(owner)
+
+        if WorkoutCycle.objects.filter(
+            owner=owner, effective_until__isnull=True
+        ).exists():
+            raise ValidationError(
+                {
+                    "schedule": (
+                        "A rotation is filling your schedule. Change or stop "
+                        "the rotation instead."
+                    )
+                }
+            )
+
+        cleared = clear_schedule_from(owner, today)
+        return Response(
+            ClearScheduleResultSerializer(
+                {"cleared": cleared, "from_date": today}
+            ).data
+        )
+
+
+def clear_schedule_from(owner, day):
+    """Removes every planned workout on or after `day`. Returns how many.
+
+    Only forward. What is behind is either trained or missed, and both are a
+    record rather than a plan -- rewriting them would be rewriting history.
+    """
+    rows = WorkoutSchedule.objects.filter(owner=owner, scheduled_date__gte=day)
+    count = rows.count()
+    rows.delete()
+    return count
+
+
 @extend_schema_view(
     list=extend_schema(
         parameters=[
@@ -3325,31 +3382,30 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             self._materialize(cycle, today + timedelta(days=CYCLE_MATERIALIZE_DAYS))
 
     def _retire_active_cycles(self, owner, handover, keeping=None):
-        """Closes whatever rotation is running, as of `handover`.
+        """Clears the calendar from `handover`, and closes what was running.
 
-        Closing alone is not enough: the days it already wrote stay on the
-        calendar, so switching would leave the old plan sitting in next week.
-        Only days from the handover forward are removed -- everything before it
-        belongs to the rotation still running until then, and days already
-        trained are history either way.
+        The whole schedule from that date, not only the rows the outgoing
+        rotation wrote. A rotation is the plan from the day it starts, so it
+        starts on an empty calendar and fills it -- otherwise its days land
+        among whatever was already booked and the week reads as two plans at
+        once. Everything before the handover is untouched, which is what keeps
+        days already trained and the weeks still running on the old rotation.
+
+        Nothing regenerates what this removes: a weekly repeat only writes
+        weeks it has not written before, deliberately, so that a day somebody
+        cleared stays cleared.
         """
+        cleared = clear_schedule_from(owner, handover)
+
         running = WorkoutCycle.objects.filter(
             owner=owner, effective_until__isnull=True
         )
         if keeping is not None:
             running = running.exclude(pk=keeping.pk)
-        running = list(running)
-        if not running:
-            return
-
-        WorkoutSchedule.objects.filter(
-            owner=owner,
-            source_cycle__in=running,
-            scheduled_date__gte=handover,
-        ).delete()
         for cycle in running:
             cycle.effective_until = handover
             cycle.save(update_fields=["effective_until", "updated_at"])
+        return cleared
 
     @extend_schema(
         request=CycleActivateSerializer,
