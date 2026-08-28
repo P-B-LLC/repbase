@@ -3277,6 +3277,22 @@ class TrainingStatsView(APIView):
         )
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="include_ended",
+                type=bool,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Include rotations that have been closed. Off by default, "
+                    "because most screens want the one you are on -- but a "
+                    "list you choose from needs the ones you are not."
+                ),
+            )
+        ]
+    )
+)
 class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     """Rotations that repeat every N days rather than every week."""
 
