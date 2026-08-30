@@ -458,7 +458,12 @@ class GymSerializer(serializers.ModelSerializer):
     """A gym, and how many people say they train there."""
 
     member_count = serializers.SerializerMethodField()
-    created_by = serializers.PrimaryKeyRelatedField(read_only=True)
+    #: Null on anything the app shipped with rather than a user made.
+    #: Declaring the field by hand drops what the model knows -- the FK is
+    #: null=True, but a serializer field defaults to allow_null=False -- so
+    #: the contract promised an integer on rows that answer with null, and
+    #: the generated client could not decode a seeded gym or exercise.
+    created_by = serializers.PrimaryKeyRelatedField(read_only=True, allow_null=True)
 
     class Meta:
         model = Gym
@@ -1073,7 +1078,12 @@ class AuthResponseSerializer(serializers.Serializer):
 
 
 class ExerciseSerializer(serializers.ModelSerializer):
-    created_by = serializers.PrimaryKeyRelatedField(read_only=True)
+    #: Null on anything the app shipped with rather than a user made.
+    #: Declaring the field by hand drops what the model knows -- the FK is
+    #: null=True, but a serializer field defaults to allow_null=False -- so
+    #: the contract promised an integer on rows that answer with null, and
+    #: the generated client could not decode a seeded gym or exercise.
+    created_by = serializers.PrimaryKeyRelatedField(read_only=True, allow_null=True)
 
     class Meta:
         model = Exercise
