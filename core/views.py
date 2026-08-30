@@ -3585,9 +3585,28 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 has_session=Exists(touched)
             ).filter(has_session=False)
 
-            kept = future.count() - removable.count()
-            removed = removable.count()
+            # What these days put on the planner goes with them.
+            #
+            # PlannerEntry has no link back to the schedule row it came from,
+            # so nothing used to remove it: a day dropped by a rotation left
+            # its task behind, and the task then sat past due for ever. Every
+            # rotation change added another handful, which is how six overdue
+            # workouts appeared for someone who had missed two.
+            #
+            # Completed tasks stay. A day already ticked off is a record of
+            # what happened, not a plan that can be withdrawn.
+            doomed = list(removable.values_list("workout_id", "scheduled_date"))
+            removed = len(doomed)
+            kept = future.count() - removed
             removable.delete()
+            for workout_id, day in doomed:
+                PlannerEntry.objects.filter(
+                    owner=owner,
+                    workout_id=workout_id,
+                    scheduled_date=day,
+                    kind=PlannerEntry.Kind.TASK,
+                    completed_at__isnull=True,
+                ).delete()
 
             # Close the rule in force and open its replacement, rather than
             # editing the anchor in place. The past keeps resolving through

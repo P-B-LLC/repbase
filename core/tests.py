@@ -16,6 +16,7 @@ from .models import (
     Gym,
     ProfileSocialLink,
     PasswordResetCode,
+    PlannerEntry,
     RepbaseUser,
     SessionExercise,
     SetEntry,
@@ -1650,3 +1651,125 @@ class RotationStartingWeekTests(RepbaseAPITestMixin, APITestCase):
                 WorkoutSchedule.objects.filter(id=before.id).exists(),
                 "a handover must not clear back to the start of the week",
             )
+
+
+class RotationShiftClearsPlannerTests(RepbaseAPITestMixin, APITestCase):
+    """A day a rotation drops takes its planner task with it."""
+
+    CYCLES = "/api/v1/cycles/"
+    SYNC = "/api/v1/schedules/sync-planner/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("shifter")
+        self.authenticate(self.token)
+        self.push = self.workout("Push Day")
+        self.pull = self.workout("Pull Day")
+
+    def workout(self, name):
+        r = self.client.post(
+            "/api/v1/workouts/",
+            {"name": name, "workout_type": "lifting"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 201, r.data)
+        return r.data["id"]
+
+    def test_shifting_a_rotation_removes_the_tasks_it_orphans(self):
+        """The bug: six overdue workouts for somebody who missed two.
+
+        Shifting a rotation deletes the future schedule rows it no longer
+        implies, but PlannerEntry has no link back to the row it came from,
+        so the tasks used to survive their own days and pile up past due.
+        """
+        today = timezone.localdate()
+        created = self.client.post(
+            self.CYCLES,
+            {
+                "name": "Rotation",
+                "length": 2,
+                "anchor_date": today.isoformat(),
+                "slots": [
+                    {"position": 1, "workout": self.push},
+                    {"position": 2, "workout": self.pull},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        cycle_id = created.data["id"]
+
+        horizon = today + timedelta(days=13)
+        self.client.post(
+            self.SYNC,
+            {"start": today.isoformat(), "end": horizon.isoformat()},
+            format="json",
+        )
+        before = PlannerEntry.objects.filter(
+            owner=self.profile, workout__isnull=False
+        ).count()
+        self.assertGreater(before, 0, "the rotation should have made tasks")
+
+        shifted = self.client.post(
+            f"{self.CYCLES}{cycle_id}/shift/", {"days": 1}, format="json"
+        )
+        self.assertEqual(shifted.status_code, 200, shifted.data)
+
+        # Every remaining task must still have a scheduled day behind it.
+        stranded = [
+            entry
+            for entry in PlannerEntry.objects.filter(
+                owner=self.profile,
+                workout__isnull=False,
+                completed_at__isnull=True,
+                scheduled_date__gte=today,
+            )
+            if not WorkoutSchedule.objects.filter(
+                owner=self.profile,
+                workout_id=entry.workout_id,
+                scheduled_date=entry.scheduled_date,
+            ).exists()
+        ]
+        self.assertEqual(
+            stranded,
+            [],
+            f"tasks left with no scheduled day behind them: "
+            f"{[(e.scheduled_date, e.title) for e in stranded]}",
+        )
+
+    def test_a_finished_day_survives_the_shift(self):
+        """A ticked-off task is a record, not a plan that can be withdrawn."""
+        today = timezone.localdate()
+        created = self.client.post(
+            self.CYCLES,
+            {
+                "name": "Rotation",
+                "length": 2,
+                "anchor_date": today.isoformat(),
+                "slots": [
+                    {"position": 1, "workout": self.push},
+                    {"position": 2, "workout": self.pull},
+                ],
+            },
+            format="json",
+        )
+        cycle_id = created.data["id"]
+        horizon = today + timedelta(days=13)
+        self.client.post(
+            self.SYNC,
+            {"start": today.isoformat(), "end": horizon.isoformat()},
+            format="json",
+        )
+
+        done = PlannerEntry.objects.filter(
+            owner=self.profile, workout__isnull=False, scheduled_date__gt=today
+        ).first()
+        self.assertIsNotNone(done)
+        done.completed_at = timezone.now()
+        done.save(update_fields=["completed_at"])
+
+        self.client.post(f"{self.CYCLES}{cycle_id}/shift/", {"days": 1}, format="json")
+
+        self.assertTrue(
+            PlannerEntry.objects.filter(id=done.id).exists(),
+            "a completed task must not be swept up with the rotation",
+        )
