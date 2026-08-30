@@ -315,6 +315,25 @@ class WorkoutTemplate(models.Model):
     #: How long the finisher is meant to last, if the user set a target.
     cardio_target_minutes = models.PositiveIntegerField(null=True, blank=True)
     description = models.TextField(blank=True)
+    #: The post this was copied from, when it was not made from scratch.
+    #:
+    #: Saving is idempotent on this: tapping Save on the same post twice
+    #: hands back the copy already made rather than a second one. Without it
+    #: the only thing to match on was the name, which the copy has already
+    #: had a number appended to -- so every tap looked like a new meal and
+    #: three taps filled the folder with "Meal 1", "Meal 1 2", "Meal 1 3".
+    #:
+    #: SET_NULL rather than CASCADE. The copy is the reader's own once made;
+    #: the author deleting their post is not the reader losing their meal. It
+    #: only stops being deduplicated, which cannot matter -- the post it
+    #: would have been deduplicated against is gone.
+    source_post = models.ForeignKey(
+        "Post",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="%(class)s_copies",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1568,6 +1587,25 @@ class SavedFoodMeal(models.Model):
         related_name="saved_food_meals",
     )
     name = models.CharField(max_length=150)
+    #: The post this was copied from, when it was not made from scratch.
+    #:
+    #: Saving is idempotent on this: tapping Save on the same post twice
+    #: hands back the copy already made rather than a second one. Without it
+    #: the only thing to match on was the name, which the copy has already
+    #: had a number appended to -- so every tap looked like a new meal and
+    #: three taps filled the folder with "Meal 1", "Meal 1 2", "Meal 1 3".
+    #:
+    #: SET_NULL rather than CASCADE. The copy is the reader's own once made;
+    #: the author deleting their post is not the reader losing their meal. It
+    #: only stops being deduplicated, which cannot matter -- the post it
+    #: would have been deduplicated against is gone.
+    source_post = models.ForeignKey(
+        "Post",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="%(class)s_copies",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

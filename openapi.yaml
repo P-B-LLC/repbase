@@ -4151,9 +4151,10 @@ paths:
   /api/v1/social/posts/{id}/save-meal/:
     post:
       operationId: social_posts_save_meal_create
-      description: Copy a posted meal into your own saved meals. The foods and their
-        servings are taken whole, so applying it to a day later gives the same numbers
-        the post showed.
+      description: |-
+        Copy a posted meal into your own saved meals. The foods and their servings are taken whole, so applying it to a day later gives the same numbers the post showed.
+
+        Saving the same post again does not make a second copy: the one already saved is returned with already_saved true, and a 200 rather than a 201, because nothing was created.
       parameters:
       - in: path
         name: id
@@ -4167,6 +4168,12 @@ paths:
       - tokenAuth: []
       - cookieAuth: []
       responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedMealResult'
+          description: ''
         '201':
           content:
             application/json:
@@ -4176,9 +4183,10 @@ paths:
   /api/v1/social/posts/{id}/save-workout/:
     post:
       operationId: social_posts_save_workout_create
-      description: Copy a posted workout into your own workouts. The exercises and
-        their set counts are taken; weights are not, because a workout you save is
-        a plan to follow rather than a record of somebody else's session.
+      description: |-
+        Copy a posted workout into your own workouts. The exercises and their set counts are taken; weights are not, because a workout you save is a plan to follow rather than a record of somebody else's session.
+
+        Saving the same post again does not make a second copy: the one already saved is returned with already_saved true, and a 200 rather than a 201, because nothing was created.
       parameters:
       - in: path
         name: id
@@ -4192,6 +4200,12 @@ paths:
       - tokenAuth: []
       - cookieAuth: []
       responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SavedWorkoutResult'
+          description: ''
         '201':
           content:
             application/json:
@@ -8433,7 +8447,12 @@ components:
         renamed:
           type: boolean
           readOnly: true
+        already_saved:
+          type: boolean
+          readOnly: true
+          default: false
       required:
+      - already_saved
       - item_count
       - meal
       - name
@@ -8459,7 +8478,12 @@ components:
         renamed:
           type: boolean
           readOnly: true
+        already_saved:
+          type: boolean
+          readOnly: true
+          default: false
       required:
+      - already_saved
       - exercise_count
       - name
       - renamed

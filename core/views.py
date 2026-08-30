@@ -2487,12 +2487,18 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     @extend_schema(
         request=None,
-        responses={201: SavedWorkoutResultSerializer},
+        responses={
+            200: SavedWorkoutResultSerializer,
+            201: SavedWorkoutResultSerializer,
+        },
         description=(
             "Copy a posted workout into your own workouts. The exercises and "
             "their set counts are taken; weights are not, because a workout "
             "you save is a plan to follow rather than a record of somebody "
-            "else's session."
+            "else's session.\n\n"
+            "Saving the same post again does not make a second copy: the one "
+            "already saved is returned with already_saved true, and a 200 "
+            "rather than a 201, because nothing was created."
         ),
     )
     @action(detail=True, methods=["post"], url_path="save-workout")
@@ -2512,6 +2518,26 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 {"post": "That workout has no exercises to save."}
             )
 
+        # Already saved from this post: hand back what is there. See the note
+        # on save_meal -- a second tap is the same request, not a second one.
+        existing = WorkoutTemplate.objects.filter(
+            owner=owner, source_post=source
+        ).first()
+        if existing is not None:
+            return Response(
+                SavedWorkoutResultSerializer(
+                    {
+                        "workout": existing.pk,
+                        "name": existing.name,
+                        "exercise_count": existing.workout_exercises.count(),
+                        "renamed": False,
+                        "already_saved": True,
+                    },
+                    context=self.get_serializer_context(),
+                ).data,
+                status=status.HTTP_200_OK,
+            )
+
         name = self._free_copy_name(
             set(
                 WorkoutTemplate.objects.filter(owner=owner)
@@ -2525,6 +2551,7 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             template = WorkoutTemplate.objects.create(
                 owner=owner,
                 name=name,
+                source_post=source,
                 workout_type=(
                     snapshot.workout_type
                     or WorkoutTemplate.WorkoutType.LIFTING
@@ -2553,10 +2580,11 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return Response(
             SavedWorkoutResultSerializer(
                 {
-                    "workout": template,
+                    "workout": template.pk,
                     "name": name,
                     "exercise_count": len(exercises),
                     "renamed": name != snapshot.title,
+                    "already_saved": False,
                 },
                 context=self.get_serializer_context(),
             ).data,
@@ -2605,11 +2633,17 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     @extend_schema(
         request=None,
-        responses={201: SavedMealResultSerializer},
+        responses={
+            200: SavedMealResultSerializer,
+            201: SavedMealResultSerializer,
+        },
         description=(
             "Copy a posted meal into your own saved meals. The foods and their "
             "servings are taken whole, so applying it to a day later gives the "
-            "same numbers the post showed."
+            "same numbers the post showed.\n\n"
+            "Saving the same post again does not make a second copy: the one "
+            "already saved is returned with already_saved true, and a 200 "
+            "rather than a 201, because nothing was created."
         ),
     )
     @action(detail=True, methods=["post"], url_path="save-meal")
@@ -2627,6 +2661,30 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         if not entries:
             raise ValidationError({"post": "That meal has no food in it to save."})
 
+        # Already saved from this post: hand back what is there.
+        #
+        # Every tap used to make another copy, each numbered past the last,
+        # so a double tap left "Meal 1 (from @them)" and "Meal 1 (from
+        # @them) 2" and no way to tell which to keep. Saving twice is not a
+        # request for two meals; it is the same request made twice.
+        existing = SavedFoodMeal.objects.filter(
+            owner=owner, source_post=source
+        ).first()
+        if existing is not None:
+            return Response(
+                SavedMealResultSerializer(
+                    {
+                        "meal": existing.pk,
+                        "name": existing.name,
+                        "item_count": existing.ingredients.count(),
+                        "renamed": False,
+                        "already_saved": True,
+                    },
+                    context=self.get_serializer_context(),
+                ).data,
+                status=status.HTTP_200_OK,
+            )
+
         name = self._free_copy_name(
             set(
                 SavedFoodMeal.objects.filter(owner=owner)
@@ -2637,7 +2695,9 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             "Meal",
         )
         with transaction.atomic():
-            saved = SavedFoodMeal.objects.create(owner=owner, name=name)
+            saved = SavedFoodMeal.objects.create(
+                owner=owner, name=name, source_post=source
+            )
             # A straight copy: PostMealEntry mirrors SavedFoodIngredient field
             # for field, per-serving split included, so nothing is recomputed
             # and the saved meal cannot come out to a different total than the
@@ -2659,10 +2719,11 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return Response(
             SavedMealResultSerializer(
                 {
-                    "meal": saved,
+                    "meal": saved.pk,
                     "name": name,
                     "item_count": len(entries),
                     "renamed": name != snapshot.name,
+                    "already_saved": False,
                 },
                 context=self.get_serializer_context(),
             ).data,

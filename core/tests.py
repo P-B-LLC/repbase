@@ -17,7 +17,13 @@ from .models import (
     ProfileSocialLink,
     PasswordResetCode,
     PlannerEntry,
+    Post,
+    PostMeal,
+    PostMealEntry,
+    PostWorkout,
+    PostWorkoutExercise,
     RepbaseUser,
+    SavedFoodMeal,
     SessionExercise,
     SetEntry,
     WorkoutExercise,
@@ -1872,3 +1878,138 @@ class ContractMatchesResponsesTests(RepbaseAPITestMixin, APITestCase):
             "these document as a string and return a number; use IntegerField:\n  "
             + "\n  ".join(offenders),
         )
+
+
+class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
+    """Tapping Save again hands back the copy already made.
+
+    Three taps on one meal used to leave "Meal 1 (from @them)", the same
+    again with a 2, and again with a 3, with nothing to say which was worth
+    keeping. The numbering was there to stop a name collision, so it could
+    not tell a second meal from the same meal twice.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("saver")
+        self.author, self.author_profile, self.author_token = self.create_account(
+            "poster"
+        )
+        self.authenticate(self.token)
+
+    def _meal_post(self):
+        post = Post.objects.create(
+            author=self.author_profile, kind=Post.Kind.MEAL, caption="lunch"
+        )
+        meal = PostMeal.objects.create(post=post, name="Meal 1", date=timezone.localdate())
+        PostMealEntry.objects.create(
+            post_meal=meal,
+            name="Chicken Bowl",
+            servings=1,
+            calories=800,
+            protein_grams=50,
+            carbohydrate_grams=120,
+            fat_grams=30,
+            position=1,
+        )
+        return post
+
+    def _workout_post(self):
+        post = Post.objects.create(
+            author=self.author_profile, kind=Post.Kind.WORKOUT, caption="pull"
+        )
+        workout = PostWorkout.objects.create(
+            post=post, title="Pull day", performed_at=timezone.now()
+        )
+        PostWorkoutExercise.objects.create(
+            post_workout=workout, name="Lat pulldown", order=1, set_count=3
+        )
+        return post
+
+    def test_saving_a_meal_twice_leaves_one(self):
+        post = self._meal_post()
+        url = f"/api/v1/social/posts/{post.id}/save-meal/"
+
+        first = self.client.post(url)
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertFalse(first.data["already_saved"])
+
+        second = self.client.post(url)
+        # 200, not 201: nothing was created the second time.
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertTrue(second.data["already_saved"])
+        self.assertEqual(second.data["meal"], first.data["meal"])
+        self.assertEqual(second.data["name"], first.data["name"])
+
+        self.assertEqual(
+            SavedFoodMeal.objects.filter(owner=self.profile).count(),
+            1,
+            "a second tap must not leave a second meal",
+        )
+
+    def test_saving_a_workout_twice_leaves_one(self):
+        post = self._workout_post()
+        url = f"/api/v1/social/posts/{post.id}/save-workout/"
+
+        first = self.client.post(url)
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertFalse(first.data["already_saved"])
+
+        second = self.client.post(url)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertTrue(second.data["already_saved"])
+        self.assertEqual(second.data["workout"], first.data["workout"])
+
+        self.assertEqual(
+            WorkoutTemplate.objects.filter(owner=self.profile).count(),
+            1,
+            "a second tap must not leave a second workout",
+        )
+
+    def test_ten_taps_still_leave_one(self):
+        """The report was a flooded folder, so the guard is against flooding."""
+        post = self._meal_post()
+        url = f"/api/v1/social/posts/{post.id}/save-meal/"
+        for _ in range(10):
+            self.client.post(url)
+        self.assertEqual(SavedFoodMeal.objects.filter(owner=self.profile).count(), 1)
+
+    def test_two_different_posts_are_two_meals(self):
+        """Deduplication must not become refusing to save a second meal."""
+        first_post = self._meal_post()
+        second_post = self._meal_post()
+
+        self.client.post(f"/api/v1/social/posts/{first_post.id}/save-meal/")
+        self.client.post(f"/api/v1/social/posts/{second_post.id}/save-meal/")
+
+        self.assertEqual(
+            SavedFoodMeal.objects.filter(owner=self.profile).count(),
+            2,
+            "two posts are two meals, even when they hold the same food",
+        )
+
+    def test_another_account_saving_the_same_post_is_unaffected(self):
+        """The copy is per person: mine existing is not you having one."""
+        post = self._meal_post()
+        url = f"/api/v1/social/posts/{post.id}/save-meal/"
+        self.client.post(url)
+
+        other_user, other_profile, other_token = self.create_account("second")
+        self.authenticate(other_token)
+        theirs = self.client.post(url)
+
+        self.assertEqual(theirs.status_code, 201, theirs.data)
+        self.assertFalse(theirs.data["already_saved"])
+        self.assertEqual(SavedFoodMeal.objects.filter(owner=other_profile).count(), 1)
+        self.assertEqual(SavedFoodMeal.objects.filter(owner=self.profile).count(), 1)
+
+    def test_a_deleted_post_leaves_the_copy_alone(self):
+        """SET_NULL, not CASCADE: the copy is the readers own once made."""
+        post = self._meal_post()
+        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/")
+        saved = SavedFoodMeal.objects.get(owner=self.profile)
+
+        post.delete()
+
+        saved.refresh_from_db()
+        self.assertIsNone(saved.source_post_id)
+        self.assertEqual(saved.ingredients.count(), 1, "the food must survive too")

@@ -2182,6 +2182,8 @@ class SavedWorkoutResultSerializer(serializers.Serializer):
     name = serializers.CharField(read_only=True)
     exercise_count = serializers.IntegerField(read_only=True)
     renamed = serializers.BooleanField(read_only=True)
+    #: True when this workout was already saved and nothing new was made.
+    already_saved = serializers.BooleanField(read_only=True, default=False)
 
 
 class ReportPostSerializer(serializers.Serializer):
@@ -2226,6 +2228,8 @@ class SavedMealResultSerializer(serializers.Serializer):
     name = serializers.CharField(read_only=True)
     item_count = serializers.IntegerField(read_only=True)
     renamed = serializers.BooleanField(read_only=True)
+    #: True when this meal was already saved and nothing new was made.
+    already_saved = serializers.BooleanField(read_only=True, default=False)
 
 
 class PostSerializer(serializers.ModelSerializer):
