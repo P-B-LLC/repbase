@@ -2166,7 +2166,9 @@ class SavedWorkoutResultSerializer(serializers.Serializer):
     came from, and the app has to be able to tell them so.
     """
 
-    workout = serializers.PrimaryKeyRelatedField(read_only=True)
+    #: The pk of the saved copy. See the note on SavedMealResultSerializer:
+    #: a PrimaryKeyRelatedField documents as a string and returns a number.
+    workout = serializers.IntegerField(read_only=True)
     name = serializers.CharField(read_only=True)
     exercise_count = serializers.IntegerField(read_only=True)
     renamed = serializers.BooleanField(read_only=True)
@@ -2206,7 +2208,11 @@ class SavedMealResultSerializer(serializers.Serializer):
     always the one on the post and the app has to be able to say so.
     """
 
-    meal = serializers.PrimaryKeyRelatedField(read_only=True)
+    #: The pk of the saved copy. An IntegerField rather than a
+    #: PrimaryKeyRelatedField: the latter has no queryset to infer from, so
+    #: the schema called it a string while the response carried a number,
+    #: and the generated client refused to decode its own contract.
+    meal = serializers.IntegerField(read_only=True)
     name = serializers.CharField(read_only=True)
     item_count = serializers.IntegerField(read_only=True)
     renamed = serializers.BooleanField(read_only=True)
