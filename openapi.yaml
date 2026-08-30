@@ -5180,6 +5180,7 @@ components:
         created_by:
           type: integer
           readOnly: true
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -5607,6 +5608,7 @@ components:
         created_by:
           type: integer
           readOnly: true
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -8420,7 +8422,7 @@ components:
         always the one on the post and the app has to be able to say so.
       properties:
         meal:
-          type: string
+          type: integer
           readOnly: true
         name:
           type: string
@@ -8446,7 +8448,7 @@ components:
         came from, and the app has to be able to tell them so.
       properties:
         workout:
-          type: string
+          type: integer
           readOnly: true
         name:
           type: string

@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      # Includes ContractMatchesResponsesTests, which checks that responses
+      # match the schema describing them. Two shipped bugs came from those
+      # disagreeing -- a saved-meal id documented as a string and returned as
+      # a number, and a created_by documented as an integer that is null on
+      # everything the app ships with. Both broke the generated iOS client on
+      # a live screen while every existing test passed, because until then no
+      # test compared what the server sends against what it promises.
+      - run: python manage.py test core
+
+      # The contract is committed to the iOS repo and the client is generated
+      # from it, so a schema change that nobody regenerated is a client that
+      # no longer matches the server.
+      - name: openapi.yaml is up to date with the serializers
+        run: |
+          python manage.py spectacular --file /tmp/openapi.yaml
+          if ! diff -q openapi.yaml /tmp/openapi.yaml > /dev/null 2>&1; then
+            echo "openapi.yaml is stale. Regenerate it and copy it to the iOS repo:"
+            echo "  python manage.py spectacular --file openapi.yaml"
+            diff openapi.yaml /tmp/openapi.yaml | head -40
+            exit 1
+          fi

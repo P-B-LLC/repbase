@@ -1773,3 +1773,102 @@ class RotationShiftClearsPlannerTests(RepbaseAPITestMixin, APITestCase):
             PlannerEntry.objects.filter(id=done.id).exists(),
             "a completed task must not be swept up with the rotation",
         )
+
+
+class ContractMatchesResponsesTests(RepbaseAPITestMixin, APITestCase):
+    """Every collection response must match the schema that describes it.
+
+    Guards against the pair of bugs that prompted it, both of which were
+    invisible from either side alone: a saved-meal result documented as a
+    string that returned a number, and a created_by documented as an integer
+    that returns null on anything the app shipped with. Each broke the
+    generated client on a live screen, and neither broke a test, because
+    every test until now checked what the server sends without checking it
+    against what the server promises to send.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("contract")
+        self.authenticate(self.token)
+
+    def _fetch(self, path):
+        response = self.client.get(path)
+        # A route that needs a query parameter answers 400 to a bare GET, and
+        # a 400 body says nothing about whether the 200 body would match.
+        if response.status_code != 200:
+            self.skipped.append(f"{path} ({response.status_code})")
+            return None
+        return response.data
+
+    def test_collection_responses_match_the_schema(self):
+        from drf_spectacular.generators import SchemaGenerator
+
+        from .contract_check import check, collection_paths, to_json_schema
+
+        # Shapes chosen to be awkward rather than representative. A fixture
+        # that fills in every optional field validates against a contract
+        # that forbids null, which is exactly the bug that shipped.
+        Gym.objects.create(name="Seeded Gym", city="Nowhere", created_by=None)
+        Exercise.objects.create(name="Seeded Exercise", created_by=None)
+        self.client.post(
+            "/api/v1/workouts/",
+            {"name": "Bare Workout", "workout_type": "lifting"},
+            format="json",
+        )
+
+        spec = SchemaGenerator().get_schema(request=None, public=True)
+        self.skipped = []
+
+        paths = collection_paths(to_json_schema(spec))
+        problems = check(spec, self._fetch, paths=paths)
+
+        reached = len(paths) - len(self.skipped)
+        self.assertGreater(
+            reached,
+            20,
+            "too few endpoints answered to call this a sweep; "
+            f"skipped {self.skipped}",
+        )
+        self.assertEqual(
+            problems,
+            [],
+            "responses disagree with the contract:\n  " + "\n  ".join(problems),
+        )
+
+    def test_no_primary_key_field_documents_itself_as_a_string(self):
+        """A pk on a plain Serializer is described as a string and sent as a number.
+
+        The response sweep above cannot catch this one: it reads GET
+        collections, and the two serializers it happened to on were both
+        results of a POST. So the rule is checked at its source instead.
+
+        On a ModelSerializer, spectacular resolves PrimaryKeyRelatedField
+        against the model and correctly says integer. On a plain Serializer
+        there is no model to resolve against and no queryset on a read-only
+        field, so it falls back to string -- and the generated client then
+        refuses to decode the number the view actually returns. That is what
+        broke saving a meal from somebody else's post.
+        """
+        from rest_framework import serializers as drf
+
+        from . import serializers as module
+
+        offenders = []
+        for name in dir(module):
+            candidate = getattr(module, name)
+            if not isinstance(candidate, type):
+                continue
+            if not issubclass(candidate, drf.Serializer):
+                continue
+            if issubclass(candidate, drf.ModelSerializer):
+                continue
+            for field_name, field in getattr(candidate, "_declared_fields", {}).items():
+                if isinstance(field, drf.PrimaryKeyRelatedField) and field.queryset is None:
+                    offenders.append(f"{name}.{field_name}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "these document as a string and return a number; use IntegerField:\n  "
+            + "\n  ".join(offenders),
+        )
