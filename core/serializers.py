@@ -2259,6 +2259,12 @@ class PostSerializer(serializers.ModelSerializer):
     meal = PostMealSerializer(read_only=True, allow_null=True)
     planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
     source_id = serializers.SerializerMethodField()
+    #: True when this reader has already copied the post into their own.
+    #:
+    #: Read off the annotation rather than queried, and defaulted to False
+    #: for the few paths that serialize a post without it -- a freshly
+    #: created one, which nobody can have saved yet.
+    viewer_saved = serializers.SerializerMethodField()
     viewer_follows_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
     #: Counted by the database, not by the length of a list the client would
@@ -2301,6 +2307,7 @@ class PostSerializer(serializers.ModelSerializer):
             "repost_count",
             "viewer_has_liked",
             "viewer_has_reposted",
+            "viewer_saved",
             "repost_of",
             "created_at",
             "updated_at",
@@ -2323,6 +2330,7 @@ class PostSerializer(serializers.ModelSerializer):
             "repost_count",
             "viewer_has_liked",
             "viewer_has_reposted",
+            "viewer_saved",
             "repost_of",
             "created_at",
             "updated_at",
@@ -2369,6 +2377,17 @@ class PostSerializer(serializers.ModelSerializer):
             or post.source_meal_id
             or post.source_planner_entry_id
         )
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_saved(self, post) -> bool:
+        """Whether the reader already copied this post into their own.
+
+        Off the annotation, like every other viewer_ field here: the Save
+        button is on every card, so asking per row would be a query a card.
+        Defaults to False where a post is serialized without the annotation
+        -- creating one, where nobody can have saved it yet.
+        """
+        return bool(getattr(post, "viewer_saved", False))
 
     @extend_schema_field(serializers.BooleanField())
     def get_viewer_follows_author(self, post):

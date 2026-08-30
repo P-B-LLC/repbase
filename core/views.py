@@ -1937,6 +1937,18 @@ def annotate_social_counts(viewer, queryset):
         viewer_reposted=Exists(
             Post.objects.filter(repost_of=OuterRef("pk"), author=viewer)
         ),
+        # Whether this reader already took a copy. Annotated rather than
+        # asked per row: the button that reads it is on every card in the
+        # feed, and a query each would be a page of them.
+        #
+        # A post carries a workout or a meal, never both, so at most one of
+        # these can be true and the app needs only the pair OR-ed together.
+        viewer_saved=Exists(
+            WorkoutTemplate.objects.filter(source_post=OuterRef("pk"), owner=viewer)
+        )
+        | Exists(
+            SavedFoodMeal.objects.filter(source_post=OuterRef("pk"), owner=viewer)
+        ),
     )
 
 

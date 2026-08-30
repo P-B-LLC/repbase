@@ -2002,6 +2002,36 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(SavedFoodMeal.objects.filter(owner=other_profile).count(), 1)
         self.assertEqual(SavedFoodMeal.objects.filter(owner=self.profile).count(), 1)
 
+    def test_the_feed_says_whether_the_reader_already_saved_it(self):
+        """The Save button reads this to know it has nothing left to do.
+
+        Session state is not enough: a post saved last week must still show
+        as saved on the next launch, so the answer has to come from the
+        server rather than from what this run happens to remember.
+        """
+        post = self._meal_post()
+
+        before = self.client.get("/api/v1/social/posts/")
+        mine = [p for p in before.data["results"] if p["id"] == post.id][0]
+        self.assertFalse(mine["viewer_saved"])
+
+        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/")
+
+        after = self.client.get("/api/v1/social/posts/")
+        mine = [p for p in after.data["results"] if p["id"] == post.id][0]
+        self.assertTrue(mine["viewer_saved"])
+
+    def test_one_reader_saving_does_not_mark_it_saved_for_another(self):
+        post = self._meal_post()
+        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/")
+
+        _, _, other_token = self.create_account("onlooker")
+        self.authenticate(other_token)
+
+        theirs = self.client.get("/api/v1/social/posts/")
+        mine = [p for p in theirs.data["results"] if p["id"] == post.id][0]
+        self.assertFalse(mine["viewer_saved"], "saved is per reader, not per post")
+
     def test_a_deleted_post_leaves_the_copy_alone(self):
         """SET_NULL, not CASCADE: the copy is the readers own once made."""
         post = self._meal_post()

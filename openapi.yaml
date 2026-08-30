@@ -7089,6 +7089,9 @@ components:
         viewer_has_reposted:
           type: boolean
           readOnly: true
+        viewer_saved:
+          type: boolean
+          readOnly: true
         repost_of:
           allOf:
           - $ref: '#/components/schemas/RepostedPost'
@@ -7122,6 +7125,7 @@ components:
       - viewer_has_liked
       - viewer_has_reposted
       - viewer_is_author
+      - viewer_saved
       - visibility
       - workout
     PostComment:
