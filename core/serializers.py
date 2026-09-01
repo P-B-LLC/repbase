@@ -823,6 +823,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     disciplines = serializers.SerializerMethodField()
     prompts = serializers.SerializerMethodField()
     social_links = serializers.SerializerMethodField()
+    is_readable = serializers.SerializerMethodField()
 
     class Meta:
         model = RepbaseUser
@@ -846,6 +847,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
             "shows_weight",
             "shows_target_weight",
             "is_profile_public",
+            "is_readable",
             "created_at",
         ]
 
@@ -860,6 +862,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
         "id",
         "username",
         "is_profile_public",
+        "is_readable",
         "created_at",
     })
 
@@ -878,7 +881,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
         remembers it.
         """
         data = super().to_representation(profile)
-        if profile.is_profile_public or self._reader_owns(profile):
+        if self._reader_may_read(profile):
             return data
 
         for key, value in data.items():
@@ -894,14 +897,50 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
                 data[key] = None
         return data
 
-    def _reader_owns(self, profile):
-        """Your own profile is never hidden from you."""
+    @extend_schema_field(serializers.BooleanField())
+    def get_is_readable(self, profile):
+        return self._reader_may_read(profile)
+
+    def _reader_may_read(self, profile):
+        """Whether this reader gets the profile itself or a closed door.
+
+        Separate from `is_profile_public`, and the app needs both: closed says
+        something about the profile, readable says something about the person
+        reading it. A follower of a closed profile gets every field and still
+        sees `is_profile_public` false, so a page that branched on that alone
+        would draw the closed door over data it had been given.
+
+        Closing a profile narrows its audience to the people already following
+        rather than emptying it.
+        """
+        if profile.is_profile_public:
+            return True
         reader = getattr(self.context.get("request"), "user", None)
-        return bool(
-            reader
-            and reader.is_authenticated
-            and profile.user_id == reader.id
-        )
+        if not reader or not reader.is_authenticated:
+            return False
+        if profile.user_id == reader.id:
+            return True
+        return profile.id in self._followed_profile_ids
+
+    @property
+    def _followed_profile_ids(self):
+        """Who the reader follows, read once for the whole response.
+
+        Asked per profile this would be a query per row when a list of them
+        comes back. With `many=True` DRF reuses one child serializer for every
+        object, so caching it here costs one query however many arrive.
+        """
+        if not hasattr(self, "_followed_cache"):
+            reader = getattr(self.context.get("request"), "user", None)
+            if reader and reader.is_authenticated:
+                self._followed_cache = set(
+                    Follow.objects.filter(
+                        follower__user_id=reader.id
+                    ).values_list("following_id", flat=True)
+                )
+            else:
+                self._followed_cache = set()
+        return self._followed_cache
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_profile_photo_url(self, profile):

@@ -7958,6 +7958,9 @@ components:
           type: boolean
         is_profile_public:
           type: boolean
+        is_readable:
+          type: boolean
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7970,6 +7973,7 @@ components:
       - gym_name
       - height_cm
       - id
+      - is_readable
       - last_name
       - profile_photo_url
       - prompts

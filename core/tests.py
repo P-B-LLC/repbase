@@ -15,6 +15,7 @@ from .models import (
     FoodEntry,
     FoodMeal,
     FoodSearchCache,
+    Follow,
     Gym,
     ProfileSocialLink,
     PasswordResetCode,
@@ -182,6 +183,123 @@ class FoodDayCopyTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("source_date", response.data)
         self.assertEqual(self.foods_on(self.today), [])
+
+
+class PrivateProfileReachTests(RepbaseAPITestMixin, APITestCase):
+    """Who a closed profile is closed to, and what goes with it."""
+
+    def setUp(self):
+        self.author, self.author_profile, self.author_token = (
+            self.create_account("closed")
+        )
+        self.fan, self.fan_profile, self.fan_token = self.create_account("fan")
+        self.passer, self.passer_profile, self.passer_token = (
+            self.create_account("passerby")
+        )
+
+        self.author_profile.bio = "I lift things"
+        self.author_profile.is_profile_public = False
+        self.author_profile.save(update_fields=["bio", "is_profile_public"])
+        Follow.objects.create(
+            follower=self.fan_profile, following=self.author_profile
+        )
+        self.post = self.meal_post()
+
+    def meal_post(self):
+        post = Post.objects.create(
+            author=self.author_profile,
+            kind=Post.Kind.MEAL,
+            caption="lunch",
+            visibility=Post.Visibility.PUBLIC,
+        )
+        meal = PostMeal.objects.create(
+            post=post, name="Meal 1", date=timezone.localdate()
+        )
+        PostMealEntry.objects.create(
+            post_meal=meal,
+            name="Chicken Bowl",
+            servings=1,
+            calories=800,
+            protein_grams=50,
+        )
+        return post
+
+    def profile_as(self, token):
+        self.authenticate(token)
+        response = self.client.get(f"/api/v1/users/{self.author_profile.id}/")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def post_ids_as(self, token):
+        self.authenticate(token)
+        response = self.client.get("/api/v1/social/posts/")
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = response.data
+        if isinstance(rows, dict):
+            rows = rows["results"]
+        return {row["id"] for row in rows}
+
+    def open_the_profile(self):
+        self.author_profile.is_profile_public = True
+        self.author_profile.save(update_fields=["is_profile_public"])
+
+    # --------------------------------------------------------- the profile
+
+    def test_a_follower_reads_the_whole_profile(self):
+        data = self.profile_as(self.fan_token)
+        self.assertTrue(data["is_readable"])
+        self.assertEqual(data["bio"], "I lift things")
+        # Still closed. Readable describes the reader, not the profile, and
+        # the two must not be collapsed into one flag.
+        self.assertFalse(data["is_profile_public"])
+
+    def test_somebody_who_does_not_follow_gets_the_closed_door(self):
+        data = self.profile_as(self.passer_token)
+        self.assertFalse(data["is_readable"])
+        self.assertEqual(data["bio"], "")
+        self.assertEqual(data["first_name"], "")
+
+    def test_the_owner_always_reads_their_own(self):
+        data = self.profile_as(self.author_token)
+        self.assertTrue(data["is_readable"])
+        self.assertEqual(data["bio"], "I lift things")
+
+    def test_an_open_profile_is_readable_by_anybody(self):
+        self.open_the_profile()
+        data = self.profile_as(self.passer_token)
+        self.assertTrue(data["is_readable"])
+        self.assertEqual(data["bio"], "I lift things")
+
+    # ----------------------------------------------------------- the posts
+
+    def test_a_closed_authors_posts_are_hidden_from_a_passerby(self):
+        self.assertNotIn(self.post.id, self.post_ids_as(self.passer_token))
+
+    def test_a_follower_still_sees_them(self):
+        self.assertIn(self.post.id, self.post_ids_as(self.fan_token))
+
+    def test_the_author_still_sees_their_own(self):
+        self.assertIn(self.post.id, self.post_ids_as(self.author_token))
+
+    def test_the_detail_route_hides_it_too(self):
+        # The list is not the only way in, and a rule enforced in one place
+        # and not the other is not a rule.
+        self.authenticate(self.passer_token)
+        response = self.client.get(f"/api/v1/social/posts/{self.post.id}/")
+        self.assertEqual(response.status_code, 404)
+
+    def test_opening_the_profile_puts_the_posts_back(self):
+        self.open_the_profile()
+        self.assertIn(self.post.id, self.post_ids_as(self.passer_token))
+
+    def test_opening_a_profile_does_not_widen_a_narrowed_post(self):
+        # The two rules stack. A post the author marked followers-only stays
+        # followers-only however open the profile around it is.
+        self.open_the_profile()
+        self.post.visibility = Post.Visibility.FOLLOWERS
+        self.post.save(update_fields=["visibility"])
+        self.assertNotIn(self.post.id, self.post_ids_as(self.passer_token))
+        self.assertIn(self.post.id, self.post_ids_as(self.fan_token))
 
 
 class PrivateProfileTests(RepbaseAPITestMixin, APITestCase):

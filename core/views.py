@@ -2061,6 +2061,11 @@ def visible_posts_for(viewer, queryset):
     stay visible to them, which is the single case where visibility is not
     consulted at all.
 
+    A closed profile narrows everything its owner has posted to the people
+    following them. That test sits alongside each post's own visibility rather
+    than replacing it, so opening a profile back up does not widen a post its
+    author had already narrowed by hand.
+
     There is no superuser bypass here, unlike `scope_to_owner`. `private` is a
     user's word for author-only, and an account with a staff flag is still a
     reader.
@@ -2085,6 +2090,11 @@ def visible_posts_for(viewer, queryset):
         Q(author=viewer)
         | (
             Q(viewer_is_blocked=False)
+            # Whose profile it is, before what the post says about itself.
+            & (
+                Q(author__is_profile_public=True)
+                | Q(viewer_follows_author=True)
+            )
             & (
                 Q(visibility=Post.Visibility.PUBLIC)
                 | Q(visibility=Post.Visibility.FOLLOWERS, viewer_follows_author=True)
