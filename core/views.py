@@ -128,6 +128,7 @@ from .serializers import (
     SessionRouteUploadSerializer,
     SetEntrySerializer,
     ApplySavedMealSerializer,
+    CopyFoodDaySerializer,
     EnsureFoodDaySerializer,
     FoodEntrySerializer,
     FoodMealSerializer,
@@ -1161,6 +1162,98 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         if not meals:
             meals = food_meals_for_day(owner, date, at_least=DEFAULT_FOOD_MEAL_COUNT)
         return Response(FoodMealSerializer(meals, many=True).data)
+
+    @extend_schema(
+        request=CopyFoodDaySerializer,
+        responses={200: FoodMealSerializer(many=True)},
+        description=(
+            "Copy everything eaten on source_date onto target_date, meal names "
+            "and all. Refused when the target day already has food on it, so "
+            "sending the same request twice cannot quietly double a day. Foods "
+            "are copied rather than linked: editing one afterwards leaves the "
+            "day it came from alone."
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="copy-day", pagination_class=None)
+    def copy_day(self, request):
+        """Repeat one day's eating on another, in one transaction.
+
+        For the person who eats much the same thing daily and would otherwise
+        retype it every morning.
+
+        All of it or none of it. Half a day copied, with no way to see which
+        half, is worse than a refusal the user can simply repeat.
+
+        Empty meals on the source day are skipped rather than copied across as
+        empty slots: what is being repeated is the eating, not the layout of
+        the day it happened on.
+        """
+        body = CopyFoodDaySerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+
+        owner = self.owner_profile()
+        source = body.validated_data["source_date"]
+        target = body.validated_data["target_date"]
+        if source == target:
+            raise ValidationError(
+                {"target_date": "A day cannot be copied onto itself."}
+            )
+
+        source_meals = [
+            meal
+            for meal in FoodMeal.objects.filter(owner=owner, date=source)
+            .prefetch_related("entries")
+            .order_by("position", "id")
+            if meal.entries.all()
+        ]
+        if not source_meals:
+            raise ValidationError(
+                {"source_date": "Nothing was logged on that day to copy."}
+            )
+
+        # Refused rather than merged. Appending to a day that already has food
+        # would double it for anyone who tapped twice, and there is no way to
+        # tell that apart from someone genuinely eating it all again.
+        if FoodEntry.objects.filter(meal__owner=owner, meal__date=target).exists():
+            raise ValidationError(
+                {"target_date": "That day already has food logged on it."}
+            )
+
+        with transaction.atomic():
+            meals = food_meals_for_day(owner, target, at_least=len(source_meals))
+            filled = []
+            entries = []
+            for meal, source_meal in zip(meals, source_meals):
+                # The name travels too: a meal called "Chicken bowl" yesterday
+                # is the same meal today, and "Meal 2" would lose that.
+                if meal.name != source_meal.name:
+                    meal.name = source_meal.name
+                    filled.append(meal)
+                entries.extend(
+                    FoodEntry(
+                        meal=meal,
+                        name=entry.name,
+                        servings=entry.servings,
+                        calories=entry.calories,
+                        protein_grams=entry.protein_grams,
+                        carbohydrate_grams=entry.carbohydrate_grams,
+                        fat_grams=entry.fat_grams,
+                        position=position,
+                    )
+                    for position, entry in enumerate(
+                        source_meal.entries.all(), start=1
+                    )
+                )
+            if filled:
+                FoodMeal.objects.bulk_update(filled, ["name", "updated_at"])
+            FoodEntry.objects.bulk_create(entries)
+
+        copied = (
+            FoodMeal.objects.filter(owner=owner, date=target)
+            .prefetch_related("entries")
+            .order_by("position", "id")
+        )
+        return Response(FoodMealSerializer(copied, many=True).data)
 
 
 class FoodEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):

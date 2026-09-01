@@ -1146,6 +1146,39 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/food/meals/copy-day/:
+    post:
+      operationId: food_meals_copy_day_create
+      description: 'Copy everything eaten on source_date onto target_date, meal names
+        and all. Refused when the target day already has food on it, so sending the
+        same request twice cannot quietly double a day. Foods are copied rather than
+        linked: editing one afterwards leaves the day it came from alone.'
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CopyFoodDayRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CopyFoodDayRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CopyFoodDayRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FoodMeal'
+          description: ''
   /api/v1/food/meals/ensure-day/:
     post:
       operationId: food_meals_ensure_day_create
@@ -4984,6 +5017,25 @@ components:
         * `image/jpeg` - image/jpeg
         * `image/png` - image/png
         * `image/webp` - image/webp
+    CopyFoodDayRequest:
+      type: object
+      description: |-
+        Which day to copy the eating from, and which day to put it on.
+
+        Two dates rather than "yesterday": the rule about which day is being
+        repeated belongs to the screen asking, and the device knows what day it is
+        for the person holding it. A server that guessed would be guessing in its
+        own timezone.
+      properties:
+        source_date:
+          type: string
+          format: date
+        target_date:
+          type: string
+          format: date
+      required:
+      - source_date
+      - target_date
     CreatePostKindEnum:
       enum:
       - workout

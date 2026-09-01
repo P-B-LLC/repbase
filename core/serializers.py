@@ -415,6 +415,19 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
         )
 
 
+class CopyFoodDaySerializer(serializers.Serializer):
+    """Which day to copy the eating from, and which day to put it on.
+
+    Two dates rather than "yesterday": the rule about which day is being
+    repeated belongs to the screen asking, and the device knows what day it is
+    for the person holding it. A server that guessed would be guessing in its
+    own timezone.
+    """
+
+    source_date = serializers.DateField()
+    target_date = serializers.DateField()
+
+
 class ApplySavedMealSerializer(serializers.Serializer):
     """Which days to copy a saved meal into, and which meal on each of them.
 

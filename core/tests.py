@@ -12,6 +12,8 @@ from rest_framework.test import APIClient, APITestCase
 from . import food_sources
 from .models import (
     Exercise,
+    FoodEntry,
+    FoodMeal,
     FoodSearchCache,
     Gym,
     ProfileSocialLink,
@@ -62,6 +64,124 @@ class RepbaseAPITestMixin:
 
     def authenticate(self, token):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+
+class FoodDayCopyTests(RepbaseAPITestMixin, APITestCase):
+    """Repeating yesterday's eating on today."""
+
+    COPY = "/api/v1/food/meals/copy-day/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("eater")
+        self.authenticate(self.token)
+        self.today = timezone.now().date()
+        self.yesterday = self.today - timedelta(days=1)
+
+    def meal(self, date, name, position, foods=()):
+        meal = FoodMeal.objects.create(
+            owner=self.profile, date=date, name=name, position=position
+        )
+        for index, (food, calories) in enumerate(foods, start=1):
+            FoodEntry.objects.create(
+                meal=meal, name=food, calories=calories, position=index
+            )
+        return meal
+
+    def copy(self, source=None, target=None):
+        return self.client.post(
+            self.COPY,
+            {
+                "source_date": str(source or self.yesterday),
+                "target_date": str(target or self.today),
+            },
+            format="json",
+        )
+
+    def foods_on(self, date):
+        return sorted(
+            FoodEntry.objects.filter(
+                meal__owner=self.profile, meal__date=date
+            ).values_list("name", flat=True)
+        )
+
+    def test_yesterdays_food_lands_on_today(self):
+        self.meal(self.yesterday, "Meal 1", 1, [("Oats", 300), ("Banana", 90)])
+        self.meal(self.yesterday, "Meal 2", 2, [("Chicken", 450)])
+
+        response = self.copy()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.foods_on(self.today), ["Banana", "Chicken", "Oats"])
+        # And yesterday is still exactly as it was.
+        self.assertEqual(self.foods_on(self.yesterday), ["Banana", "Chicken", "Oats"])
+
+    def test_meal_names_travel(self):
+        self.meal(self.yesterday, "Chicken bowl", 1, [("Chicken", 450)])
+        self.copy()
+        self.assertEqual(
+            FoodMeal.objects.filter(owner=self.profile, date=self.today)
+            .first()
+            .name,
+            "Chicken bowl",
+        )
+
+    def test_the_copy_is_its_own_food(self):
+        # Copied, not linked: editing today must leave yesterday alone.
+        self.meal(self.yesterday, "Meal 1", 1, [("Oats", 300)])
+        self.copy()
+
+        copy = FoodEntry.objects.get(meal__date=self.today, meal__owner=self.profile)
+        copy.name = "Oats and honey"
+        copy.save(update_fields=["name"])
+
+        self.assertEqual(self.foods_on(self.yesterday), ["Oats"])
+
+    def test_a_day_with_food_is_refused(self):
+        self.meal(self.yesterday, "Meal 1", 1, [("Oats", 300)])
+        self.meal(self.today, "Meal 1", 1, [("Toast", 200)])
+
+        response = self.copy()
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("target_date", response.data)
+        # Refused means untouched, not partly applied.
+        self.assertEqual(self.foods_on(self.today), ["Toast"])
+
+    def test_empty_meal_slots_do_not_count_as_food(self):
+        # A day that was merely opened has empty meals on it, and that must
+        # still read as "nothing logged" or the button could never be offered.
+        self.meal(self.yesterday, "Meal 1", 1, [("Oats", 300)])
+        self.meal(self.today, "Meal 1", 1)
+        self.meal(self.today, "Meal 2", 2)
+
+        response = self.copy()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.foods_on(self.today), ["Oats"])
+
+    def test_copying_an_empty_day_is_refused(self):
+        response = self.copy()
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("source_date", response.data)
+
+    def test_a_day_cannot_be_copied_onto_itself(self):
+        self.meal(self.today, "Meal 1", 1, [("Oats", 300)])
+        response = self.copy(source=self.today, target=self.today)
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("target_date", response.data)
+
+    def test_only_your_own_days_are_visible(self):
+        other_user, other_profile, other_token = self.create_account("stranger")
+        FoodEntry.objects.create(
+            meal=FoodMeal.objects.create(
+                owner=other_profile, date=self.yesterday, name="Meal 1", position=1
+            ),
+            name="Not mine",
+            calories=100,
+            position=1,
+        )
+        # Their day is not a source this account can reach.
+        response = self.copy()
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("source_date", response.data)
+        self.assertEqual(self.foods_on(self.today), [])
 
 
 class RepbaseAPITestCase(RepbaseAPITestMixin, APITestCase):
