@@ -6659,6 +6659,8 @@ components:
           type: boolean
         shows_target_weight:
           type: boolean
+        is_profile_public:
+          type: boolean
     PatchedSavedFoodMealRequest:
       type: object
       description: |-
@@ -7954,6 +7956,8 @@ components:
           type: boolean
         shows_target_weight:
           type: boolean
+        is_profile_public:
+          type: boolean
         created_at:
           type: string
           format: date-time
@@ -7987,6 +7991,8 @@ components:
         shows_weight:
           type: boolean
         shows_target_weight:
+          type: boolean
+        is_profile_public:
           type: boolean
     QuestionEnum:
       enum:
@@ -8197,6 +8203,8 @@ components:
           type: boolean
         shows_target_weight:
           type: boolean
+        is_profile_public:
+          type: boolean
         social_links:
           type: array
           items:
@@ -8285,6 +8293,8 @@ components:
         shows_weight:
           type: boolean
         shows_target_weight:
+          type: boolean
+        is_profile_public:
           type: boolean
       required:
       - email

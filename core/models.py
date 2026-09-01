@@ -231,6 +231,16 @@ class RepbaseUser(models.Model):
     shows_height = models.BooleanField(default=False)
     shows_weight = models.BooleanField(default=False)
     shows_target_weight = models.BooleanField(default=False)
+    #: Whether anybody but the owner may read this profile.
+    #:
+    #: Public by default, because that is what every account created before
+    #: this field existed already was, and a migration that quietly hid them
+    #: all would be a surprise in the wrong direction.
+    #:
+    #: Separate from the three shows_* switches rather than a fourth one: those
+    #: choose which measurements a public profile states, and this decides
+    #: whether there is a public profile for them to appear on at all.
+    is_profile_public = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

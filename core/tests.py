@@ -184,6 +184,76 @@ class FoodDayCopyTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(self.foods_on(self.today), [])
 
 
+class PrivateProfileTests(RepbaseAPITestMixin, APITestCase):
+    """A profile that is not public says almost nothing to a stranger."""
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("shy")
+        self.stranger, self.stranger_profile, self.stranger_token = (
+            self.create_account("stranger")
+        )
+        self.user.first_name = "Ada"
+        self.user.save(update_fields=["first_name"])
+        self.profile.bio = "I lift things"
+        self.profile.is_profile_public = False
+        self.profile.save(update_fields=["bio", "is_profile_public"])
+
+    def fetch_as(self, token):
+        self.authenticate(token)
+        response = self.client.get(f"/api/v1/users/{self.profile.id}/")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def test_profiles_are_public_until_somebody_says_otherwise(self):
+        # Every account that existed before the switch did was public, and the
+        # migration must not quietly change that.
+        self.assertTrue(self.stranger_profile.is_profile_public)
+
+    def test_a_stranger_is_told_it_is_private_and_little_else(self):
+        data = self.fetch_as(self.stranger_token)
+        self.assertFalse(data["is_profile_public"])
+        self.assertEqual(data["username"], self.user.username)
+        self.assertEqual(data["bio"], "")
+        self.assertEqual(data["first_name"], "")
+        self.assertEqual(data["last_name"], "")
+        self.assertIsNone(data["profile_photo_url"])
+        self.assertEqual(data["disciplines"], [])
+        self.assertEqual(data["prompts"], [])
+        self.assertEqual(data["social_links"], [])
+
+    def test_the_shape_of_a_private_profile_is_the_same_shape(self):
+        # The generated client requires every documented field, so a key that
+        # goes missing when a profile closes is a profile the app cannot
+        # decode rather than one it draws as private.
+        closed = set(self.fetch_as(self.stranger_token))
+        self.profile.is_profile_public = True
+        self.profile.save(update_fields=["is_profile_public"])
+        self.assertEqual(closed, set(self.fetch_as(self.stranger_token)))
+
+    def test_your_own_closed_profile_is_not_hidden_from_you(self):
+        data = self.fetch_as(self.token)
+        self.assertEqual(data["bio"], "I lift things")
+        self.assertEqual(data["first_name"], "Ada")
+
+    def test_an_open_profile_is_untouched(self):
+        self.profile.is_profile_public = True
+        self.profile.save(update_fields=["is_profile_public"])
+        data = self.fetch_as(self.stranger_token)
+        self.assertTrue(data["is_profile_public"])
+        self.assertEqual(data["bio"], "I lift things")
+        self.assertEqual(data["first_name"], "Ada")
+
+    def test_the_switch_is_read_and_written_through_me(self):
+        self.authenticate(self.token)
+        response = self.client.patch(
+            "/api/v1/me/", {"is_profile_public": True}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(response.data["is_profile_public"])
+        self.profile.refresh_from_db()
+        self.assertTrue(self.profile.is_profile_public)
+
+
 class RepbaseAPITestCase(RepbaseAPITestMixin, APITestCase):
 
     def test_registration_returns_token_and_private_profile(self):

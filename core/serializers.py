@@ -845,8 +845,63 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
             "shows_height",
             "shows_weight",
             "shows_target_weight",
+            "is_profile_public",
             "created_at",
         ]
+
+    #: All a profile still says once it is closed.
+    #:
+    #: Enough to know whose door this is and that it is shut. The name and the
+    #: photo are not on the list: somebody who closes their profile has said
+    #: they do not want to be looked at, and a page showing their face over
+    #: the word "private" would be honouring the letter of that and not much
+    #: else.
+    STILL_SHOWN_WHEN_PRIVATE = frozenset({
+        "id",
+        "username",
+        "is_profile_public",
+        "created_at",
+    })
+
+    def to_representation(self, profile):
+        """Empties a closed profile, leaving the shape of it intact.
+
+        Emptied rather than dropped, and this is the important part: the
+        generated iOS client requires every documented field to be present, so
+        a key missing here is not a profile drawn as private -- it is a profile
+        the app cannot decode at all, which is a crash rather than a closed
+        door.
+
+        Cleared by type rather than by naming each field, so that a field added
+        to this serializer later is withheld by default and has to be named to
+        escape. The other way round, every new field leaks until somebody
+        remembers it.
+        """
+        data = super().to_representation(profile)
+        if profile.is_profile_public or self._reader_owns(profile):
+            return data
+
+        for key, value in data.items():
+            if key in self.STILL_SHOWN_WHEN_PRIVATE:
+                continue
+            if isinstance(value, list):
+                data[key] = []
+            elif isinstance(value, bool):
+                data[key] = False
+            elif isinstance(value, str):
+                data[key] = ""
+            else:
+                data[key] = None
+        return data
+
+    def _reader_owns(self, profile):
+        """Your own profile is never hidden from you."""
+        reader = getattr(self.context.get("request"), "user", None)
+        return bool(
+            reader
+            and reader.is_authenticated
+            and profile.user_id == reader.id
+        )
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_profile_photo_url(self, profile):
@@ -957,6 +1012,7 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "shows_height",
             "shows_weight",
             "shows_target_weight",
+            "is_profile_public",
             "social_links",
             "created_at",
             "updated_at",
