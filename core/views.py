@@ -81,6 +81,7 @@ from .models import (
     WorkoutTemplate,
     Block,
     Follow,
+    FollowRequest,
     FoodSearchCache,
     PasswordResetCode,
     Personalization,
@@ -130,6 +131,7 @@ from .serializers import (
     ApplySavedMealSerializer,
     CopyFoodDaySerializer,
     EnsureFoodDaySerializer,
+    FollowRequestSerializer,
     FoodEntrySerializer,
     FoodMealSerializer,
     GymSerializer,
@@ -549,6 +551,27 @@ class MeView(RetrieveUpdateDestroyAPIView):
     def get_object(self):
         return profile_for(self.request.user)
 
+    def perform_update(self, serializer):
+        """Opening a profile grants whatever was still waiting on it.
+
+        Anybody could follow an open profile without asking, so leaving the
+        requests pending would keep people out of something that is no longer
+        shut -- and would ask the owner to answer questions that have stopped
+        being questions.
+        """
+        was_closed = not serializer.instance.is_profile_public
+        profile = serializer.save()
+        if was_closed and profile.is_profile_public:
+            pending = FollowRequest.objects.filter(target=profile)
+            Follow.objects.bulk_create(
+                [
+                    Follow(follower_id=row.requester_id, following=profile)
+                    for row in pending
+                ],
+                ignore_conflicts=True,
+            )
+            pending.delete()
+
     def perform_destroy(self, instance):
         # Deleting the auth user cascades through the Repbase profile and every
         # account-owned resource. It also invalidates all authentication tokens.
@@ -750,10 +773,12 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
     @extend_schema(
         methods=["POST"],
         request=None,
-        responses={201: None, 200: None, 409: None},
+        responses={201: None, 200: None, 202: None, 409: None},
         description=(
             "Follow this user. Following again changes nothing and answers 200, "
-            "so a double tap is not an error."
+            "so a double tap is not an error. A profile that is not public "
+            "answers 202 instead: nothing has been followed, and a request is "
+            "waiting for its owner to answer."
         ),
     )
     @extend_schema(
@@ -783,6 +808,11 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
 
         if request.method == "DELETE":
             Follow.objects.filter(follower=follower, following=target).delete()
+            # Withdrawing an unanswered request is the same gesture as
+            # unfollowing, and the button is the same button.
+            FollowRequest.objects.filter(
+                requester=follower, target=target
+            ).delete()
             return Response(status=status.HTTP_204_NO_CONTENT)
 
         if target == follower:
@@ -796,6 +826,18 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
                 {"detail": "A block stands between these two people."},
                 status=status.HTTP_409_CONFLICT,
             )
+        already_follows = Follow.objects.filter(
+            follower=follower, following=target
+        ).exists()
+        if not target.is_profile_public and not already_follows:
+            # A closed profile is asked rather than taken. 202 rather than 201
+            # because nothing has been followed yet, and the client has to be
+            # able to tell those apart to draw the right word on the button.
+            FollowRequest.objects.get_or_create(
+                requester=follower, target=target
+            )
+            return Response(status=status.HTTP_202_ACCEPTED)
+
         _, created = Follow.objects.get_or_create(follower=follower, following=target)
         return Response(status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
@@ -3051,6 +3093,52 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         ).exists():
             raise NotFound("No such post.")
         serializer.save(author=profile)
+
+
+class FollowRequestViewSet(
+    mixins.ListModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
+    """The requests waiting on you, and the two answers to them.
+
+    Only ever the ones pointed at the person asking. A request somebody else
+    sent to somebody else is not theirs to read, approve or refuse, and
+    scoping the queryset is what makes that a 404 rather than a check that
+    could be forgotten in one of the three places below.
+
+    Declining is a DELETE because that is what it does: the row goes, and
+    nothing records that it was ever refused. The alternative is keeping a
+    refusal on file, which is a note about somebody that they cannot see and
+    did not agree to.
+    """
+
+    serializer_class = FollowRequestSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = FollowRequest.objects.select_related(
+        "requester", "requester__user"
+    )
+
+    def get_queryset(self):
+        return super().get_queryset().filter(target=profile_for(self.request.user))
+
+    @extend_schema(
+        request=None,
+        responses={204: None},
+        description=(
+            "Let this person follow you. The request becomes a follow and "
+            "stops being a request."
+        ),
+    )
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        pending = self.get_object()
+        with transaction.atomic():
+            Follow.objects.get_or_create(
+                follower=pending.requester, following=pending.target
+            )
+            pending.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class BlockViewSet(

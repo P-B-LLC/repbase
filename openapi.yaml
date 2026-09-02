@@ -3893,6 +3893,90 @@ paths:
               schema:
                 $ref: '#/components/schemas/PaginatedPostList'
           description: ''
+  /api/v1/social/follow-requests/:
+    get:
+      operationId: social_follow_requests_list
+      description: |-
+        The requests waiting on you, and the two answers to them.
+
+        Only ever the ones pointed at the person asking. A request somebody else
+        sent to somebody else is not theirs to read, approve or refuse, and
+        scoping the queryset is what makes that a 404 rather than a check that
+        could be forgotten in one of the three places below.
+
+        Declining is a DELETE because that is what it does: the row goes, and
+        nothing records that it was ever refused. The alternative is keeping a
+        refusal on file, which is a note about somebody that they cannot see and
+        did not agree to.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedFollowRequestList'
+          description: ''
+  /api/v1/social/follow-requests/{id}/:
+    delete:
+      operationId: social_follow_requests_destroy
+      description: |-
+        The requests waiting on you, and the two answers to them.
+
+        Only ever the ones pointed at the person asking. A request somebody else
+        sent to somebody else is not theirs to read, approve or refuse, and
+        scoping the queryset is what makes that a 404 rather than a check that
+        could be forgotten in one of the three places below.
+
+        Declining is a DELETE because that is what it does: the row goes, and
+        nothing records that it was ever refused. The alternative is keeping a
+        refusal on file, which is a note about somebody that they cannot see and
+        did not agree to.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this follow request.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/social/follow-requests/{id}/approve/:
+    post:
+      operationId: social_follow_requests_approve_create
+      description: Let this person follow you. The request becomes a follow and stops
+        being a request.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this follow request.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/social/posts/:
     get:
       operationId: social_posts_list
@@ -4351,8 +4435,10 @@ paths:
   /api/v1/users/{id}/follow/:
     post:
       operationId: users_follow_create
-      description: Follow this user. Following again changes nothing and answers 200,
-        so a double tap is not an error.
+      description: 'Follow this user. Following again changes nothing and answers
+        200, so a double tap is not an error. A profile that is not public answers
+        202 instead: nothing has been followed, and a request is waiting for its owner
+        to answer.'
       parameters:
       - in: path
         name: id
@@ -4369,6 +4455,8 @@ paths:
         '201':
           description: No response body
         '200':
+          description: No response body
+        '202':
           description: No response body
         '409':
           description: No response body
@@ -5297,6 +5385,45 @@ components:
           maxLength: 100
       required:
       - name
+    FollowRequest:
+      type: object
+      description: |-
+        A pending request, described by whoever is asking.
+
+        The requester rather than the target: this list is only ever read by the
+        person being asked, and they know who they are.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        requester_id:
+          type: integer
+          readOnly: true
+        username:
+          type: string
+          readOnly: true
+        first_name:
+          type: string
+          readOnly: true
+        last_name:
+          type: string
+          readOnly: true
+        profile_photo_url:
+          type: string
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - created_at
+      - first_name
+      - id
+      - last_name
+      - profile_photo_url
+      - requester_id
+      - username
     FoodEntry:
       type: object
       description: |-
@@ -5922,6 +6049,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Exercise'
+    PaginatedFollowRequestList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/FollowRequest'
     PaginatedFoodEntryList:
       type: object
       required:
@@ -7961,6 +8111,12 @@ components:
         is_readable:
           type: boolean
           readOnly: true
+        viewer_follows:
+          type: boolean
+          readOnly: true
+        viewer_has_requested:
+          type: boolean
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7980,6 +8136,8 @@ components:
       - social_links
       - target_weight_kg
       - username
+      - viewer_follows
+      - viewer_has_requested
       - weight_kg
     PublicRepbaseUserRequest:
       type: object

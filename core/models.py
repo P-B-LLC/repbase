@@ -1706,6 +1706,48 @@ class Follow(models.Model):
         return f"{self.follower} follows {self.following}"
 
 
+class FollowRequest(models.Model):
+    """Somebody asking to follow a profile that is closed.
+
+    Kept as its own table rather than as a pending state on `Follow`. Every
+    query that decides what a person is allowed to see joins through Follow,
+    so a pending row sitting in that table would be one forgotten filter away
+    from handing a stranger the thing they were asking permission for. A
+    request that is granted becomes a Follow and stops being a request.
+
+    Unique per pair, and nobody may ask to follow themself -- both in the
+    database, for the same reason Follow does it there.
+    """
+
+    requester = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="follow_requests_sent",
+    )
+    target = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="follow_requests_received",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("requester", "target"),
+                name="unique_follow_request",
+            ),
+            models.CheckConstraint(
+                condition=~models.Q(requester=models.F("target")),
+                name="no_self_follow_request",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.requester} -> {self.target} (pending)"
+
+
 class Block(models.Model):
     """One person refusing to appear to another.
 

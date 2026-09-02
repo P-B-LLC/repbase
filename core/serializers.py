@@ -61,6 +61,7 @@ from .models import (
     estimated_one_rep_max,
     Block,
     Follow,
+    FollowRequest,
     Post,
     PostComment,
     PostMeal,
@@ -824,6 +825,8 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     prompts = serializers.SerializerMethodField()
     social_links = serializers.SerializerMethodField()
     is_readable = serializers.SerializerMethodField()
+    viewer_follows = serializers.SerializerMethodField()
+    viewer_has_requested = serializers.SerializerMethodField()
 
     class Meta:
         model = RepbaseUser
@@ -848,6 +851,8 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
             "shows_target_weight",
             "is_profile_public",
             "is_readable",
+            "viewer_follows",
+            "viewer_has_requested",
             "created_at",
         ]
 
@@ -863,6 +868,11 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
         "username",
         "is_profile_public",
         "is_readable",
+        # Kept through the emptying, and this is the point of them. A closed
+        # profile still has to tell you where you stand with it, or the button
+        # on it cannot say "Requested" and would offer to ask again.
+        "viewer_follows",
+        "viewer_has_requested",
         "created_at",
     })
 
@@ -921,6 +931,29 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
         if profile.user_id == reader.id:
             return True
         return profile.id in self._followed_profile_ids
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_follows(self, profile):
+        return profile.id in self._followed_profile_ids
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_has_requested(self, profile):
+        return profile.id in self._requested_profile_ids
+
+    @property
+    def _requested_profile_ids(self):
+        """Who the reader has an unanswered request out to. One query."""
+        if not hasattr(self, "_requested_cache"):
+            reader = getattr(self.context.get("request"), "user", None)
+            if reader and reader.is_authenticated:
+                self._requested_cache = set(
+                    FollowRequest.objects.filter(
+                        requester__user_id=reader.id
+                    ).values_list("target_id", flat=True)
+                )
+            else:
+                self._requested_cache = set()
+        return self._requested_cache
 
     @property
     def _followed_profile_ids(self):
@@ -2646,6 +2679,44 @@ class UpdatePostSerializer(serializers.ModelSerializer):
 
     def validate_caption(self, value):
         return value.strip()
+
+
+class FollowRequestSerializer(serializers.ModelSerializer):
+    """A pending request, described by whoever is asking.
+
+    The requester rather than the target: this list is only ever read by the
+    person being asked, and they know who they are.
+    """
+
+    requester_id = serializers.IntegerField(source="requester.id", read_only=True)
+    username = serializers.CharField(
+        source="requester.user.username", read_only=True
+    )
+    first_name = serializers.CharField(
+        source="requester.user.first_name", read_only=True
+    )
+    last_name = serializers.CharField(
+        source="requester.user.last_name", read_only=True
+    )
+    profile_photo_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = FollowRequest
+        fields = [
+            "id",
+            "requester_id",
+            "username",
+            "first_name",
+            "last_name",
+            "profile_photo_url",
+            "created_at",
+        ]
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_profile_photo_url(self, request_row):
+        return profile_photo_url_for(
+            request_row.requester, self.context.get("request")
+        )
 
 
 class FollowSerializer(serializers.ModelSerializer):

@@ -16,6 +16,7 @@ from .models import (
     FoodMeal,
     FoodSearchCache,
     Follow,
+    FollowRequest,
     Gym,
     ProfileSocialLink,
     PasswordResetCode,
@@ -183,6 +184,163 @@ class FoodDayCopyTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("source_date", response.data)
         self.assertEqual(self.foods_on(self.today), [])
+
+
+class FollowRequestTests(RepbaseAPITestMixin, APITestCase):
+    """Asking to follow a closed profile, and being answered."""
+
+    REQUESTS = "/api/v1/social/follow-requests/"
+
+    def setUp(self):
+        self.owner, self.owner_profile, self.owner_token = (
+            self.create_account("closed")
+        )
+        self.asker, self.asker_profile, self.asker_token = (
+            self.create_account("asker")
+        )
+        self.owner_profile.bio = "I lift things"
+        self.owner_profile.is_profile_public = False
+        self.owner_profile.save(update_fields=["bio", "is_profile_public"])
+
+    def ask(self, token=None):
+        self.authenticate(token or self.asker_token)
+        return self.client.post(f"/api/v1/users/{self.owner_profile.id}/follow/")
+
+    def pending(self):
+        return FollowRequest.objects.filter(target=self.owner_profile)
+
+    def follows(self):
+        return Follow.objects.filter(
+            follower=self.asker_profile, following=self.owner_profile
+        )
+
+    # ------------------------------------------------------------ asking
+
+    def test_following_a_closed_profile_asks_rather_than_follows(self):
+        response = self.ask()
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertEqual(self.pending().count(), 1)
+        self.assertFalse(self.follows().exists())
+
+    def test_asking_twice_is_still_one_request(self):
+        self.assertEqual(self.ask().status_code, 202)
+        self.assertEqual(self.ask().status_code, 202)
+        self.assertEqual(self.pending().count(), 1)
+
+    def test_asking_does_not_open_the_profile(self):
+        # The whole point: a request is not a way in on its own.
+        self.ask()
+        self.authenticate(self.asker_token)
+        response = self.client.get(f"/api/v1/users/{self.owner_profile.id}/")
+        self.assertFalse(response.data["is_readable"])
+        self.assertEqual(response.data["bio"], "")
+
+    def test_the_profile_says_a_request_is_outstanding(self):
+        # Survives the emptying, or the button could not say "Requested" and
+        # would offer to ask all over again.
+        self.ask()
+        self.authenticate(self.asker_token)
+        data = self.client.get(f"/api/v1/users/{self.owner_profile.id}/").data
+        self.assertTrue(data["viewer_has_requested"])
+        self.assertFalse(data["viewer_follows"])
+
+    def test_an_open_profile_is_still_followed_outright(self):
+        self.owner_profile.is_profile_public = True
+        self.owner_profile.save(update_fields=["is_profile_public"])
+        self.assertEqual(self.ask().status_code, 201)
+        self.assertTrue(self.follows().exists())
+        self.assertEqual(self.pending().count(), 0)
+
+    def test_withdrawing_takes_the_request_back(self):
+        self.ask()
+        self.authenticate(self.asker_token)
+        response = self.client.delete(
+            f"/api/v1/users/{self.owner_profile.id}/follow/"
+        )
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.pending().count(), 0)
+
+    # --------------------------------------------------------- answering
+
+    def test_the_owner_sees_who_is_asking(self):
+        self.ask()
+        self.authenticate(self.owner_token)
+        response = self.client.get(self.REQUESTS)
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = response.data["results"] if isinstance(response.data, dict) else response.data
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["username"], self.asker.username)
+
+    def test_approving_makes_it_a_follow(self):
+        self.ask()
+        row = self.pending().first()
+        self.authenticate(self.owner_token)
+        response = self.client.post(f"{self.REQUESTS}{row.id}/approve/")
+        self.assertEqual(response.status_code, 204, response.data)
+        self.assertTrue(self.follows().exists())
+        self.assertEqual(self.pending().count(), 0)
+
+    def test_an_approved_asker_can_read_the_profile(self):
+        self.ask()
+        row = self.pending().first()
+        self.authenticate(self.owner_token)
+        self.client.post(f"{self.REQUESTS}{row.id}/approve/")
+
+        self.authenticate(self.asker_token)
+        data = self.client.get(f"/api/v1/users/{self.owner_profile.id}/").data
+        self.assertTrue(data["is_readable"])
+        self.assertTrue(data["viewer_follows"])
+        self.assertEqual(data["bio"], "I lift things")
+
+    def test_declining_leaves_no_follow_and_no_record(self):
+        self.ask()
+        row = self.pending().first()
+        self.authenticate(self.owner_token)
+        response = self.client.delete(f"{self.REQUESTS}{row.id}/")
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(self.pending().count(), 0)
+        self.assertFalse(self.follows().exists())
+
+    def test_somebody_elses_request_is_not_yours_to_answer(self):
+        self.ask()
+        row = self.pending().first()
+        stranger, _, stranger_token = self.create_account("stranger")
+        self.authenticate(stranger_token)
+        self.assertEqual(
+            self.client.post(f"{self.REQUESTS}{row.id}/approve/").status_code, 404
+        )
+        self.assertEqual(
+            self.client.delete(f"{self.REQUESTS}{row.id}/").status_code, 404
+        )
+        self.assertEqual(self.pending().count(), 1)
+
+    def test_the_asker_cannot_approve_their_own_request(self):
+        self.ask()
+        row = self.pending().first()
+        self.authenticate(self.asker_token)
+        self.assertEqual(
+            self.client.post(f"{self.REQUESTS}{row.id}/approve/").status_code, 404
+        )
+        self.assertFalse(self.follows().exists())
+
+    def test_opening_the_profile_grants_what_was_waiting(self):
+        # Anybody could follow an open profile without asking, so holding the
+        # requests would keep people out of something no longer shut.
+        self.ask()
+        self.authenticate(self.owner_token)
+        response = self.client.patch(
+            "/api/v1/me/", {"is_profile_public": True}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertTrue(self.follows().exists())
+        self.assertEqual(self.pending().count(), 0)
+
+    def test_an_unrelated_profile_edit_leaves_requests_alone(self):
+        self.ask()
+        self.authenticate(self.owner_token)
+        self.client.patch("/api/v1/me/", {"bio": "still shut"}, format="json")
+        self.assertEqual(self.pending().count(), 1)
+        self.assertFalse(self.follows().exists())
 
 
 class PrivateProfileReachTests(RepbaseAPITestMixin, APITestCase):

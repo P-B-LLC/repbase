@@ -3,6 +3,7 @@ from rest_framework.routers import DefaultRouter
 
 from .views import (
     BlockViewSet,
+    FollowRequestViewSet,
     BodyWeightEntryViewSet,
     DailyStepCountViewSet,
     FeedViewSet,
@@ -64,6 +65,9 @@ router.register("social/comments", PostCommentViewSet)
 # router would otherwise derive "post" for both and register two url names
 # that shadow each other.
 router.register("social/feed", FeedViewSet, basename="feed")
+router.register(
+    "social/follow-requests", FollowRequestViewSet, basename="follow-request"
+)
 router.register("social/blocks", BlockViewSet)
 router.register("sessions", WorkoutSessionViewSet)
 router.register("session-exercises", SessionExerciseViewSet)
