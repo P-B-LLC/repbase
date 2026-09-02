@@ -1725,6 +1725,9 @@ class Notification(models.Model):
     class Kind(models.TextChoices):
         FOLLOW = "follow", "Started following you"
         FOLLOW_REQUEST = "follow_request", "Asked to follow you"
+        #: The other direction from the rest of these: the person told is the
+        #: one who asked, and the actor is whoever let them in.
+        FOLLOW_APPROVED = "follow_approved", "Accepted your follow request"
         LIKE = "like", "Liked your post"
         REPOST = "repost", "Reposted your post"
         COMMENT = "comment", "Commented on your post"

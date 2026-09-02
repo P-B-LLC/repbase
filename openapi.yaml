@@ -6051,6 +6051,7 @@ components:
       enum:
       - follow
       - follow_request
+      - follow_approved
       - like
       - repost
       - comment
@@ -6058,6 +6059,7 @@ components:
       description: |-
         * `follow` - Started following you
         * `follow_request` - Asked to follow you
+        * `follow_approved` - Accepted your follow request
         * `like` - Liked your post
         * `repost` - Reposted your post
         * `comment` - Commented on your post

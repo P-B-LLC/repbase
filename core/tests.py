@@ -300,6 +300,24 @@ class NotificationTests(RepbaseAPITestMixin, APITestCase):
         self.client.post(f"/api/v1/social/follow-requests/{row.id}/approve/")
         # Answered, so the line offering to answer it goes.
         self.assertEqual(self.mine(self.author_token), [])
+        # And the person who asked is told, or their end says "Requested"
+        # until they think to look again.
+        self.assertEqual(self.kinds_for(self.other_token), ["follow_approved"])
+
+    def test_declining_tells_the_asker_nothing(self):
+        # Being turned down is not news anybody needs delivered. Their end
+        # simply stops saying "Requested" the next time it is read.
+        self.author_profile.is_profile_public = False
+        self.author_profile.save(update_fields=["is_profile_public"])
+
+        self.authenticate(self.other_token)
+        self.client.post(f"/api/v1/users/{self.author_profile.id}/follow/")
+        row = FollowRequest.objects.get(target=self.author_profile)
+
+        self.authenticate(self.author_token)
+        self.client.delete(f"/api/v1/social/follow-requests/{row.id}/")
+        self.assertEqual(self.mine(self.other_token), [])
+        self.assertEqual(self.mine(self.author_token), [])
 
     # ------------------------------------------------------------ reading
 

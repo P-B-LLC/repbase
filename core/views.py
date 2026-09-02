@@ -3240,6 +3240,14 @@ class FollowRequestViewSet(
                 actor=pending.requester,
                 kind=Notification.Kind.FOLLOW_REQUEST,
             ).delete()
+            # And the asker is told, which nothing else would do. Their end of
+            # this has said "Requested" since they tapped, and without a line
+            # here it would keep saying it until they thought to look again.
+            notify(
+                pending.requester,
+                pending.target,
+                Notification.Kind.FOLLOW_APPROVED,
+            )
             pending.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
