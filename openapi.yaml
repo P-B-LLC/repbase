@@ -3977,6 +3977,69 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/social/notifications/:
+    get:
+      operationId: social_notifications_list
+      description: |-
+        What has happened to you, newest first.
+
+        Read here rather than delivered: nothing in these builds can push, so the
+        page asks when it opens. Read-only apart from marking them seen, because
+        a notification is a record of something somebody else did and there is
+        nothing about it for its recipient to edit.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedNotificationList'
+          description: ''
+  /api/v1/social/notifications/read/:
+    post:
+      operationId: social_notifications_read_create
+      description: Mark every notification as seen. Answers with what is left unread,
+        which is zero, so the caller has one shape to read whichever of these two
+        it called.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnreadCount'
+          description: ''
+  /api/v1/social/notifications/unread-count/:
+    get:
+      operationId: social_notifications_unread_count_retrieve
+      description: How many notifications have not been seen yet.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnreadCount'
+          description: ''
   /api/v1/social/posts/:
     get:
       operationId: social_posts_list
@@ -5929,6 +5992,75 @@ components:
         * `assault_bike` - Assault Bike
         * `ski_erg` - Ski Erg
         * `other` - Other
+    Notification:
+      type: object
+      description: |-
+        One line of the notifications page.
+
+        Flattened rather than nested. Every row names a person and sometimes a
+        post, and a page of them should not cost a nested serializer per row for
+        fields that are three strings and a URL.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        kind:
+          $ref: '#/components/schemas/NotificationKindEnum'
+        actor_id:
+          type: integer
+          readOnly: true
+        actor_username:
+          type: string
+          readOnly: true
+        actor_first_name:
+          type: string
+          readOnly: true
+        actor_last_name:
+          type: string
+          readOnly: true
+        actor_photo_url:
+          type: string
+          nullable: true
+          readOnly: true
+        post:
+          type: integer
+          nullable: true
+        comment_body:
+          type: string
+          readOnly: true
+          nullable: true
+        is_read:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - actor_first_name
+      - actor_id
+      - actor_last_name
+      - actor_photo_url
+      - actor_username
+      - comment_body
+      - created_at
+      - id
+      - is_read
+      - kind
+    NotificationKindEnum:
+      enum:
+      - follow
+      - follow_request
+      - like
+      - repost
+      - comment
+      type: string
+      description: |-
+        * `follow` - Started following you
+        * `follow_request` - Asked to follow you
+        * `like` - Liked your post
+        * `repost` - Reposted your post
+        * `comment` - Commented on your post
     NullEnum:
       enum:
       - null
@@ -6164,6 +6296,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Gym'
+    PaginatedNotificationList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
     PaginatedPlannerEntryList:
       type: object
       required:
@@ -9004,6 +9159,15 @@ components:
       description: |-
         * `metric` - Metric (kg/cm)
         * `imperial` - Imperial (lb/in)
+    UnreadCount:
+      type: object
+      description: How many notifications are still unseen.
+      properties:
+        unread:
+          type: integer
+          readOnly: true
+      required:
+      - unread
     VisibilityEnum:
       enum:
       - public

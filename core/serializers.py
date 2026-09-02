@@ -62,6 +62,7 @@ from .models import (
     Block,
     Follow,
     FollowRequest,
+    Notification,
     Post,
     PostComment,
     PostMeal,
@@ -2679,6 +2680,66 @@ class UpdatePostSerializer(serializers.ModelSerializer):
 
     def validate_caption(self, value):
         return value.strip()
+
+
+class UnreadCountSerializer(serializers.Serializer):
+    """How many notifications are still unseen."""
+
+    unread = serializers.IntegerField(read_only=True)
+
+
+class NotificationSerializer(serializers.ModelSerializer):
+    """One line of the notifications page.
+
+    Flattened rather than nested. Every row names a person and sometimes a
+    post, and a page of them should not cost a nested serializer per row for
+    fields that are three strings and a URL.
+    """
+
+    actor_id = serializers.IntegerField(source="actor.id", read_only=True)
+    actor_username = serializers.CharField(
+        source="actor.user.username", read_only=True
+    )
+    actor_first_name = serializers.CharField(
+        source="actor.user.first_name", read_only=True
+    )
+    actor_last_name = serializers.CharField(
+        source="actor.user.last_name", read_only=True
+    )
+    actor_photo_url = serializers.SerializerMethodField()
+    #: What was said, on the kinds where something was. Null elsewhere rather
+    #: than an empty string, so "no comment" and "an empty comment" stay
+    #: different things.
+    comment_body = serializers.CharField(
+        source="comment.body", read_only=True, allow_null=True, default=None
+    )
+    is_read = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Notification
+        fields = [
+            "id",
+            "kind",
+            "actor_id",
+            "actor_username",
+            "actor_first_name",
+            "actor_last_name",
+            "actor_photo_url",
+            "post",
+            "comment_body",
+            "is_read",
+            "created_at",
+        ]
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_actor_photo_url(self, notification):
+        return profile_photo_url_for(
+            notification.actor, self.context.get("request")
+        )
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_is_read(self, notification):
+        return notification.read_at is not None
 
 
 class FollowRequestSerializer(serializers.ModelSerializer):

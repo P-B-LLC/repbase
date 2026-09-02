@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from .views import (
     BlockViewSet,
     FollowRequestViewSet,
+    NotificationViewSet,
     BodyWeightEntryViewSet,
     DailyStepCountViewSet,
     FeedViewSet,
@@ -67,6 +68,9 @@ router.register("social/comments", PostCommentViewSet)
 router.register("social/feed", FeedViewSet, basename="feed")
 router.register(
     "social/follow-requests", FollowRequestViewSet, basename="follow-request"
+)
+router.register(
+    "social/notifications", NotificationViewSet, basename="notification"
 )
 router.register("social/blocks", BlockViewSet)
 router.register("sessions", WorkoutSessionViewSet)

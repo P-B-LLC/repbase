@@ -18,6 +18,7 @@ from .models import (
     Follow,
     FollowRequest,
     Gym,
+    Notification,
     ProfileSocialLink,
     PasswordResetCode,
     PlannerEntry,
@@ -184,6 +185,153 @@ class FoodDayCopyTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("source_date", response.data)
         self.assertEqual(self.foods_on(self.today), [])
+
+
+class NotificationTests(RepbaseAPITestMixin, APITestCase):
+    """What gets recorded when somebody does something, and who hears about it."""
+
+    NOTIFS = "/api/v1/social/notifications/"
+    COMMENTS = "/api/v1/social/comments/"
+
+    def setUp(self):
+        self.author, self.author_profile, self.author_token = (
+            self.create_account("author")
+        )
+        self.other, self.other_profile, self.other_token = (
+            self.create_account("other")
+        )
+        self.post = Post.objects.create(
+            author=self.author_profile,
+            kind=Post.Kind.MEAL,
+            caption="lunch",
+            visibility=Post.Visibility.PUBLIC,
+        )
+        PostMeal.objects.create(
+            post=self.post, name="Meal 1", date=timezone.localdate()
+        )
+
+    def mine(self, token):
+        self.authenticate(token)
+        response = self.client.get(self.NOTIFS)
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = response.data
+        return rows["results"] if isinstance(rows, dict) else rows
+
+    def kinds_for(self, token):
+        return [row["kind"] for row in self.mine(token)]
+
+    def like_as(self, token):
+        self.authenticate(token)
+        return self.client.post(f"/api/v1/social/posts/{self.post.id}/like/")
+
+    # ------------------------------------------------------------- who hears
+
+    def test_a_like_reaches_the_author(self):
+        self.like_as(self.other_token)
+        rows = self.mine(self.author_token)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "like")
+        self.assertEqual(rows[0]["actor_username"], self.other.username)
+        self.assertEqual(rows[0]["post"], self.post.id)
+
+    def test_liking_your_own_post_tells_nobody(self):
+        self.like_as(self.author_token)
+        self.assertEqual(self.mine(self.author_token), [])
+
+    def test_liking_twice_over_is_still_one_line(self):
+        # Unliking and liking again is the same person saying the same thing.
+        self.like_as(self.other_token)
+        self.authenticate(self.other_token)
+        self.client.delete(f"/api/v1/social/posts/{self.post.id}/like/")
+        self.like_as(self.other_token)
+        self.assertEqual(len(self.mine(self.author_token)), 1)
+
+    def test_a_follow_reaches_the_followed(self):
+        self.authenticate(self.other_token)
+        self.client.post(f"/api/v1/users/{self.author_profile.id}/follow/")
+        self.assertEqual(self.kinds_for(self.author_token), ["follow"])
+
+    def test_a_repost_reaches_the_author(self):
+        self.authenticate(self.other_token)
+        response = self.client.post(f"/api/v1/social/posts/{self.post.id}/repost/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.kinds_for(self.author_token), ["repost"])
+
+    def test_a_comment_reaches_the_author_and_carries_what_was_said(self):
+        self.authenticate(self.other_token)
+        response = self.client.post(
+            self.COMMENTS,
+            {"post": self.post.id, "body": "looks good"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        rows = self.mine(self.author_token)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["kind"], "comment")
+        self.assertEqual(rows[0]["comment_body"], "looks good")
+
+    def test_a_reply_reaches_the_person_replied_to(self):
+        # The author is told because it is their post; the person being
+        # answered is told because it is their comment.
+        self.authenticate(self.other_token)
+        parent = self.client.post(
+            self.COMMENTS, {"post": self.post.id, "body": "nice"}, format="json"
+        ).data
+
+        third, third_profile, third_token = self.create_account("third")
+        self.authenticate(third_token)
+        self.client.post(
+            self.COMMENTS,
+            {"post": self.post.id, "body": "agreed", "parent": parent["id"]},
+            format="json",
+        )
+        self.assertIn("comment", self.kinds_for(self.other_token))
+
+    def test_a_request_to_follow_reaches_them_and_goes_once_answered(self):
+        self.author_profile.is_profile_public = False
+        self.author_profile.save(update_fields=["is_profile_public"])
+
+        self.authenticate(self.other_token)
+        self.client.post(f"/api/v1/users/{self.author_profile.id}/follow/")
+        self.assertEqual(self.kinds_for(self.author_token), ["follow_request"])
+
+        row = FollowRequest.objects.get(target=self.author_profile)
+        self.authenticate(self.author_token)
+        self.client.post(f"/api/v1/social/follow-requests/{row.id}/approve/")
+        # Answered, so the line offering to answer it goes.
+        self.assertEqual(self.mine(self.author_token), [])
+
+    # ------------------------------------------------------------ reading
+
+    def test_notifications_are_only_ever_your_own(self):
+        self.like_as(self.other_token)
+        self.assertEqual(self.mine(self.other_token), [])
+
+    def test_unread_is_counted_and_can_be_cleared(self):
+        self.like_as(self.other_token)
+        self.authenticate(self.author_token)
+
+        counted = self.client.get(f"{self.NOTIFS}unread-count/")
+        self.assertEqual(counted.status_code, 200, counted.data)
+        self.assertEqual(counted.data["unread"], 1)
+
+        read = self.client.post(f"{self.NOTIFS}read/")
+        self.assertEqual(read.status_code, 200, read.data)
+        self.assertEqual(read.data["unread"], 0)
+        self.assertTrue(self.mine(self.author_token)[0]["is_read"])
+
+    def test_deleting_a_comment_takes_its_line_with_it(self):
+        # There is nothing left to read, so there is nothing left to say.
+        self.authenticate(self.other_token)
+        comment = self.client.post(
+            self.COMMENTS, {"post": self.post.id, "body": "gone soon"},
+            format="json",
+        ).data
+        self.assertEqual(len(self.mine(self.author_token)), 1)
+
+        self.authenticate(self.other_token)
+        self.client.delete(f"{self.COMMENTS}{comment['id']}/")
+        self.assertEqual(self.mine(self.author_token), [])
 
 
 class FollowRequestTests(RepbaseAPITestMixin, APITestCase):

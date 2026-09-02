@@ -1706,6 +1706,102 @@ class Follow(models.Model):
         return f"{self.follower} follows {self.following}"
 
 
+class Notification(models.Model):
+    """Something one person did that another should hear about.
+
+    Recorded rather than delivered. These builds carry no APNs entitlement --
+    there is no Apple Developer membership behind them and they are signed
+    with nothing -- so there is no push to send. The app reads this list when
+    it opens instead. A transport can be added later without these rows
+    changing shape, which is the reason they are rows at all rather than a
+    message assembled at send time.
+
+    `actor` is who did it and `recipient` is who cares. Both are kept even
+    when the object is gone: a comment deleted afterwards takes its
+    notification with it, but a follow has nothing to point at and stands on
+    the two people alone.
+    """
+
+    class Kind(models.TextChoices):
+        FOLLOW = "follow", "Started following you"
+        FOLLOW_REQUEST = "follow_request", "Asked to follow you"
+        LIKE = "like", "Liked your post"
+        REPOST = "repost", "Reposted your post"
+        COMMENT = "comment", "Commented on your post"
+
+    recipient = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="notifications",
+    )
+    actor = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="notifications_caused",
+    )
+    kind = models.CharField(max_length=20, choices=Kind.choices)
+    #: What it was about, for the kinds that are about something.
+    post = models.ForeignKey(
+        "Post",
+        on_delete=models.CASCADE,
+        related_name="notifications",
+        null=True,
+        blank=True,
+    )
+    #: Carried so the row can quote what was said rather than only that
+    #: something was. Deleting the comment deletes the notification with it,
+    #: which is right: there is nothing left to read.
+    comment = models.ForeignKey(
+        "PostComment",
+        on_delete=models.CASCADE,
+        related_name="notifications",
+        null=True,
+        blank=True,
+    )
+    read_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        indexes = [
+            models.Index(fields=("recipient", "-created_at")),
+        ]
+
+    def __str__(self):
+        return f"{self.actor} {self.kind} -> {self.recipient}"
+
+
+def notify(recipient, actor, kind, post=None, comment=None):
+    """Records a notification, and returns it, or None if there is none to make.
+
+    Nobody is told about their own doing: liking your own post, commenting
+    under yourself, reposting your own workout. The check lives here rather
+    than at each of the five call sites, because it is the same check every
+    time and one of them would eventually be written without it.
+
+    Everything except a comment is deduplicated on the pair and the object, so
+    unliking and liking again does not stack up a second row saying the same
+    thing. A comment is not: each one is its own thing that was said.
+    """
+    if recipient_id_of(recipient) == recipient_id_of(actor):
+        return None
+
+    if kind == Notification.Kind.COMMENT:
+        return Notification.objects.create(
+            recipient=recipient, actor=actor, kind=kind, post=post, comment=comment
+        )
+
+    row, _ = Notification.objects.get_or_create(
+        recipient=recipient, actor=actor, kind=kind, post=post
+    )
+    return row
+
+
+def recipient_id_of(profile):
+    """The primary key, whether given a profile or already an id."""
+    return getattr(profile, "pk", profile)
+
+
 class FollowRequest(models.Model):
     """Somebody asking to follow a profile that is closed.
 

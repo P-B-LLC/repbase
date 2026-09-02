@@ -82,6 +82,7 @@ from .models import (
     Block,
     Follow,
     FollowRequest,
+    Notification,
     FoodSearchCache,
     PasswordResetCode,
     Personalization,
@@ -94,6 +95,7 @@ from .models import (
     PostWorkout,
     PostWorkoutExercise,
     food_meals_for_day,
+    notify,
     today_for,
     normalize_gym_text,
     plan_recurring_week,
@@ -133,6 +135,8 @@ from .serializers import (
     EnsureFoodDaySerializer,
     FollowRequestSerializer,
     FoodEntrySerializer,
+    NotificationSerializer,
+    UnreadCountSerializer,
     FoodMealSerializer,
     GymSerializer,
     NutritionGoalSerializer,
@@ -836,9 +840,12 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
             FollowRequest.objects.get_or_create(
                 requester=follower, target=target
             )
+            notify(target, follower, Notification.Kind.FOLLOW_REQUEST)
             return Response(status=status.HTTP_202_ACCEPTED)
 
         _, created = Follow.objects.get_or_create(follower=follower, following=target)
+        if created:
+            notify(target, follower, Notification.Kind.FOLLOW)
         return Response(status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
     @extend_schema(
@@ -2590,7 +2597,9 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         if request.method == "POST":
             # get_or_create rather than create: a second tap, or a retry of a
             # request whose answer was lost, must not be an error.
-            PostLike.objects.get_or_create(post=post, user=profile)
+            _, liked = PostLike.objects.get_or_create(post=post, user=profile)
+            if liked:
+                notify(post.author, profile, Notification.Kind.LIKE, post=post)
         else:
             PostLike.objects.filter(post=post, user=profile).delete()
         return Response(self._card(post.pk))
@@ -2622,7 +2631,7 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         original = post.repost_of or post
 
         if request.method == "POST":
-            Post.objects.get_or_create(
+            _, passed_on = Post.objects.get_or_create(
                 author=profile,
                 repost_of=original,
                 defaults={
@@ -2634,6 +2643,16 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                     "visibility": Post.Visibility.PUBLIC,
                 },
             )
+            if passed_on:
+                # About the original, not the copy just made: the person being
+                # told is its author, and the post they will want to open is
+                # the one they wrote.
+                notify(
+                    original.author,
+                    profile,
+                    Notification.Kind.REPOST,
+                    post=original,
+                )
         else:
             Post.objects.filter(
                 author=profile,
@@ -3092,7 +3111,74 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             pk=getattr(post, "pk", None)
         ).exists():
             raise NotFound("No such post.")
-        serializer.save(author=profile)
+        comment = serializer.save(author=profile)
+
+        notify(
+            post.author, profile, Notification.Kind.COMMENT,
+            post=post, comment=comment,
+        )
+        # A reply reaches the person being replied to as well as the person
+        # whose post it is. Without this the only one told about an answer to
+        # their comment is somebody else.
+        parent = comment.parent
+        if parent is not None and parent.author_id != post.author_id:
+            notify(
+                parent.author, profile, Notification.Kind.COMMENT,
+                post=post, comment=comment,
+            )
+
+
+class NotificationViewSet(
+    mixins.ListModelMixin,
+    viewsets.GenericViewSet,
+):
+    """What has happened to you, newest first.
+
+    Read here rather than delivered: nothing in these builds can push, so the
+    page asks when it opens. Read-only apart from marking them seen, because
+    a notification is a record of something somebody else did and there is
+    nothing about it for its recipient to edit.
+    """
+
+    serializer_class = NotificationSerializer
+    permission_classes = [IsAuthenticated]
+    queryset = Notification.objects.select_related(
+        "actor", "actor__user", "comment"
+    )
+
+    def get_queryset(self):
+        return super().get_queryset().filter(
+            recipient=profile_for(self.request.user)
+        )
+
+    @extend_schema(
+        request=None,
+        responses={200: UnreadCountSerializer},
+        description="How many notifications have not been seen yet.",
+    )
+    @action(detail=False, methods=["get"], url_path="unread-count", pagination_class=None)
+    def unread_count(self, request):
+        return Response(
+            UnreadCountSerializer(
+                {"unread": self.get_queryset().filter(read_at__isnull=True).count()}
+            ).data
+        )
+
+    @extend_schema(
+        request=None,
+        responses={200: UnreadCountSerializer},
+        description=(
+            "Mark every notification as seen. Answers with what is left "
+            "unread, which is zero, so the caller has one shape to read "
+            "whichever of these two it called."
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="read", pagination_class=None)
+    def mark_read(self, request):
+        self.get_queryset().filter(read_at__isnull=True).update(
+            read_at=timezone.now()
+        )
+        return Response(UnreadCountSerializer({"unread": 0}).data)
 
 
 class FollowRequestViewSet(
@@ -3122,6 +3208,16 @@ class FollowRequestViewSet(
     def get_queryset(self):
         return super().get_queryset().filter(target=profile_for(self.request.user))
 
+    def perform_destroy(self, instance):
+        # Declining answers the question too, so its line goes the same way an
+        # approval's does.
+        Notification.objects.filter(
+            recipient=instance.target,
+            actor=instance.requester,
+            kind=Notification.Kind.FOLLOW_REQUEST,
+        ).delete()
+        instance.delete()
+
     @extend_schema(
         request=None,
         responses={204: None},
@@ -3137,6 +3233,13 @@ class FollowRequestViewSet(
             Follow.objects.get_or_create(
                 follower=pending.requester, following=pending.target
             )
+            # The question has been answered, so the line offering to answer
+            # it goes. Leaving it would ask again every time the page opened.
+            Notification.objects.filter(
+                recipient=pending.target,
+                actor=pending.requester,
+                kind=Notification.Kind.FOLLOW_REQUEST,
+            ).delete()
             pending.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
