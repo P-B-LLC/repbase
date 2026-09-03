@@ -1036,6 +1036,44 @@ class WorkoutTemplateViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     serializer_class = WorkoutTemplateSerializer
     permission_classes = [IsAuthenticated]
 
+    def perform_destroy(self, instance):
+        """Deletes a saved workout, unless a rotation is built out of it.
+
+        A rotation stores its own length and gives each slot a position, so a
+        slot vanishing underneath it leaves a rotation claiming eight days with
+        seven left -- a shape nothing else in the app knows how to read. The
+        database would do exactly that, quietly, because the slot cascades.
+
+        So this refuses and names the rotation. The alternative is repairing
+        the rotation on the user's behalf, which means choosing what their
+        training week becomes; that is their decision and there is a screen
+        for making it.
+
+        Everything else the delete takes is fair. The days it was planned on
+        and any weekly repeat of it go with it -- they are plans made of this
+        workout and mean nothing without it. Sessions already trained and
+        planner tasks survive: those are a record of what happened, and they
+        are only unlinked.
+        """
+        rotations = list(
+            WorkoutCycle.objects.filter(
+                slots__workout=instance, owner=instance.owner
+            )
+            .values_list("name", flat=True)
+            .distinct()
+        )
+        if rotations:
+            named = ", ".join(rotations)
+            raise ValidationError(
+                {
+                    "workout": (
+                        f"This workout is part of {named}. Change the rotation "
+                        f"before deleting it."
+                    )
+                }
+            )
+        instance.delete()
+
     def get_queryset(self):
         return self.scope_to_owner(super().get_queryset())
 

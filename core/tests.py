@@ -188,6 +188,85 @@ class FoodDayCopyTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(self.foods_on(self.today), [])
 
 
+class SavedWorkoutDeletionTests(RepbaseAPITestMixin, APITestCase):
+    """Deleting a saved workout, and what that is allowed to take."""
+
+    WORKOUTS = "/api/v1/workouts/"
+    CYCLES = "/api/v1/cycles/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("lifter")
+        self.authenticate(self.token)
+        self.push = self.workout("Push Day")
+        self.pull = self.workout("Pull Day")
+
+    def workout(self, name):
+        response = self.client.post(
+            self.WORKOUTS, {"name": name, "workout_type": "lifting"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data["id"]
+
+    def test_a_saved_workout_can_be_deleted(self):
+        response = self.client.delete(f"{self.WORKOUTS}{self.push}/")
+        self.assertEqual(response.status_code, 204, getattr(response, "data", None))
+        self.assertFalse(WorkoutTemplate.objects.filter(id=self.push).exists())
+
+    def test_the_days_it_was_planned_on_go_with_it(self):
+        # A planned day is made of the workout and means nothing without it.
+        WorkoutSchedule.objects.create(
+            owner=self.profile,
+            workout_id=self.push,
+            scheduled_date=timezone.now().date() + timedelta(days=2),
+        )
+        self.client.delete(f"{self.WORKOUTS}{self.push}/")
+        self.assertEqual(
+            WorkoutSchedule.objects.filter(workout_id=self.push).count(), 0
+        )
+
+    def test_training_already_done_survives_it(self):
+        # History is not a plan. A session says what happened, and deleting
+        # the template it was built from must not rewrite that.
+        session = WorkoutSession.objects.create(
+            repbase_user=self.profile,
+            workout_id=self.push,
+            status=WorkoutSession.Status.COMPLETED,
+        )
+        self.client.delete(f"{self.WORKOUTS}{self.push}/")
+        session.refresh_from_db()
+        self.assertIsNone(session.workout_id)
+
+    def test_a_workout_inside_a_rotation_is_refused(self):
+        response = self.client.post(
+            self.CYCLES,
+            {
+                "name": "PPL", "length": 2,
+                "anchor_date": str(timezone.now().date()),
+                "slots": [
+                    {"position": 1, "workout": self.push},
+                    {"position": 2, "workout": self.pull},
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+
+        refused = self.client.delete(f"{self.WORKOUTS}{self.push}/")
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("workout", refused.data)
+        self.assertIn("PPL", str(refused.data["workout"]))
+        # Still there, and so is the rotation it holds up.
+        self.assertTrue(WorkoutTemplate.objects.filter(id=self.push).exists())
+
+    def test_deleting_is_only_ever_your_own(self):
+        other_user, other_profile, other_token = self.create_account("stranger")
+        self.authenticate(other_token)
+        response = self.client.delete(f"{self.WORKOUTS}{self.push}/")
+        self.assertEqual(response.status_code, 404)
+        self.assertTrue(WorkoutTemplate.objects.filter(id=self.push).exists())
+
+
 class NotificationTests(RepbaseAPITestMixin, APITestCase):
     """What gets recorded when somebody does something, and who hears about it."""
 
