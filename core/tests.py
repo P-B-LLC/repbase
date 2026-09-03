@@ -1,15 +1,19 @@
+import io
+import tempfile
 from unittest import mock
 from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.test import SimpleTestCase
+from django.core.files.base import ContentFile
+from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient, APITestCase
 
 from . import food_sources
+from .photos import FEED_PHOTO_BOX, feed_variant
 from .models import (
     Block,
     Exercise,
@@ -3123,3 +3127,176 @@ class SplittingPostsByFollowTests(RepbaseAPITestMixin, APITestCase):
     def test_one_and_zero_are_accepted(self):
         self.assertEqual(self.ids({"from_following": "1"}), {self.theirs.id})
         self.assertEqual(self.ids({"from_following": "0"}), {self.strangers.id})
+
+
+class FeedSizedPhotoTests(SimpleTestCase):
+    """Making a card-sized copy, and knowing when not to bother."""
+
+    def photo_bytes(self, width, height, fmt="JPEG", mode="RGB"):
+        from PIL import Image
+
+        # Noise rather than flat colour: a solid image compresses to almost
+        # nothing at any size, so a flat 4000px photo would "already be small
+        # enough" and the size assertions below would prove nothing.
+        import random
+
+        random.seed(width * height)
+        image = Image.new(mode, (width, height))
+        image.putdata([
+            tuple(random.randrange(256) for _ in range(len(mode)))
+            for _ in range(width * height)
+        ])
+        buffer = io.BytesIO()
+        image.save(buffer, format=fmt)
+        return buffer.getvalue()
+
+    def opened(self, raw):
+        from PIL import Image
+
+        return Image.open(io.BytesIO(raw))
+
+    def test_a_large_photo_is_made_smaller(self):
+        original = self.photo_bytes(2400, 1600)
+        smaller = feed_variant(original)
+        self.assertIsNotNone(smaller)
+        self.assertLess(len(smaller), len(original))
+
+    def test_it_fits_inside_the_box(self):
+        smaller = feed_variant(self.photo_bytes(2400, 1600))
+        image = self.opened(smaller)
+        self.assertLessEqual(image.width, FEED_PHOTO_BOX[0])
+        self.assertLessEqual(image.height, FEED_PHOTO_BOX[1])
+
+    def test_the_shape_is_kept(self):
+        """A bounding box, not a crop. The card decides its own framing."""
+        original = self.photo_bytes(2400, 1600)
+        image = self.opened(feed_variant(original))
+        self.assertAlmostEqual(image.width / image.height, 2400 / 1600, places=2)
+
+    def test_a_tall_photo_also_fits(self):
+        image = self.opened(feed_variant(self.photo_bytes(1200, 3000)))
+        self.assertLessEqual(image.width, FEED_PHOTO_BOX[0])
+        self.assertLessEqual(image.height, FEED_PHOTO_BOX[1])
+
+    def test_a_small_photo_gets_no_variant(self):
+        """Re-encoding something already small stores a second copy for nothing."""
+        self.assertIsNone(feed_variant(self.photo_bytes(200, 200)))
+
+    def test_a_png_becomes_a_jpeg(self):
+        """JPEG has no alpha; without the conversion the save raises."""
+        smaller = feed_variant(self.photo_bytes(2000, 2000, fmt="PNG", mode="RGBA"))
+        self.assertIsNotNone(smaller)
+        self.assertEqual(self.opened(smaller).format, "JPEG")
+
+    def test_nonsense_bytes_produce_no_variant_rather_than_an_error(self):
+        """The reason every failure path returns None: a post must still post."""
+        self.assertIsNone(feed_variant(b"this is not an image"))
+
+    def test_empty_bytes_produce_no_variant(self):
+        self.assertIsNone(feed_variant(b""))
+
+    def test_a_truncated_file_produces_no_variant(self):
+        """The 160-byte file already in the database is this shape."""
+        self.assertIsNone(feed_variant(self.photo_bytes(2400, 1600)[:160]))
+
+
+class PostsCarryBothPhotoSizesTests(RepbaseAPITestMixin, APITestCase):
+    """What the two URLs on a post mean, and that neither is ever a surprise.
+
+    Writes into a temporary MEDIA_ROOT. The test database is thrown away at
+    the end of a run but uploaded files are not -- they go wherever the real
+    settings point, which is the development server's own media directory.
+    The first version of this class left seven files and nine megabytes of
+    test photographs sitting among the real ones.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls._media = tempfile.TemporaryDirectory(prefix="repbase-test-media-")
+        cls._media_override = override_settings(MEDIA_ROOT=cls._media.name)
+        cls._media_override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._media_override.disable()
+        cls._media.cleanup()
+        super().tearDownClass()
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("photographer")
+        self.authenticate(self.token)
+
+    def photo(self, width=2400, height=1600):
+        from PIL import Image
+        import random
+
+        random.seed(width)
+        image = Image.new("RGB", (width, height))
+        image.putdata([
+            (random.randrange(256), random.randrange(256), random.randrange(256))
+            for _ in range(width * height)
+        ])
+        buffer = io.BytesIO()
+        image.save(buffer, format="JPEG")
+        return buffer.getvalue()
+
+    def post_with_photo(self, raw=None):
+        post = Post.objects.create(
+            author=self.profile, kind=Post.Kind.MEAL, caption="lunch"
+        )
+        post.image.save("original.jpg", ContentFile(raw or self.photo()), save=True)
+        return post
+
+    def card(self, post):
+        response = self.client.get(f"/api/v1/social/posts/{post.id}/")
+        self.assertEqual(response.status_code, 200, response.data)
+        return response.data
+
+    def test_a_post_with_no_photo_answers_null_for_both(self):
+        post = Post.objects.create(
+            author=self.profile, kind=Post.Kind.MEAL, caption="no picture"
+        )
+        card = self.card(post)
+        self.assertIsNone(card["image_url"])
+        self.assertIsNone(card["feed_image_url"])
+
+    def test_without_a_variant_the_feed_url_is_the_original(self):
+        """The fallback that lets this ship without migrating what exists.
+
+        Returning null here instead would take the picture off every post
+        made before the variant existed.
+        """
+        post = self.post_with_photo()
+        card = self.card(post)
+        self.assertIsNotNone(card["image_url"])
+        self.assertEqual(card["feed_image_url"], card["image_url"])
+
+    def test_with_a_variant_the_two_urls_differ(self):
+        post = self.post_with_photo()
+        smaller = feed_variant(post.image.read())
+        post.feed_image.save("small.jpg", ContentFile(smaller), save=True)
+
+        card = self.card(post)
+        self.assertNotEqual(card["feed_image_url"], card["image_url"])
+        self.assertIn("post-photos/feed/", card["feed_image_url"])
+
+    def test_the_original_is_never_replaced(self):
+        """The detail view opens what was posted, at the size it was posted."""
+        raw = self.photo()
+        post = self.post_with_photo(raw)
+        post.feed_image.save(
+            "small.jpg", ContentFile(feed_variant(raw)), save=True
+        )
+        post.refresh_from_db()
+        self.assertEqual(post.image.size, len(raw))
+
+    def test_both_urls_are_absolute(self):
+        """The app talks to the API from a different origin than the files."""
+        post = self.post_with_photo()
+        post.feed_image.save(
+            "small.jpg", ContentFile(feed_variant(post.image.read())), save=True
+        )
+        card = self.card(post)
+        self.assertTrue(card["image_url"].startswith("http"))
+        self.assertTrue(card["feed_image_url"].startswith("http"))

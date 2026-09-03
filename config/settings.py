@@ -199,6 +199,25 @@ SPECTACULAR_SETTINGS = {
     'SERVE_INCLUDE_SCHEMA': False,
     'COMPONENT_SPLIT_REQUEST': True,
     'SCHEMA_PATH_PREFIX': r'/api/v1',
+    # Two choice sets are each reached through fields with different names --
+    # a workout's type is on the template, the posted snapshot and the step
+    # count; the cardio machine on the template, the snapshot and the session.
+    # Left alone, drf-spectacular emitted one component per field name and
+    # warned that it had to guess: the same four workout types were
+    # WorkoutTypeEnum in one place and ActivityEnum in another, and the same
+    # eight machines were MachineEnum and CardioMachineEnum.
+    #
+    # That matters beyond tidiness, because these names become the generated
+    # Swift types. Duplicates mean the client holds two unrelated types for
+    # one set and has to convert between them, and which name a field gets
+    # can change when somebody adds an unrelated field elsewhere.
+    #
+    # The names kept are the ones that say what the value is. "Machine" alone
+    # does not, and "Activity" reads like something other than a workout type.
+    'ENUM_NAME_OVERRIDES': {
+        'WorkoutTypeEnum': 'core.models.WorkoutTypeChoices.choices',
+        'CardioMachineEnum': 'core.models.CardioMachine.choices',
+    },
 }
 
 SESSION_COOKIE_SECURE = not DEBUG

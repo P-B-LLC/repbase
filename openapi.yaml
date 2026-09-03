@@ -4978,18 +4978,6 @@ paths:
           description: No response body
 components:
   schemas:
-    ActivityEnum:
-      enum:
-      - lifting
-      - running
-      - biking
-      - swimming
-      type: string
-      description: |-
-        * `lifting` - Lifting
-        * `running` - Running
-        * `biking` - Biking
-        * `swimming` - Swimming
     ApplySavedMealRequest:
       type: object
       description: |-
@@ -5964,7 +5952,7 @@ components:
           minLength: 1
           maxLength: 64
         activity:
-          $ref: '#/components/schemas/ActivityEnum'
+          $ref: '#/components/schemas/WorkoutTypeEnum'
         started_at:
           type: string
           format: date-time
@@ -6004,26 +5992,6 @@ components:
       required:
       - password
       - username
-    MachineEnum:
-      enum:
-      - treadmill
-      - stationary_bike
-      - stair_master
-      - elliptical
-      - rowing_machine
-      - assault_bike
-      - ski_erg
-      - other
-      type: string
-      description: |-
-        * `treadmill` - Treadmill
-        * `stationary_bike` - Stationary Bike
-        * `stair_master` - Stair Master
-        * `elliptical` - Elliptical
-        * `rowing_machine` - Rowing Machine
-        * `assault_bike` - Assault Bike
-        * `ski_erg` - Ski Erg
-        * `other` - Other
     Notification:
       type: object
       description: |-
@@ -7433,6 +7401,10 @@ components:
           type: string
           nullable: true
           readOnly: true
+        feed_image_url:
+          type: string
+          nullable: true
+          readOnly: true
         caption:
           type: string
           readOnly: true
@@ -7503,6 +7475,7 @@ components:
       - caption
       - comment_count
       - created_at
+      - feed_image_url
       - id
       - image_url
       - kind
@@ -8693,6 +8666,10 @@ components:
           type: string
           nullable: true
           readOnly: true
+        feed_image_url:
+          type: string
+          nullable: true
+          readOnly: true
         caption:
           type: string
           readOnly: true
@@ -8719,6 +8696,7 @@ components:
       - author
       - caption
       - created_at
+      - feed_image_url
       - id
       - image_url
       - kind
@@ -8910,7 +8888,7 @@ components:
       description: A cardio finisher performed after a session's exercises.
       properties:
         machine:
-          $ref: '#/components/schemas/MachineEnum'
+          $ref: '#/components/schemas/CardioMachineEnum'
         seconds:
           type: integer
           minimum: 1

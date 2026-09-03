@@ -47,6 +47,7 @@ from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
+from .photos import feed_variant
 from .models import (
     CYCLE_MATERIALIZE_DAYS,
     BodyWeightEntry,
@@ -3187,6 +3188,18 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 ContentFile(decoded),
                 save=True,
             )
+            # And a card-sized copy beside it, if one is worth making. The
+            # feed used to send the original -- two to four megabytes to draw
+            # a card a few hundred points tall. None here means the original
+            # is already small enough or could not be read, and readers fall
+            # back to it, so nothing about the post depends on this working.
+            smaller = feed_variant(decoded)
+            if smaller is not None:
+                post.feed_image.save(
+                    f"{uuid.uuid4().hex}.jpg",
+                    ContentFile(smaller),
+                    save=True,
+                )
         # Read back through the list queryset so the card returned from a create
         # is assembled by the code that assembles the card in the feed, rather
         # than by a second path that can disagree with it.

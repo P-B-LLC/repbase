@@ -364,6 +364,17 @@ class WorkoutTemplate(models.Model):
         return self.name
 
 
+#: The same choice set as `WorkoutTemplate.WorkoutType`, reachable by import.
+#:
+#: Only the schema needs this. `ENUM_NAME_OVERRIDES` resolves its values with
+#: `import_string`, which splits on the last dot and imports everything before
+#: it as a module -- so a class nested inside a model cannot be named there at
+#: all. Aliasing it here settles the generated Swift type's name without
+#: copying the choices into settings, where they would quietly drift the first
+#: time somebody adds a workout type.
+WorkoutTypeChoices = WorkoutTemplate.WorkoutType
+
+
 class WorkoutExercise(models.Model):
     workout = models.ForeignKey(
         WorkoutTemplate,
@@ -1906,6 +1917,17 @@ def post_photo_path(instance, filename):
     return f"post-photos/{instance.pk or 'new'}-{uuid.uuid4().hex}{suffix}"
 
 
+def post_feed_photo_path(instance, filename):
+    """Where the feed-sized copy of a post's photo lives.
+
+    Its own directory rather than a suffix in the same one, so the originals
+    can be moved to object storage, backed up or audited as a set without
+    picking the derived copies out of them by filename.
+    """
+    suffix = pathlib.Path(filename).suffix.lower() or ".jpg"
+    return f"post-photos/feed/{instance.pk or 'new'}-{uuid.uuid4().hex}{suffix}"
+
+
 class Post(models.Model):
     """Something a user has chosen to show other people.
 
@@ -1948,6 +1970,19 @@ class Post(models.Model):
     #: author wanted shown, and carries no claim about what was done.
     image = models.ImageField(
         upload_to=post_photo_path,
+        blank=True,
+        null=True,
+    )
+    #: A smaller copy of `image`, for drawing a card.
+    #:
+    #: Derived, never uploaded: the client sends one photo and the server
+    #: makes this from it. Empty is a normal state and not an error -- a photo
+    #: already smaller than the box has nothing to gain from a second copy,
+    #: and an unreadable one skips this rather than failing the post. Readers
+    #: fall back to `image`, so the feed works either way and this is only
+    #: ever an optimisation.
+    feed_image = models.ImageField(
+        upload_to=post_feed_photo_path,
         blank=True,
         null=True,
     )

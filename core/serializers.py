@@ -526,6 +526,21 @@ class GymSerializer(serializers.ModelSerializer):
         return attrs
 
 
+def feed_image_url_for(post, request):
+    """The card-sized photo, or the original when there is no smaller copy.
+
+    Falling back rather than returning null is what lets this be added without
+    a migration of the existing photos and without a build of the app that
+    knows about it: every post that has a picture still answers with one here.
+    A null would mean "no photo", and a client drawing this field would lose
+    the picture on every post made before the variant existed.
+    """
+    source = post.feed_image or post.image
+    if not source:
+        return None
+    return request.build_absolute_uri(source.url) if request else source.url
+
+
 def profile_photo_url_for(profile, request):
     """The absolute URL of an uploaded photo, or null when there is none.
 
@@ -2181,6 +2196,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
     meal = PostMealSerializer(read_only=True, allow_null=True)
     planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
     image_url = serializers.SerializerMethodField()
+    feed_image_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -2189,6 +2205,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
             "author",
             "kind",
             "image_url",
+            "feed_image_url",
             "caption",
             "workout",
             "meal",
@@ -2204,6 +2221,10 @@ class RepostedPostSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         url = post.image.url
         return request.build_absolute_uri(url) if request else url
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_feed_image_url(self, post):
+        return feed_image_url_for(post, self.context.get("request"))
 
 
 class PostReplySerializer(serializers.ModelSerializer):
@@ -2409,6 +2430,10 @@ class PostSerializer(serializers.ModelSerializer):
     viewer_saved = serializers.SerializerMethodField()
     viewer_follows_author = serializers.SerializerMethodField()
     image_url = serializers.SerializerMethodField()
+    #: The same picture at card size. Both are sent because they answer
+    #: different screens: a feed draws dozens of these and wants the small
+    #: one, while opening a post is a deliberate request to see it properly.
+    feed_image_url = serializers.SerializerMethodField()
     #: Counted by the database, not by the length of a list the client would
     #: otherwise have to be sent. A card shows the number; only the detail page
     #: asks who.
@@ -2435,6 +2460,7 @@ class PostSerializer(serializers.ModelSerializer):
             "author",
             "kind",
             "image_url",
+            "feed_image_url",
             "caption",
             "visibility",
             "workout",
@@ -2490,6 +2516,16 @@ class PostSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         url = post.image.url
         return request.build_absolute_uri(url) if request else url
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_feed_image_url(self, post):
+        """The card-sized photo, falling back to the original.
+
+        Never null while `image_url` is set, so a client can draw this one
+        field and be right about every post, including the ones made before
+        the smaller copy existed.
+        """
+        return feed_image_url_for(post, self.context.get("request"))
 
     @extend_schema_field(serializers.IntegerField(allow_null=True))
     def get_source_id(self, post):
