@@ -1060,6 +1060,11 @@ class WorkoutTemplateViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 slots__workout=instance, owner=instance.owner
             )
             .values_list("name", flat=True)
+            # order_by() clears the model default first. Django adds every
+            # ordering column to the SELECT, so DISTINCT was deduplicating on
+            # (name, created_at) and two rotations sharing a name both
+            # survived -- the message read "Run and Swim, Run and Swim".
+            .order_by()
             .distinct()
         )
         if rotations:
