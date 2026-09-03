@@ -21,7 +21,7 @@ from django.db.models import (
     Sum,
     Value,
 )
-from django.db.models.functions import Coalesce
+from django.db.models.functions import Coalesce, Concat
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
@@ -765,6 +765,30 @@ class MePhotoView(APIView):
         )
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="search",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Find people by username or name, ignoring case. A leading "
+                    "@ is ignored, and a query with a space is matched against "
+                    "the full name, so \"aaron pio\" finds the person "
+                    "\"aaron\" and \"pio\" alone would each find as well. "
+                    "Omitted, the list is everybody."
+                ),
+            )
+        ],
+        description=(
+            "Everybody, or the people matching a search.\n\n"
+            "Never the viewer themself, and never anyone on either side of a "
+            "block: the point of the list is people worth reaching, and "
+            "neither of those is."
+        ),
+    )
+)
 class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = (
         RepbaseUser.objects.select_related("user")
@@ -773,6 +797,45 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
     )
     serializer_class = PublicRepbaseUserSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+        if self.action != "list":
+            # Retrieval is by id and stays answerable. Hiding a blocked
+            # person's row here would turn a profile the app can already
+            # navigate to into a 404 partway through a tap.
+            return queryset
+
+        viewer = profile_for(self.request.user)
+        blocked_either_way = Block.objects.filter(
+            Q(blocker=viewer, blocked=OuterRef("pk"))
+            | Q(blocker=OuterRef("pk"), blocked=viewer)
+        )
+        queryset = queryset.exclude(pk=viewer.pk).exclude(
+            Exists(blocked_either_way)
+        )
+
+        search = (self.request.query_params.get("search") or "").strip()
+        # A handle is written with one and stored without.
+        search = search.lstrip("@").strip()
+        if not search:
+            return queryset
+
+        # Annotated rather than matched field by field: a first and last name
+        # are two columns, and somebody typing the whole name is searching for
+        # a person, not for either column. Without this "aaron pio" matched
+        # nothing while both halves matched on their own, which reads as the
+        # search being broken by knowing more.
+        return queryset.annotate(
+            searchable_full_name=Concat(
+                "user__first_name", Value(" "), "user__last_name"
+            )
+        ).filter(
+            Q(user__username__icontains=search)
+            | Q(user__first_name__icontains=search)
+            | Q(user__last_name__icontains=search)
+            | Q(searchable_full_name__icontains=search)
+        )
 
     @extend_schema(
         methods=["POST"],
@@ -2506,7 +2569,23 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
                     "Return only posts by this user, still filtered by what the "
                     "reader is allowed to see."
                 ),
-            )
+            ),
+            OpenApiParameter(
+                name="search",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only posts matching this, ignoring case: the "
+                    "caption, the author's username or name, the title of the "
+                    "workout, meal or planner entry attached, or the name of a "
+                    "food or exercise inside it — so a meal posted as "
+                    "\"Meal 1\" is still found by the chicken in it. Narrows "
+                    "what the reader is already allowed to see and never "
+                    "widens it, so a post hidden from them stays hidden "
+                    "however well it matches. Combines with `author` when both "
+                    "are given."
+                ),
+            ),
         ]
     ),
     create=extend_schema(
@@ -2573,7 +2652,59 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             # POST must not be able to hide it.
             return queryset
         author = self.request.query_params.get("author")
-        return queryset.filter(author_id=author) if author else queryset
+        if author:
+            queryset = queryset.filter(author_id=author)
+        return self._matching_search(queryset)
+
+    def _matching_search(self, queryset):
+        """Narrow to posts matching the `search` query, if there is one.
+
+        Applied after the visibility rules rather than beside them. Search must
+        only ever be a way of finding what somebody could already see: layering
+        it on top means a private post cannot be surfaced by guessing a word in
+        it, which is what a single combined filter would risk the first time
+        somebody reordered the clauses.
+
+        It reaches inside the snapshot as well as across the top of it. A meal
+        is posted as "Meal 1" holding a chicken bowl, so the name on the card
+        is the one thing nobody would search for; the food is what they would
+        type. Same for a workout named "Push Day" containing an incline press.
+
+        Those two are correlated `Exists` subqueries rather than joins, for the
+        reason `visible_posts_for` gives above: a meal with three matching
+        foods would come back through a join three times, and the usual repair
+        of `.distinct()` corrupts the paginator's count.
+        """
+        search = (self.request.query_params.get("search") or "").strip()
+        search = search.lstrip("@").strip()
+        if not search:
+            return queryset
+
+        matching_food = PostMealEntry.objects.filter(
+            post_meal__post=OuterRef("pk"), name__icontains=search
+        )
+        matching_exercise = PostWorkoutExercise.objects.filter(
+            post_workout__post=OuterRef("pk"), name__icontains=search
+        )
+
+        return queryset.annotate(
+            searchable_author_name=Concat(
+                "author__user__first_name", Value(" "), "author__user__last_name"
+            ),
+            has_matching_food=Exists(matching_food),
+            has_matching_exercise=Exists(matching_exercise),
+        ).filter(
+            Q(caption__icontains=search)
+            | Q(author__user__username__icontains=search)
+            | Q(author__user__first_name__icontains=search)
+            | Q(author__user__last_name__icontains=search)
+            | Q(searchable_author_name__icontains=search)
+            | Q(workout__title__icontains=search)
+            | Q(meal__name__icontains=search)
+            | Q(planner__title__icontains=search)
+            | Q(has_matching_food=True)
+            | Q(has_matching_exercise=True)
+        )
 
     @extend_schema(
         methods=["POST"],

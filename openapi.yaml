@@ -4064,6 +4064,17 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: 'Return only posts matching this, ignoring case: the caption,
+          the author''s username or name, the title of the workout, meal or planner
+          entry attached, or the name of a food or exercise inside it — so a meal
+          posted as "Meal 1" is still found by the chicken in it. Narrows what the
+          reader is already allowed to see and never widens it, so a post hidden from
+          them stays hidden however well it matches. Combines with `author` when both
+          are given.'
       tags:
       - social
       security:
@@ -4454,6 +4465,10 @@ paths:
   /api/v1/users/:
     get:
       operationId: users_list
+      description: |-
+        Everybody, or the people matching a search.
+
+        Never the viewer themself, and never anyone on either side of a block: the point of the list is people worth reaching, and neither of those is.
       parameters:
       - name: page
         required: false
@@ -4461,6 +4476,14 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Find people by username or name, ignoring case. A leading @ is
+          ignored, and a query with a space is matched against the full name, so "aaron
+          pio" finds the person "aaron" and "pio" alone would each find as well. Omitted,
+          the list is everybody.
       tags:
       - users
       security:

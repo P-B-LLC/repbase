@@ -11,6 +11,7 @@ from rest_framework.test import APIClient, APITestCase
 
 from . import food_sources
 from .models import (
+    Block,
     Exercise,
     FoodEntry,
     FoodMeal,
@@ -718,6 +719,10 @@ class RepbaseAPITestCase(RepbaseAPITestMixin, APITestCase):
 
     def test_public_profile_list_requires_auth_and_hides_private_fields(self):
         _, _, token = self.create_account("alice")
+        # Somebody other than the viewer, because the list no longer carries
+        # the viewer themself. Reading a stranger's row is the stronger test
+        # in any case: what alice may see of alice was never the question.
+        _, bob, _ = self.create_account("bob")
 
         anonymous_response = self.client.get("/api/v1/users/")
         self.assertEqual(anonymous_response.status_code, 401)
@@ -726,6 +731,7 @@ class RepbaseAPITestCase(RepbaseAPITestMixin, APITestCase):
         response = self.client.get("/api/v1/users/")
         self.assertEqual(response.status_code, 200)
         profile = response.data["results"][0]
+        self.assertEqual(profile["id"], bob.id)
         self.assertNotIn("email", profile)
         self.assertNotIn("birthdate", profile)
         # Withheld as null rather than by dropping the key, so the shape of
@@ -2675,3 +2681,281 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         saved.refresh_from_db()
         self.assertIsNone(saved.source_post_id)
         self.assertEqual(saved.ingredients.count(), 1, "the food must survive too")
+
+
+class SearchingForPeopleTests(RepbaseAPITestMixin, APITestCase):
+    """Finding somebody who has never posted.
+
+    The app had a search box that filtered posts already downloaded, so the
+    only people it could find were the ones already on screen. Somebody who
+    had not posted was unreachable by search no matter how exactly their
+    handle was typed, which is the opposite of what a search is for.
+    """
+
+    URL = "/api/v1/users/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("seeker")
+        # create_account gives first_name the title-cased username and
+        # last_name "Tester", so these are "Aaron Tester" and "Bianca Tester".
+        _, self.aaron, _ = self.create_account("aaron")
+        _, self.bianca, _ = self.create_account("bianca")
+        self.authenticate(self.token)
+
+    def ids(self, response):
+        return {row["id"] for row in response.data["results"]}
+
+    def search(self, query):
+        response = self.client.get(self.URL, {"search": query})
+        self.assertEqual(response.status_code, 200, response.data)
+        return self.ids(response)
+
+    def test_finds_somebody_by_username(self):
+        self.assertEqual(self.search("aaron"), {self.aaron.id})
+
+    def test_finds_somebody_by_first_name(self):
+        # Different case from the stored "Aaron", so this also pins the
+        # matching as case-insensitive.
+        self.assertEqual(self.search("AARON"), {self.aaron.id})
+
+    def test_finds_somebody_by_full_name(self):
+        """The whole name, which is two columns and one person."""
+        self.assertEqual(self.search("aaron tester"), {self.aaron.id})
+
+    def test_a_leading_at_sign_is_ignored(self):
+        """Handles are written with one and stored without."""
+        self.assertEqual(self.search("@aaron"), {self.aaron.id})
+
+    def test_a_partial_match_still_finds_them(self):
+        self.assertEqual(self.search("aar"), {self.aaron.id})
+
+    def test_the_viewer_is_never_a_result(self):
+        """Searching your own name finds the other people, not you."""
+        self.assertNotIn(self.profile.id, self.search("tester"))
+        self.assertEqual(self.search("tester"), {self.aaron.id, self.bianca.id})
+
+    def test_no_search_is_everybody_else(self):
+        response = self.client.get(self.URL)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.ids(response), {self.aaron.id, self.bianca.id})
+
+    def test_somebody_the_viewer_blocked_is_not_found(self):
+        Block.objects.create(blocker=self.profile, blocked=self.aaron)
+        self.assertEqual(self.search("aaron"), set())
+
+    def test_somebody_who_blocked_the_viewer_is_not_found(self):
+        """A block hides its subject from the person it was aimed at."""
+        Block.objects.create(blocker=self.aaron, blocked=self.profile)
+        self.assertEqual(self.search("aaron"), set())
+
+    def test_a_block_does_not_hide_everybody_else(self):
+        Block.objects.create(blocker=self.profile, blocked=self.aaron)
+        self.assertEqual(self.search("tester"), {self.bianca.id})
+
+    def test_a_blocked_profile_can_still_be_opened_by_id(self):
+        """Only the list is narrowed.
+
+        The app can already navigate to a profile it holds an id for, and
+        turning that into a 404 partway through a tap would be a worse
+        answer than the page it draws today.
+        """
+        Block.objects.create(blocker=self.profile, blocked=self.aaron)
+        response = self.client.get(f"{self.URL}{self.aaron.id}/")
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_matching_nobody_is_an_empty_list_not_an_error(self):
+        response = self.client.get(self.URL, {"search": "nobodyhasthisname"})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["results"], [])
+
+    def test_a_blank_search_is_the_same_as_none(self):
+        """So clearing the box returns the list rather than nothing."""
+        response = self.client.get(self.URL, {"search": "   "})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(self.ids(response), {self.aaron.id, self.bianca.id})
+
+
+class SearchingForPostsTests(RepbaseAPITestMixin, APITestCase):
+    """Searching posts, without it becoming a way around visibility.
+
+    Search narrows what the reader could already see. The risk worth a test
+    is the opposite: a filter written beside the visibility rules instead of
+    after them would let somebody find a private post by guessing a word in
+    it, and would do so quietly.
+    """
+
+    URL = "/api/v1/social/posts/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("reader")
+        _, self.author, _ = self.create_account("poster")
+        self.authenticate(self.token)
+
+    def post_with(self, caption, visibility=Post.Visibility.PUBLIC, author=None):
+        return Post.objects.create(
+            author=author or self.author,
+            kind=Post.Kind.MEAL,
+            caption=caption,
+            visibility=visibility,
+        )
+
+    def ids(self, query):
+        response = self.client.get(self.URL, query)
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["id"] for row in response.data["results"]}
+
+    def test_finds_a_post_by_caption(self):
+        wanted = self.post_with("leg day was brutal")
+        self.post_with("rest day")
+        self.assertEqual(self.ids({"search": "brutal"}), {wanted.id})
+
+    def test_finds_a_post_by_author_username(self):
+        wanted = self.post_with("anything")
+        self.assertEqual(self.ids({"search": "poster"}), {wanted.id})
+
+    def test_finds_a_post_by_the_meal_on_it(self):
+        post = self.post_with("")
+        PostMeal.objects.create(
+            post=post, name="Chicken Bowl", date=timezone.localdate()
+        )
+        self.post_with("unrelated")
+        self.assertEqual(self.ids({"search": "chicken"}), {post.id})
+
+    def test_finds_a_post_by_the_workout_on_it(self):
+        post = Post.objects.create(
+            author=self.author, kind=Post.Kind.WORKOUT, caption=""
+        )
+        PostWorkout.objects.create(
+            post=post, title="Pull Day", performed_at=timezone.now()
+        )
+        self.post_with("unrelated")
+        self.assertEqual(self.ids({"search": "pull"}), {post.id})
+
+    def test_a_private_post_is_not_findable_by_a_stranger(self):
+        """The whole reason this test class exists."""
+        self.post_with("secret leg day", visibility=Post.Visibility.PRIVATE)
+        self.assertEqual(self.ids({"search": "secret"}), set())
+
+    def test_a_followers_only_post_is_not_findable_before_following(self):
+        self.post_with("just for my people", visibility=Post.Visibility.FOLLOWERS)
+        self.assertEqual(self.ids({"search": "people"}), set())
+
+    def test_a_followers_only_post_is_findable_once_following(self):
+        wanted = self.post_with(
+            "just for my people", visibility=Post.Visibility.FOLLOWERS
+        )
+        Follow.objects.create(follower=self.profile, following=self.author)
+        self.assertEqual(self.ids({"search": "people"}), {wanted.id})
+
+    def test_an_author_finds_their_own_private_post(self):
+        """Visibility is not consulted against yourself."""
+        mine = self.post_with(
+            "secret leg day",
+            visibility=Post.Visibility.PRIVATE,
+            author=self.profile,
+        )
+        self.assertEqual(self.ids({"search": "secret"}), {mine.id})
+
+    def test_a_blocked_authors_post_is_not_findable(self):
+        self.post_with("leg day")
+        Block.objects.create(blocker=self.profile, blocked=self.author)
+        self.assertEqual(self.ids({"search": "leg"}), set())
+
+    def test_a_hidden_post_is_not_findable(self):
+        post = self.post_with("leg day")
+        post.is_hidden = True
+        post.save(update_fields=["is_hidden"])
+        self.assertEqual(self.ids({"search": "leg"}), set())
+
+    def test_search_combines_with_the_author_filter(self):
+        _, other, _ = self.create_account("somebodyelse")
+        mine = self.post_with("leg day")
+        self.post_with("leg day", author=other)
+        found = self.ids({"search": "leg", "author": self.author.id})
+        self.assertEqual(found, {mine.id})
+
+    def test_no_search_returns_the_list(self):
+        first = self.post_with("one")
+        second = self.post_with("two")
+        self.assertEqual(self.ids({}), {first.id, second.id})
+
+    def test_one_post_is_returned_once(self):
+        """A match on two columns at once is still one row.
+
+        The filter reaches author, workout and meal from the post. Written as
+        joins rather than as conditions on the row, a post matching in two
+        places would come back twice and the paginator would count it twice.
+        """
+        post = self.post_with("chicken")
+        PostMeal.objects.create(
+            post=post, name="Chicken Bowl", date=timezone.localdate()
+        )
+        response = self.client.get(self.URL, {"search": "chicken"})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(len(response.data["results"]), 1)
+        self.assertEqual(response.data["count"], 1)
+
+    def meal_post_holding(self, *foods, name="Meal 1"):
+        """A meal posted under a name that says nothing about the food in it."""
+        post = self.post_with("")
+        meal = PostMeal.objects.create(
+            post=post, name=name, date=timezone.localdate()
+        )
+        for position, food in enumerate(foods, start=1):
+            PostMealEntry.objects.create(
+                post_meal=meal,
+                name=food,
+                servings=1,
+                calories=100,
+                protein_grams=10,
+                carbohydrate_grams=10,
+                fat_grams=10,
+                position=position,
+            )
+        return post
+
+    def test_finds_a_meal_by_the_food_inside_it(self):
+        """The name on the card is the one thing nobody would search for.
+
+        Meals are posted as "Meal 1" and "Meal 4". Searching those finds a
+        meal by its position in somebody's day, which is not a thing anybody
+        wants; the food is what gets typed.
+        """
+        post = self.meal_post_holding("Chicken Bowl", "Rice")
+        self.meal_post_holding("Oats", name="Meal 2")
+        self.assertEqual(self.ids({"search": "chicken"}), {post.id})
+
+    def test_finds_a_workout_by_an_exercise_inside_it(self):
+        post = Post.objects.create(
+            author=self.author, kind=Post.Kind.WORKOUT, caption=""
+        )
+        workout = PostWorkout.objects.create(
+            post=post, title="Push Day", performed_at=timezone.now()
+        )
+        PostWorkoutExercise.objects.create(
+            post_workout=workout, name="Incline Chest Press", order=1, set_count=3
+        )
+        self.post_with("unrelated")
+        self.assertEqual(self.ids({"search": "incline"}), {post.id})
+
+    def test_a_meal_with_several_matching_foods_is_returned_once(self):
+        """The reason those two are subqueries and not joins.
+
+        Three chickens in one meal is one post. Through a join it would be
+        three rows, and `.distinct()` — the usual repair — then disagrees with
+        the paginator's count.
+        """
+        post = self.meal_post_holding(
+            "Chicken Breast", "Chicken Thigh", "Chicken Stock"
+        )
+        response = self.client.get(self.URL, {"search": "chicken"})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual([row["id"] for row in response.data["results"]], [post.id])
+        self.assertEqual(response.data["count"], 1)
+
+    def test_the_food_search_still_respects_visibility(self):
+        """Reaching deeper must not reach around the rules."""
+        post = self.meal_post_holding("Chicken Bowl")
+        post.visibility = Post.Visibility.PRIVATE
+        post.save(update_fields=["visibility"])
+        self.assertEqual(self.ids({"search": "chicken"}), set())
