@@ -2586,6 +2586,19 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
                     "are given."
                 ),
             ),
+            OpenApiParameter(
+                name="from_following",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Split the list by whether the reader follows the author. "
+                    "`true` is the people they follow; `false` is the people "
+                    "they do not, and also drops the reader's own posts, "
+                    "because a page for finding new people should not open "
+                    "with your own. Omitted, the list is everybody. Anything "
+                    "other than true or false is a 400 rather than a guess."
+                ),
+            ),
         ]
     ),
     create=extend_schema(
@@ -2654,7 +2667,37 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         author = self.request.query_params.get("author")
         if author:
             queryset = queryset.filter(author_id=author)
-        return self._matching_search(queryset)
+        return self._matching_search(self._matching_follow_state(queryset))
+
+    def _matching_follow_state(self, queryset):
+        """Narrow to the people the reader follows, or to the people they don't.
+
+        `visible_posts_for` has already annotated the follow test, so both
+        directions reuse that subquery rather than asking the follow table the
+        same question a second time.
+
+        Not-following excludes the reader's own posts as well. They are not
+        somebody the reader has not got round to following — they are the
+        reader, and a page whose whole purpose is finding new people should
+        not open with your own lunch. Nothing is lost by it: the following
+        feed carries the reader's own posts deliberately, so they are still
+        the first thing in the tab that shows both.
+        """
+        raw = self.request.query_params.get("from_following")
+        if raw is None:
+            return queryset
+
+        wanted = raw.strip().lower()
+        if wanted in ("true", "1"):
+            return queryset.filter(viewer_follows_author=True)
+        if wanted in ("false", "0"):
+            return queryset.filter(viewer_follows_author=False).exclude(
+                author=self.owner_profile()
+            )
+        # Refused rather than guessed at. A typo silently returning the
+        # opposite half of the feed is the kind of wrong that looks like
+        # working software.
+        raise ValidationError({"from_following": "Use true or false."})
 
     def _matching_search(self, queryset):
         """Narrow to posts matching the `search` query, if there is one.

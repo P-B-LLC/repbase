@@ -4058,6 +4058,15 @@ paths:
           type: integer
         description: Return only posts by this user, still filtered by what the reader
           is allowed to see.
+      - in: query
+        name: from_following
+        schema:
+          type: boolean
+        description: Split the list by whether the reader follows the author. `true`
+          is the people they follow; `false` is the people they do not, and also drops
+          the reader's own posts, because a page for finding new people should not
+          open with your own. Omitted, the list is everybody. Anything other than
+          true or false is a 400 rather than a guess.
       - name: page
         required: false
         in: query

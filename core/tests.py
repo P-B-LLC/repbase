@@ -2959,3 +2959,88 @@ class SearchingForPostsTests(RepbaseAPITestMixin, APITestCase):
         post.visibility = Post.Visibility.PRIVATE
         post.save(update_fields=["visibility"])
         self.assertEqual(self.ids({"search": "chicken"}), set())
+
+
+class SplittingPostsByFollowTests(RepbaseAPITestMixin, APITestCase):
+    """The two halves the Social tabs are built from.
+
+    "For you" is the following feed and then everybody else; "Discover" is
+    only everybody else. Both need the same list split the same way, so the
+    split is the server's rather than each screen filtering a page it
+    happened to be given.
+    """
+
+    URL = "/api/v1/social/posts/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("reader")
+        _, self.followed, _ = self.create_account("followed")
+        _, self.stranger, _ = self.create_account("stranger")
+        Follow.objects.create(follower=self.profile, following=self.followed)
+        self.authenticate(self.token)
+
+        self.mine = self.post_by(self.profile, "my own post")
+        self.theirs = self.post_by(self.followed, "from somebody I follow")
+        self.strangers = self.post_by(self.stranger, "from a stranger")
+
+    def post_by(self, author, caption):
+        return Post.objects.create(
+            author=author, kind=Post.Kind.MEAL, caption=caption
+        )
+
+    def ids(self, query):
+        response = self.client.get(self.URL, query)
+        self.assertEqual(response.status_code, 200, response.data)
+        return {row["id"] for row in response.data["results"]}
+
+    def test_omitting_it_is_everybody(self):
+        self.assertEqual(
+            self.ids({}), {self.mine.id, self.theirs.id, self.strangers.id}
+        )
+
+    def test_true_is_the_people_being_followed(self):
+        self.assertEqual(self.ids({"from_following": "true"}), {self.theirs.id})
+
+    def test_false_is_the_people_not_being_followed(self):
+        self.assertEqual(self.ids({"from_following": "false"}), {self.strangers.id})
+
+    def test_false_leaves_out_the_readers_own_posts(self):
+        """Discover is for finding other people, not for reading yourself."""
+        self.assertNotIn(self.mine.id, self.ids({"from_following": "false"}))
+
+    def test_the_two_halves_do_not_overlap(self):
+        following = self.ids({"from_following": "true"})
+        rest = self.ids({"from_following": "false"})
+        self.assertEqual(following & rest, set())
+
+    def test_following_somebody_moves_their_post_across(self):
+        Follow.objects.create(follower=self.profile, following=self.stranger)
+        self.assertIn(self.strangers.id, self.ids({"from_following": "true"}))
+        self.assertNotIn(self.strangers.id, self.ids({"from_following": "false"}))
+
+    def test_it_still_respects_visibility(self):
+        """Splitting the list must not widen it."""
+        hidden = self.post_by(self.stranger, "not for you")
+        hidden.visibility = Post.Visibility.PRIVATE
+        hidden.save(update_fields=["visibility"])
+        self.assertNotIn(hidden.id, self.ids({"from_following": "false"}))
+
+    def test_a_blocked_stranger_is_not_in_discover(self):
+        Block.objects.create(blocker=self.profile, blocked=self.stranger)
+        self.assertEqual(self.ids({"from_following": "false"}), set())
+
+    def test_it_combines_with_search(self):
+        self.post_by(self.stranger, "chicken and rice")
+        found = self.ids({"from_following": "false", "search": "chicken"})
+        self.assertEqual(len(found), 1)
+        self.assertNotIn(self.strangers.id, found)
+
+    def test_a_value_that_is_neither_is_refused(self):
+        """Rather than quietly returning the opposite half."""
+        response = self.client.get(self.URL, {"from_following": "banana"})
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("from_following", response.data)
+
+    def test_one_and_zero_are_accepted(self):
+        self.assertEqual(self.ids({"from_following": "1"}), {self.theirs.id})
+        self.assertEqual(self.ids({"from_following": "0"}), {self.strangers.id})
