@@ -1608,6 +1608,14 @@ class SavedFoodMeal(models.Model):
         related_name="saved_food_meals",
     )
     name = models.CharField(max_length=150)
+    #: How it was made, when it was saved from a post that said.
+    #:
+    #: Copied at the moment of saving, like the foods beside it, so a library
+    #: is a set of recipes somebody keeps rather than a set of pointers at
+    #: posts that can be edited or deleted out from under them. Blank for a
+    #: meal saved from a post whose author wrote none, which is most of them,
+    #: and blank for one built from scratch.
+    cooking_instructions = models.TextField(blank=True)
     #: The post this was copied from, when it was not made from scratch.
     #:
     #: Saving is idempotent on this: tapping Save on the same post twice

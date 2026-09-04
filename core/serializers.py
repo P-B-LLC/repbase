@@ -366,7 +366,14 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SavedFoodMeal
-        fields = ["id", "name", "ingredients", "created_at", "updated_at"]
+        fields = [
+            "id",
+            "name",
+            "ingredients",
+            "cooking_instructions",
+            "created_at",
+            "updated_at",
+        ]
         read_only_fields = ["id", "created_at", "updated_at"]
 
     def validate_name(self, value):

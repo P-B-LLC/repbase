@@ -3101,7 +3101,13 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         )
         with transaction.atomic():
             saved = SavedFoodMeal.objects.create(
-                owner=owner, name=name, source_post=source
+                owner=owner,
+                name=name,
+                source_post=source,
+                # The recipe comes with the food. Saving a meal whose author
+                # wrote down how they made it and keeping only the ingredient
+                # list would be saving the half that needs the other one.
+                cooking_instructions=snapshot.cooking_instructions,
             )
             # A straight copy: PostMealEntry mirrors SavedFoodIngredient field
             # for field, per-serving split included, so nothing is recomputed

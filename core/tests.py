@@ -54,6 +54,26 @@ class RepbaseAPITestMixin:
     eight tests and ran them again under its own name.
     """
 
+    def _pre_setup(self):
+        """Start every test with the throttle counters empty.
+
+        They live in the cache, and no transaction rolls a cache back. Test
+        users are created fresh per test but their primary keys repeat, and
+        the throttle key is the primary key -- so two unrelated classes whose
+        first account is pk 5 share a bucket, and the count is whatever every
+        test before them left behind.
+
+        That is how it announced itself: adding tests that post made three
+        tests in a different class start failing with 429, having changed
+        nothing about what they exercise. Whichever class ran last lost.
+
+        In `_pre_setup` rather than `setUp` because Django calls it whatever
+        a subclass does, and most subclasses here define `setUp` without
+        chaining to super.
+        """
+        super()._pre_setup()
+        cache.clear()
+
     def create_account(self, username):
         user = User.objects.create_user(
             username=username,
@@ -3415,3 +3435,112 @@ class CookingInstructionsTests(RepbaseAPITestMixin, APITestCase):
         card = self.post_meal(cooking_instructions="Sear, then rest.")
         self.assertEqual([row["name"] for row in card["meal"]["entries"]], ["Chicken thigh"])
         self.assertEqual(card["meal"]["entries"][0]["servings"], "2.00")
+
+
+class SavingKeepsTheRecipeTests(RepbaseAPITestMixin, APITestCase):
+    """Saving somebody's meal takes the method with the ingredients.
+
+    A recipe and its food are one thing. Keeping the list and dropping the
+    instructions saves the half that needs the other one -- and the post it
+    came from can be edited or deleted, so pointing back at it is not a way
+    of keeping it either.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("saver")
+        self.author, self.author_profile, self.author_token = self.create_account(
+            "cook"
+        )
+        self.authenticate(self.token)
+
+    def meal_post(self, instructions=""):
+        post = Post.objects.create(
+            author=self.author_profile, kind=Post.Kind.MEAL, caption="dinner"
+        )
+        meal = PostMeal.objects.create(
+            post=post,
+            name="Meal 1",
+            date=timezone.localdate(),
+            cooking_instructions=instructions,
+        )
+        PostMealEntry.objects.create(
+            post_meal=meal,
+            name="Chicken thigh",
+            servings=2,
+            calories=210,
+            protein_grams=20,
+            carbohydrate_grams=0,
+            fat_grams=14,
+            position=1,
+        )
+        return post
+
+    def save(self, post):
+        response = self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/")
+        self.assertIn(response.status_code, (200, 201), response.data)
+        return SavedFoodMeal.objects.get(pk=response.data["meal"])
+
+    def test_the_recipe_is_copied_with_the_food(self):
+        recipe = "1. Season.\n2. Sear skin down.\n3. Rest."
+        saved = self.save(self.meal_post(recipe))
+        self.assertEqual(saved.cooking_instructions, recipe)
+        self.assertEqual(saved.ingredients.count(), 1)
+
+    def test_a_post_without_a_recipe_saves_blank(self):
+        self.assertEqual(self.save(self.meal_post()).cooking_instructions, "")
+
+    def test_the_copy_survives_the_post_being_deleted(self):
+        """Which is why it is copied rather than pointed at."""
+        post = self.meal_post("Sear, then rest.")
+        saved = self.save(post)
+        post.delete()
+
+        saved.refresh_from_db()
+        self.assertEqual(saved.cooking_instructions, "Sear, then rest.")
+        self.assertIsNone(saved.source_post_id)
+        self.assertEqual(saved.ingredients.count(), 1)
+
+    def test_it_is_returned_when_the_library_is_read(self):
+        recipe = "Sear, then rest."
+        self.save(self.meal_post(recipe))
+        response = self.client.get("/api/v1/food/saved-meals/")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["results"][0]["cooking_instructions"], recipe
+        )
+
+    def test_saving_twice_still_leaves_one(self):
+        """The recipe must not break the idempotence that was fixed before."""
+        post = self.meal_post("Sear, then rest.")
+        first = self.save(post)
+        second = self.save(post)
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(
+            SavedFoodMeal.objects.filter(owner=self.profile).count(), 1
+        )
+
+    def test_a_meal_built_by_hand_can_carry_one_too(self):
+        """The field is the saved meal's, not only the copier's."""
+        response = self.client.post(
+            "/api/v1/food/saved-meals/",
+            {
+                "name": "Overnight oats",
+                "cooking_instructions": "Mix and leave until morning.",
+                "ingredients": [
+                    {
+                        "name": "Oats",
+                        "servings": "1",
+                        "calories": "150",
+                        "protein_grams": "5",
+                        "carbohydrate_grams": "27",
+                        "fat_grams": "3",
+                        "position": 1,
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            response.data["cooking_instructions"], "Mix and leave until morning."
+        )

@@ -6986,6 +6986,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SavedFoodIngredientRequest'
+        cooking_instructions:
+          type: string
     PatchedSessionExerciseRequest:
       type: object
       properties:
@@ -8798,6 +8800,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SavedFoodIngredient'
+        cooking_instructions:
+          type: string
         created_at:
           type: string
           format: date-time
@@ -8826,6 +8830,8 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SavedFoodIngredientRequest'
+        cooking_instructions:
+          type: string
       required:
       - ingredients
       - name
