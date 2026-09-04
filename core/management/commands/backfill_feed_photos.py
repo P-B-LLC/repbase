@@ -79,6 +79,11 @@ class Command(BaseCommand):
                 f"  post {post.pk}: {len(original):,} -> {len(smaller):,} bytes"
             )
             if not dry_run:
+                # Saving over a field that already holds a file writes the new
+                # one under a fresh name and leaves the old one on disk with
+                # nothing pointing at it. The first --force run left six.
+                if post.feed_image:
+                    post.feed_image.delete(save=False)
                 post.feed_image.save(
                     f"{uuid.uuid4().hex}.jpg",
                     ContentFile(smaller),

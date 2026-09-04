@@ -21,10 +21,16 @@ import io
 #: The box a feed photo is fitted inside, in pixels.
 #:
 #: 1080 wide because the widest phone this runs on is 1206 physical pixels and
-#: the difference is invisible on a photograph; 1350 tall because 4:5 is the
-#: tallest shape a card draws, and anything taller is letterboxed anyway. The
-#: aspect ratio is preserved -- this is a bounding box, not a crop.
-FEED_PHOTO_BOX = (1080, 1350)
+#: the difference is invisible on a photograph. 1440 tall because 3:4 is the
+#: tallest shape a card draws and 1080 x 4/3 is 1440 -- so every shape the app
+#: allows comes back at the full 1080 width rather than being limited by the
+#: height. At 1350 an upright phone photo came back 1012 wide and was scaled
+#: up a fifth on screen, which on a photograph is visible.
+#:
+#: The aspect ratio is preserved: this is a bounding box, not a crop. Which
+#: shape a card draws is `PostPhotoRatio` in the iOS app, and the two only
+#: need to agree on the tallest one, which is what sets the height here.
+FEED_PHOTO_BOX = (1080, 1440)
 
 #: JPEG quality. 82 is the usual place where further reduction starts showing
 #: on skin and sky before it saves much.
