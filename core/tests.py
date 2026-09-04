@@ -3300,3 +3300,118 @@ class PostsCarryBothPhotoSizesTests(RepbaseAPITestMixin, APITestCase):
         card = self.card(post)
         self.assertTrue(card["image_url"].startswith("http"))
         self.assertTrue(card["feed_image_url"].startswith("http"))
+
+
+class CookingInstructionsTests(RepbaseAPITestMixin, APITestCase):
+    """The recipe half of a meal post.
+
+    A meal is a list of foods; a recipe is what somebody did with them. The
+    foods are copied from the meal, and this is written by the author at the
+    moment they post.
+    """
+
+    URL = "/api/v1/social/posts/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("cook")
+        self.authenticate(self.token)
+        self.meal = FoodMeal.objects.create(
+            owner=self.profile,
+            date=timezone.localdate(),
+            name="Meal 2",
+            position=2,
+        )
+        FoodEntry.objects.create(
+            meal=self.meal, name="Chicken thigh", servings=2, calories=210, position=1
+        )
+
+    def post_meal(self, **extra):
+        body = {"kind": "meal", "source_id": self.meal.id, **extra}
+        response = self.client.post(self.URL, body, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data
+
+    def test_instructions_are_kept_on_the_post(self):
+        card = self.post_meal(
+            cooking_instructions="Sear skin down for six minutes, then turn."
+        )
+        self.assertEqual(
+            card["meal"]["cooking_instructions"],
+            "Sear skin down for six minutes, then turn.",
+        )
+
+    def test_a_meal_posted_without_them_reads_blank(self):
+        """Most meals are assembled rather than cooked."""
+        self.assertEqual(self.post_meal()["meal"]["cooking_instructions"], "")
+
+    def test_surrounding_whitespace_is_dropped(self):
+        card = self.post_meal(cooking_instructions="  Rest it for ten minutes.\n\n")
+        self.assertEqual(card["meal"]["cooking_instructions"], "Rest it for ten minutes.")
+
+    def test_line_breaks_inside_are_kept(self):
+        """A recipe is a list of steps, and the steps are the line breaks."""
+        recipe = "1. Season the thighs.\n2. Sear them.\n3. Rest."
+        self.assertEqual(
+            self.post_meal(cooking_instructions=recipe)["meal"]["cooking_instructions"],
+            recipe,
+        )
+
+    def test_editing_the_meal_afterwards_does_not_rewrite_the_post(self):
+        """The whole reason this lives on the snapshot.
+
+        Somebody reads a recipe under a post. Renaming the meal, or logging it
+        again tomorrow having cooked it differently, must not change what they
+        read.
+        """
+        card = self.post_meal(cooking_instructions="Sear, then rest.")
+        self.meal.name = "Something else"
+        self.meal.save(update_fields=["name"])
+
+        again = self.client.get(f"{self.URL}{card['id']}/")
+        self.assertEqual(again.status_code, 200, again.data)
+        self.assertEqual(again.data["meal"]["cooking_instructions"], "Sear, then rest.")
+        self.assertEqual(again.data["meal"]["name"], "Meal 2")
+
+    def test_they_cannot_be_set_by_editing_the_post(self):
+        """PATCH takes the caption and the visibility, and nothing else.
+
+        The snapshot is the record of what was posted. A recipe that could be
+        rewritten after people had read it would be worth as little as a
+        workout whose weights could.
+        """
+        card = self.post_meal(cooking_instructions="Sear, then rest.")
+        response = self.client.patch(
+            f"{self.URL}{card['id']}/",
+            {"cooking_instructions": "Something different"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(
+            response.data["meal"]["cooking_instructions"], "Sear, then rest."
+        )
+
+    def test_a_workout_post_ignores_them_rather_than_refusing(self):
+        """One create endpoint serves three kinds; the field belongs to one."""
+        # Finished, because an unfinished session is refused before this
+        # field is ever looked at -- which is right, and not what is under
+        # test here.
+        session = WorkoutSession.objects.create(
+            repbase_user=self.profile, status=WorkoutSession.Status.COMPLETED
+        )
+        response = self.client.post(
+            self.URL,
+            {
+                "kind": "workout",
+                "source_id": session.id,
+                "cooking_instructions": "not applicable",
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertIsNone(response.data["meal"])
+
+    def test_the_foods_still_come_from_the_meal(self):
+        """Instructions are added alongside the copy, not instead of it."""
+        card = self.post_meal(cooking_instructions="Sear, then rest.")
+        self.assertEqual([row["name"] for row in card["meal"]["entries"]], ["Chicken thigh"])
+        self.assertEqual(card["meal"]["entries"][0]["servings"], "2.00")

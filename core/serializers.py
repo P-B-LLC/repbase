@@ -2131,12 +2131,13 @@ class PostMealSerializer(serializers.ModelSerializer):
             "name",
             "date",
             "entries",
+            "cooking_instructions",
             "total_calories",
             "total_protein_grams",
             "total_carbohydrate_grams",
             "total_fat_grams",
         ]
-        read_only_fields = ["name", "date", "entries"]
+        read_only_fields = ["name", "date", "entries", "cooking_instructions"]
 
     def _total(self, snapshot, field):
         total = sum(
@@ -2669,8 +2670,25 @@ class CreatePostSerializer(serializers.Serializer):
         allow_blank=True,
         help_text="The image bytes, base64 encoded, without a data: prefix.",
     )
+    #: How the meal was made. Ignored for any other kind of post.
+    #:
+    #: Written by the author rather than copied from the meal, because a meal
+    #: is a list of foods and a recipe is what somebody did with them. Kept on
+    #: the snapshot with the rest, so editing the meal later cannot rewrite
+    #: what people already read.
+    cooking_instructions = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=4000,
+        help_text=(
+            "How the meal was made, for a meal post. Ignored for other kinds."
+        ),
+    )
 
     def validate_caption(self, value):
+        return value.strip()
+
+    def validate_cooking_instructions(self, value):
         return value.strip()
 
     def validate(self, attrs):

@@ -2231,6 +2231,16 @@ class PostMeal(models.Model):
     )
     name = models.CharField(max_length=100)
     date = models.DateField()
+    #: How the meal was made, written by the author when they posted it.
+    #:
+    #: On the snapshot rather than on the meal it was taken from, like
+    #: everything else here. A recipe edited next week must not rewrite what
+    #: people already read under a post from today, and the same meal logged
+    #: again is a different day's cooking that may have gone differently.
+    #:
+    #: Blank is the normal case. Most meals are assembled rather than cooked,
+    #: and a post that says nothing about method is not incomplete.
+    cooking_instructions = models.TextField(blank=True)
 
     def __str__(self):
         return f"{self.date}: {self.name}"

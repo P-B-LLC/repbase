@@ -2436,7 +2436,7 @@ def snapshot_workout(post, session, shows_weights=True):
     PostWorkoutExercise.objects.bulk_create(rows)
 
 
-def snapshot_meal(post, meal):
+def snapshot_meal(post, meal, cooking_instructions=""):
     """Copy a meal and its foods onto a post.
 
     Per-serving figures and the serving count are copied separately, exactly as
@@ -2444,7 +2444,12 @@ def snapshot_meal(post, meal):
     total under a card cannot come out different from the one beside the live
     meal it was taken from.
     """
-    snapshot = PostMeal.objects.create(post=post, name=meal.name, date=meal.date)
+    snapshot = PostMeal.objects.create(
+        post=post,
+        name=meal.name,
+        date=meal.date,
+        cooking_instructions=cooking_instructions,
+    )
     PostMealEntry.objects.bulk_create(
         [
             PostMealEntry(
@@ -2482,7 +2487,13 @@ def snapshot_planner(post, entry):
 
 @transaction.atomic
 def create_post_from_source(
-    author, kind, source, caption, visibility, shows_weights=True
+    author,
+    kind,
+    source,
+    caption,
+    visibility,
+    shows_weights=True,
+    cooking_instructions="",
 ):
     """Freeze a source object into a post.
 
@@ -2514,7 +2525,7 @@ def create_post_from_source(
     if kind == Post.Kind.WORKOUT:
         snapshot_workout(post, source, shows_weights=shows_weights)
     elif kind == Post.Kind.MEAL:
-        snapshot_meal(post, source)
+        snapshot_meal(post, source, cooking_instructions=cooking_instructions)
     else:
         snapshot_planner(post, source)
     return post
@@ -3171,6 +3182,10 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             payload.validated_data.get("caption", ""),
             payload.validated_data.get("visibility", Post.Visibility.PUBLIC),
             payload.validated_data.get("shows_weights", True),
+            # Ignored for anything but a meal, where the snapshot keeps it.
+            cooking_instructions=payload.validated_data.get(
+                "cooking_instructions", ""
+            ),
         )
         # Saved after the row exists, because the upload path is named from
         # its id. Done before the card is read back, so a post never goes
