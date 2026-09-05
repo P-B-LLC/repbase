@@ -3548,3 +3548,101 @@ class SavingKeepsTheRecipeTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(
             response.data["cooking_instructions"], "Mix and leave until morning."
         )
+
+
+class TheRecipeHasACeilingTests(RepbaseAPITestMixin, APITestCase):
+    """A saved recipe is held to the same length as a posted one.
+
+    The model field is a TextField, so nothing below this serializer puts a
+    limit on it. A post's instructions have been capped at 4000 since they
+    were added, and a recipe copied out of a post lands in this same field --
+    so leaving the editor's own writes uncapped would mean the ceiling
+    depended on which screen the text was typed on.
+    """
+
+    ceiling = 4000
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("cook")
+        self.authenticate(self.token)
+
+    def write(self, instructions, name="Overnight oats"):
+        return self.client.post(
+            "/api/v1/food/saved-meals/",
+            {
+                "name": name,
+                "cooking_instructions": instructions,
+                "ingredients": [
+                    {
+                        "name": "Oats",
+                        "servings": "1",
+                        "calories": "150",
+                        "protein_grams": "5",
+                        "carbohydrate_grams": "27",
+                        "fat_grams": "3",
+                        "position": 1,
+                    }
+                ],
+            },
+            format="json",
+        )
+
+    def test_the_ceiling_itself_is_accepted(self):
+        """The boundary belongs to the allowed side, as it does for a post."""
+        response = self.write("x" * self.ceiling)
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            len(SavedFoodMeal.objects.get(owner=self.profile).cooking_instructions),
+            self.ceiling,
+        )
+
+    def test_one_character_over_is_refused(self):
+        response = self.write("x" * (self.ceiling + 1))
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertIn("cooking_instructions", response.data)
+        self.assertFalse(SavedFoodMeal.objects.filter(owner=self.profile).exists())
+
+    def test_editing_is_held_to_the_same_ceiling(self):
+        """Otherwise the limit would only apply to the first save."""
+        self.assertEqual(self.write("Mix and leave.").status_code, 201)
+        saved = SavedFoodMeal.objects.get(owner=self.profile)
+
+        response = self.client.patch(
+            f"/api/v1/food/saved-meals/{saved.pk}/",
+            {"cooking_instructions": "x" * (self.ceiling + 1)},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        saved.refresh_from_db()
+        self.assertEqual(saved.cooking_instructions, "Mix and leave.")
+
+    def test_surrounding_blank_space_is_not_counted_or_kept(self):
+        """Trailing newlines are what a text view leaves behind."""
+        response = self.write("  Mix and leave until morning.\n\n  ")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            response.data["cooking_instructions"], "Mix and leave until morning."
+        )
+
+    def test_a_recipe_is_still_optional(self):
+        """The ceiling must not turn an absent recipe into a required one."""
+        response = self.client.post(
+            "/api/v1/food/saved-meals/",
+            {
+                "name": "Plain oats",
+                "ingredients": [
+                    {
+                        "name": "Oats",
+                        "servings": "1",
+                        "calories": "150",
+                        "protein_grams": "5",
+                        "carbohydrate_grams": "27",
+                        "fat_grams": "3",
+                        "position": 1,
+                    }
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["cooking_instructions"], "")

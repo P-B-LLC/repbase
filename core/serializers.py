@@ -363,6 +363,15 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
     recipe with no ingredients is not a thing anyone wants to save."""
 
     ingredients = SavedFoodIngredientSerializer(many=True)
+    #: Declared rather than left to the model field, which is a TextField and
+    #: would otherwise be exposed with no ceiling at all. The number matches
+    #: the one a post's instructions are held to, so a recipe copied out of a
+    #: post and one written in the editor can hold the same method.
+    cooking_instructions = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        max_length=4000,
+    )
 
     class Meta:
         model = SavedFoodMeal
@@ -381,6 +390,9 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
         if not name:
             raise serializers.ValidationError("Give the saved meal a name.")
         return name
+
+    def validate_cooking_instructions(self, value):
+        return value.strip()
 
     def validate(self, attrs):
         owner = self.context["request"].user.repbase_profile
