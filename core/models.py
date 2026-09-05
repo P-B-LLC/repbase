@@ -2071,6 +2071,13 @@ class Post(models.Model):
         return f"{self.author}: {self.get_kind_display()}"
 
 
+class PendingMediaDeletion(models.Model):
+    """Durable storage cleanup, independent of the deleted account's lifetime."""
+
+    name = models.CharField(max_length=500, unique=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class PostWorkout(models.Model):
     """What a posted workout looked like the moment it was posted.
 

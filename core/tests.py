@@ -3266,6 +3266,10 @@ class PostsCarryBothPhotoSizesTests(RepbaseAPITestMixin, APITestCase):
             author=self.profile, kind=Post.Kind.MEAL, caption="lunch"
         )
         post.image.save("original.jpg", ContentFile(raw or self.photo()), save=True)
+        # Reads below open FieldFile handles; Windows cannot remove the test
+        # media directory until those handles are explicitly closed.
+        self.addCleanup(post.image.close)
+        self.addCleanup(post.feed_image.close)
         return post
 
     def card(self, post):
