@@ -545,7 +545,12 @@ class LogoutView(APIView):
 
     @extend_schema(request=None, responses={204: None})
     def post(self, request):
-        Token.objects.filter(user=request.user).delete()
+        # Revoke only the credential that authenticated this request. A delayed
+        # logout must not delete a replacement issued while it was in flight.
+        if isinstance(request.auth, Token):
+            Token.objects.filter(pk=request.auth.pk).delete()
+        else:
+            Token.objects.filter(user=request.user).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -1947,6 +1952,12 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         session = get_object_or_404(self.get_queryset(), pk=pk)
 
         if request.method == "GET":
+            # Match the documented paginated route contract used by iOS.
+            page = self.paginate_queryset(session.route_points.all())
+            if page is not None:
+                return self.get_paginated_response(
+                    SessionRoutePointSerializer(page, many=True).data
+                )
             return Response(
                 SessionRoutePointSerializer(
                     session.route_points.all(),
@@ -1958,12 +1969,19 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         upload.is_valid(raise_exception=True)
 
         with transaction.atomic():
-            SessionRoutePoint.objects.bulk_create(
-                [
-                    SessionRoutePoint(session=session, **point)
-                    for point in upload.validated_data["points"]
-                ]
-            )
+            # Serialize writers for this session, including overlapping retries.
+            # Deduplication belongs here, not in a client read-before-write race.
+            session = get_object_or_404(self.get_queryset().select_for_update(), pk=pk)
+            confirmed = set(session.route_points.values_list(
+                "recorded_at", "latitude", "longitude"
+            ))
+            missing = []
+            for point in upload.validated_data["points"]:
+                key = (point["recorded_at"], point["latitude"], point["longitude"])
+                if key not in confirmed:
+                    missing.append(SessionRoutePoint(session=session, **point))
+                    confirmed.add(key)
+            SessionRoutePoint.objects.bulk_create(missing)
 
         session.refresh_from_db()
         # Store what the track came to. route_distance_km recomputes it from
