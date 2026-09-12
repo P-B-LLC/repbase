@@ -1,0 +1,32 @@
+name: Release gate
+
+# The same arrangement as the iOS repository. CI runs on pushes to main but
+# nothing depends on the result, because there is no branch protection here
+# either. Tagging a version is the moment where a failing test suite has to
+# stop being advisory.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  checks:
+    uses: ./.github/workflows/ci.yml
+
+  verdict:
+    needs: checks
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say plainly whether this version may ship
+        run: |
+          if [ "${{ needs.checks.result }}" != "success" ]; then
+            echo "### Do not ship ${GITHUB_REF_NAME}" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "The backend tests or the contract check did not pass, so this tag is not releasable." >> "$GITHUB_STEP_SUMMARY"
+            echo "Open the 'checks' job above for the failure." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "### ${GITHUB_REF_NAME} passed the release checks" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "The core test suite passes and openapi.yaml matches the serializers." >> "$GITHUB_STEP_SUMMARY"

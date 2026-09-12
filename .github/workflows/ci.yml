@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Callable, so the release gate runs exactly these checks rather than a
+  # second copy of them that can drift away from the ones that matter.
+  workflow_call:
 
 jobs:
   test:
