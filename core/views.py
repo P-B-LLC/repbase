@@ -1570,7 +1570,14 @@ class GymViewSet(viewsets.ModelViewSet):
                 queryset = queryset.filter(
                     Q(normalized_name__contains=key) | Q(normalized_city__contains=key)
                 )
-        return queryset
+        # Spelled out rather than left to Meta.ordering, which an aggregate
+        # annotation discards: the Count above puts a GROUP BY on the query,
+        # and Django then emits no ORDER BY at all. The list is paginated, so
+        # without this the database is free to return rows in any order it
+        # likes and a second page can repeat or skip what the first showed.
+        # Ends on the primary key because name and city are not unique
+        # together, and two gyms that tie need a decider that never does.
+        return queryset.order_by("name", "city", "pk")
 
     def perform_create(self, serializer):
         serializer.save(created_by=profile_for(self.request.user))
@@ -1822,7 +1829,12 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             queryset = queryset.filter(workout_id=workout)
         if workout_name:
             queryset = queryset.filter(workout__name__iexact=workout_name)
-        return queryset
+        # Same reason as the gym list: the logged_set_total annotation groups
+        # the query, which drops Meta.ordering and leaves history unordered
+        # while it is being paged. created_at is auto_now_add, so sessions
+        # written in the same instant -- an import, or a test -- share one,
+        # and the key breaks the tie in the same direction as the date.
+        return queryset.order_by("-created_at", "-pk")
 
     @transaction.atomic
     def perform_create(self, serializer):

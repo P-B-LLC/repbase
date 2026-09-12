@@ -1,5 +1,6 @@
 import io
 import tempfile
+import warnings
 from unittest import mock
 from datetime import timedelta
 from decimal import Decimal
@@ -3233,15 +3234,30 @@ class PostsCarryBothPhotoSizesTests(RepbaseAPITestMixin, APITestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls._media = tempfile.TemporaryDirectory(prefix="repbase-test-media-")
+        # ignore_cleanup_errors because removing the directory is housekeeping,
+        # not the thing under test. A FieldFile still open on Windows makes the
+        # file unremovable, and the error that raised named the temporary
+        # directory rather than anything a reader could act on.
+        cls._media = tempfile.TemporaryDirectory(
+            prefix="repbase-test-media-", ignore_cleanup_errors=True
+        )
         cls._media_override = override_settings(MEDIA_ROOT=cls._media.name)
         cls._media_override.enable()
 
     @classmethod
     def tearDownClass(cls):
-        cls._media_override.disable()
-        cls._media.cleanup()
-        super().tearDownClass()
+        # Each step runs whatever the one before it did. These were three bare
+        # statements, so a cleanup that raised skipped the base teardown
+        # entirely -- leaving the class's database and connection state up and
+        # failing the rest of the run somewhere else, a long way from the
+        # unremovable file that actually caused it.
+        try:
+            cls._media_override.disable()
+        finally:
+            try:
+                cls._media.cleanup()
+            finally:
+                super().tearDownClass()
 
     def setUp(self):
         self.user, self.profile, self.token = self.create_account("photographer")
@@ -3646,3 +3662,134 @@ class TheRecipeHasACeilingTests(RepbaseAPITestMixin, APITestCase):
         )
         self.assertEqual(response.status_code, 201, response.data)
         self.assertEqual(response.data["cooking_instructions"], "")
+
+
+class PagingIsStableAcrossPagesTests(RepbaseAPITestMixin, APITestCase):
+    """Every row shows up exactly once when a list is read page by page.
+
+    Both of these lists annotate a Count, which puts a GROUP BY on the query.
+    Django drops Meta.ordering when it does that and emits no ORDER BY at all,
+    so the database was free to return rows in whatever order suited it. A
+    paginated read is several reads of that table, and two reads of an
+    unordered table need not agree: page two can repeat a row page one already
+    showed and skip one it never did. Nothing about that is visible in a test
+    that only ever asks for the first page, which is why these ask for all of
+    them and compare the whole against what is stored.
+    """
+
+    #: settings.REST_FRAMEWORK["PAGE_SIZE"]. More than one page is the point.
+    page_size = 50
+    rows = 120
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("pager")
+        self.authenticate(self.token)
+
+    def walk(self, url):
+        """Every id a list gives, followed the way a client follows it."""
+        seen = []
+        pages = 0
+        while url:
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200, response.data)
+            seen.extend(row["id"] for row in response.data["results"])
+            url = response.data["next"]
+            pages += 1
+            # A next link that never empties would otherwise hang the suite.
+            self.assertLess(pages, 20, "paging did not terminate")
+        return seen, pages
+
+    def assertCoversExactly(self, seen, expected_ids):
+        self.assertEqual(len(seen), len(set(seen)), "a row was served twice")
+        self.assertEqual(set(seen), set(expected_ids), "a row was missed")
+
+    # -- gyms ------------------------------------------------------------
+
+    def make_gyms(self):
+        """Inserted out of order, so insertion order cannot pass for sorted.
+
+        Names are unique because the model requires it: a gym is unique per
+        normalized name and city, so ORDER BY name, city cannot actually tie
+        here. What is being tested is that the clause is emitted at all.
+        """
+        for index in sorted(range(self.rows), key=lambda n: (n * 7919) % self.rows):
+            Gym.objects.create(name=f"Gym {index:03d}", city="Leeds")
+        return list(Gym.objects.values_list("id", flat=True))
+
+    def test_gyms_page_without_repeating_or_dropping_one(self):
+        expected = self.make_gyms()
+        seen, pages = self.walk("/api/v1/gyms/")
+        self.assertGreater(pages, 1, "fewer rows than a page; nothing was paged")
+        self.assertCoversExactly(seen, expected)
+
+    def test_gyms_come_back_in_the_documented_order(self):
+        self.make_gyms()
+        seen, _ = self.walk("/api/v1/gyms/")
+        names = list(
+            Gym.objects.filter(id__in=seen).order_by("name", "city", "pk")
+            .values_list("id", flat=True)
+        )
+        self.assertEqual(seen, names, "pages did not arrive in name order")
+
+    def test_reading_the_gym_list_twice_gives_the_same_order(self):
+        """An unordered read may happen to look sorted once."""
+        self.make_gyms()
+        first, _ = self.walk("/api/v1/gyms/")
+        second, _ = self.walk("/api/v1/gyms/")
+        self.assertEqual(first, second)
+
+    # -- workout history -------------------------------------------------
+
+    def make_sessions(self):
+        """All sharing one created_at, which is what history sorts on.
+
+        created_at is auto_now_add, so sessions written in the same instant --
+        a health import, a fast client, a test -- genuinely carry the same
+        value. When they do, the sort column cannot decide anything and the
+        tiebreaker is the only thing keeping the pages apart.
+        """
+        sessions = [
+            WorkoutSession.objects.create(repbase_user=self.profile)
+            for _ in range(self.rows)
+        ]
+        moment = timezone.now()
+        WorkoutSession.objects.filter(
+            id__in=[session.id for session in sessions]
+        ).update(created_at=moment)
+        return [session.id for session in sessions]
+
+    def test_workout_history_pages_without_repeating_or_dropping_one(self):
+        expected = self.make_sessions()
+        seen, pages = self.walk("/api/v1/sessions/")
+        self.assertGreater(pages, 1, "fewer rows than a page; nothing was paged")
+        self.assertCoversExactly(seen, expected)
+
+    def test_history_breaks_a_tied_timestamp_by_the_key(self):
+        """Every row here ties, so this is the tiebreaker on its own."""
+        expected = self.make_sessions()
+        seen, _ = self.walk("/api/v1/sessions/")
+        self.assertEqual(seen, sorted(expected, reverse=True))
+
+    def test_reading_the_history_twice_gives_the_same_order(self):
+        self.make_sessions()
+        first, _ = self.walk("/api/v1/sessions/")
+        second, _ = self.walk("/api/v1/sessions/")
+        self.assertEqual(first, second)
+
+    # -- the warning itself ----------------------------------------------
+
+    def test_neither_list_is_paginated_unordered(self):
+        """DRF says so itself, and says it once per unordered list.
+
+        Turned into an error because it is a warning nobody reads: it was
+        printed on every run of this suite for as long as both lists have
+        existed.
+        """
+        from django.core.paginator import UnorderedObjectListWarning
+
+        Gym.objects.create(name="Gym 000", city="Leeds")
+        WorkoutSession.objects.create(repbase_user=self.profile)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UnorderedObjectListWarning)
+            self.assertEqual(self.client.get("/api/v1/gyms/").status_code, 200)
+            self.assertEqual(self.client.get("/api/v1/sessions/").status_code, 200)
