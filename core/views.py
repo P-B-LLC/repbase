@@ -48,6 +48,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
 from .photos import feed_variant
+from .save_recovery import IdempotentCreateMixin
 from .models import (
     CYCLE_MATERIALIZE_DAYS,
     BodyWeightEntry,
@@ -1790,7 +1791,7 @@ class WorkoutRecurrenceViewSet(
         ]
     )
 )
-class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     # Every session in a list reports distance, pace, climb and splits, and
     # each of those walks its route. Without prefetching, asking for a history
     # of runs issues a query per session per figure.
@@ -1864,9 +1865,17 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     def start(self, request, pk=None):
         with transaction.atomic():
             session = get_object_or_404(
-                self.get_queryset().select_for_update(),
+                self.scope_to_owner(WorkoutSession.objects.select_for_update()),
                 pk=pk,
             )
+            # A lost response must not turn a successful start into a 409 on
+            # retry, or move the clock. The phone that sent this cannot tell a
+            # reply that never arrived from one that never happened, so it
+            # sends it again -- and the session it is asking about is the one
+            # it already started. Replaying what is there answers the question
+            # it is actually asking. Same shape as finish, deliberately.
+            if session.status == WorkoutSession.Status.ACTIVE:
+                return Response(self.get_serializer(session).data)
             if session.status != WorkoutSession.Status.PLANNED:
                 return Response(
                     {"detail": "Only a planned session can be started."},
@@ -2013,7 +2022,7 @@ class WorkoutSessionViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         ]
     )
 )
-class SessionExerciseViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class SessionExerciseViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = SessionExercise.objects.select_related("session", "exercise")
     serializer_class = SessionExerciseSerializer
     permission_classes = [IsAuthenticated]
@@ -2047,7 +2056,7 @@ class SessionExerciseViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         ]
     )
 )
-class SetEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class SetEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = SetEntry.objects.select_related(
         "session_exercise__session__repbase_user"
     )

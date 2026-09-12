@@ -2841,6 +2841,16 @@ paths:
           description: ''
     post:
       operationId: session_exercises_create
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+          format: uuid
+        description: Persist a fresh UUID per intended create and reuse it with the
+          same JSON body on retry. Successful responses are replayed without a second
+          create. Reusing the key with changed input returns 409. Keys are scoped
+          to the authenticated account and endpoint and retained until account deletion.
       tags:
       - session-exercises
       requestBody:
@@ -3021,6 +3031,16 @@ paths:
           description: ''
     post:
       operationId: sessions_create
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+          format: uuid
+        description: Persist a fresh UUID per intended create and reuse it with the
+          same JSON body on retry. Successful responses are replayed without a second
+          create. Reusing the key with changed input returns 409. Keys are scoped
+          to the authenticated account and endpoint and retained until account deletion.
       tags:
       - sessions
       requestBody:
@@ -3472,6 +3492,16 @@ paths:
           description: ''
     post:
       operationId: set_entries_create
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+          format: uuid
+        description: Persist a fresh UUID per intended create and reuse it with the
+          same JSON body on retry. Successful responses are replayed without a second
+          create. Reusing the key with changed input returns 409. Keys are scoped
+          to the authenticated account and endpoint and retained until account deletion.
       tags:
       - set-entries
       requestBody:

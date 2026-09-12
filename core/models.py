@@ -15,6 +15,21 @@ from zoneinfo import ZoneInfo, available_timezones
 from django.utils import timezone
 
 
+class SaveReceipt(models.Model):
+    """A successful create and its replay response, committed together."""
+
+    owner = models.ForeignKey("RepbaseUser", on_delete=models.CASCADE)
+    key = models.UUIDField()
+    path = models.CharField(max_length=255)
+    request_hash = models.CharField(max_length=64)
+    response = models.JSONField()
+    status_code = models.PositiveSmallIntegerField(default=201)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["owner", "path", "key"], name="unique_save_receipt")]
+
+
 positive_decimal = MinValueValidator(Decimal("0.01"))
 
 EARTH_RADIUS_KM = 6371.0088
