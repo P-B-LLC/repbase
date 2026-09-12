@@ -426,9 +426,15 @@ class PasswordResetRequestView(APIView):
                 )
             minutes = int(PasswordResetCode.LIFETIME.total_seconds() // 60)
             send_mail(
-                subject="Your Repbase reset code",
+                # Rytivo, not Repbase. This is the one email the product
+                # sends, it goes to someone who is already locked out, and a
+                # code arriving under a name they have never seen reads like
+                # the phishing attempt they should be watching for. The repo
+                # and the Python package keep the old name; what a user is
+                # shown does not have to.
+                subject="Your Rytivo reset code",
                 message=(
-                    f"Your Repbase password reset code is {code}.\n\n"
+                    f"Your Rytivo password reset code is {code}.\n\n"
                     f"It works once and expires in {minutes} minutes. "
                     "If you did not ask to reset your password, you can "
                     "ignore this email and nothing will change."
