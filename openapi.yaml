@@ -6988,6 +6988,7 @@ components:
             $ref: '#/components/schemas/SavedFoodIngredientRequest'
         cooking_instructions:
           type: string
+          maxLength: 4000
     PatchedSessionExerciseRequest:
       type: object
       properties:
@@ -8802,6 +8803,7 @@ components:
             $ref: '#/components/schemas/SavedFoodIngredient'
         cooking_instructions:
           type: string
+          maxLength: 4000
         created_at:
           type: string
           format: date-time
@@ -8832,6 +8834,7 @@ components:
             $ref: '#/components/schemas/SavedFoodIngredientRequest'
         cooking_instructions:
           type: string
+          maxLength: 4000
       required:
       - ingredients
       - name

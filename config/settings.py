@@ -139,6 +139,20 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 8 * 1024 * 1024
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
+# Uploaded photos are served by core.media behind a keyed signature, in every
+# configuration rather than only under DEBUG. See that module for why the
+# expiry is rounded rather than exact -- in short, a URL that changes on every
+# read is a URL nothing can cache.
+MEDIA_URL_TTL = int(os.getenv('REPBASE_MEDIA_URL_TTL', str(7 * 24 * 60 * 60)))
+MEDIA_URL_WINDOW = int(os.getenv('REPBASE_MEDIA_URL_WINDOW', str(24 * 60 * 60)))
+
+# Set this to the internal location a reverse proxy maps onto MEDIA_ROOT --
+# `/protected-media/` for a standard nginx `internal;` block -- and the file
+# is sent by the proxy while this process only checks the signature and
+# returns a header. Left empty, Django sends the bytes itself, which works and
+# is what development uses.
+MEDIA_ACCEL_REDIRECT_ROOT = os.getenv('REPBASE_MEDIA_ACCEL_REDIRECT_ROOT', '')
+
 
 # API
 

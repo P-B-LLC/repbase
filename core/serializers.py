@@ -15,6 +15,8 @@ from rest_framework import serializers
 
 from drf_spectacular.utils import extend_schema_field
 
+from .media import signed_media_url
+
 from .models import (
     CardioMachine,
     BodyWeightEntry,
@@ -554,10 +556,7 @@ def feed_image_url_for(post, request):
     A null would mean "no photo", and a client drawing this field would lose
     the picture on every post made before the variant existed.
     """
-    source = post.feed_image or post.image
-    if not source:
-        return None
-    return request.build_absolute_uri(source.url) if request else source.url
+    return signed_media_url(post.feed_image or post.image, request)
 
 
 def profile_photo_url_for(profile, request):
@@ -566,10 +565,7 @@ def profile_photo_url_for(profile, request):
     Absolute because the app talks to the API from a different origin than the
     one serving the file, and a relative path would resolve against the app.
     """
-    if not profile.profile_photo:
-        return None
-    url = profile.profile_photo.url
-    return request.build_absolute_uri(url) if request else url
+    return signed_media_url(profile.profile_photo, request)
 
 
 class DisciplineListField(serializers.ListField):
@@ -2236,11 +2232,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_image_url(self, post):
-        if not post.image:
-            return None
-        request = self.context.get("request")
-        url = post.image.url
-        return request.build_absolute_uri(url) if request else url
+        return signed_media_url(post.image, self.context.get("request"))
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_feed_image_url(self, post):
@@ -2531,11 +2523,7 @@ class PostSerializer(serializers.ModelSerializer):
         Absolute for the reason a profile photo's is: the app talks to the
         API from a different origin than the one serving the file.
         """
-        if not post.image:
-            return None
-        request = self.context.get("request")
-        url = post.image.url
-        return request.build_absolute_uri(url) if request else url
+        return signed_media_url(post.image, self.context.get("request"))
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_feed_image_url(self, post):
