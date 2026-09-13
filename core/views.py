@@ -49,6 +49,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from . import food_sources
 from .photos import feed_variant
 from .save_recovery import IdempotentCreateMixin
+from .serializers import SessionFinishSerializer
 from .models import (
     CYCLE_MATERIALIZE_DAYS,
     BodyWeightEntry,
@@ -1037,7 +1038,7 @@ class OwnedViewSetMixin:
         return queryset.filter(**{self.owner_lookup: self.owner_profile()})
 
 
-class WorkoutTemplateViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = WorkoutTemplate.objects.prefetch_related(
         "workout_exercises__exercise"
     ).select_related("owner")
@@ -1419,7 +1420,7 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return Response(FoodMealSerializer(copied, many=True).data)
 
 
-class FoodEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class FoodEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Foods inside meals. Ownership is the meal's owner, one step away."""
 
     queryset = FoodEntry.objects.select_related("meal", "meal__owner")
@@ -1465,7 +1466,7 @@ class NutritionGoalView(APIView):
         return Response(serializer.data)
 
 
-class SavedFoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Meals kept to reuse."""
 
     queryset = SavedFoodMeal.objects.prefetch_related("ingredients").select_related("owner")
@@ -1657,7 +1658,7 @@ class GymViewSet(viewsets.ModelViewSet):
         ]
     )
 )
-class PlannerEntryViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Tasks and events on the planner.
 
     The date range is a filter rather than a required window so the same
@@ -1886,21 +1887,30 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
             session.save(update_fields=["status", "started_at", "updated_at"])
         return Response(self.get_serializer(session).data)
 
-    @extend_schema(request=None, responses=WorkoutSessionSerializer)
+    @extend_schema(request=SessionFinishSerializer, responses=WorkoutSessionSerializer)
     @action(detail=True, methods=["post"])
     def end(self, request, pk=None):
         with transaction.atomic():
             session = get_object_or_404(
-                self.get_queryset().select_for_update(),
+                self.scope_to_owner(WorkoutSession.objects.select_for_update()),
                 pk=pk,
             )
+            # A lost response must not turn a successful finish into a 409 on
+            # retry, or change its original completion time.
+            if session.status == WorkoutSession.Status.COMPLETED:
+                return Response(self.get_serializer(session).data)
+            payload = SessionFinishSerializer(data=request.data)
+            payload.is_valid(raise_exception=True)
+            ended_at = payload.validated_data.get("ended_at", timezone.now())
+            if session.started_at and ended_at < session.started_at:
+                raise ValidationError({"ended_at": "Finish time must not precede the session start."})
             if session.status != WorkoutSession.Status.ACTIVE:
                 return Response(
                     {"detail": "Only an active session can be ended."},
                     status=status.HTTP_409_CONFLICT,
                 )
             session.status = WorkoutSession.Status.COMPLETED
-            session.ended_at = timezone.now()
+            session.ended_at = ended_at
             session.full_clean()
             session.save(update_fields=["status", "ended_at", "updated_at"])
         return Response(self.get_serializer(session).data)
@@ -1985,21 +1995,26 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
         upload.is_valid(raise_exception=True)
 
         with transaction.atomic():
-            SessionRoutePoint.objects.bulk_create(
-                [
-                    SessionRoutePoint(session=session, **point)
-                    for point in upload.validated_data["points"]
-                ]
+            session = get_object_or_404(
+                self.scope_to_owner(WorkoutSession.objects.select_for_update()), pk=pk
             )
-
-        session.refresh_from_db()
-        # Store what the track came to. route_distance_km recomputes it from
-        # the points every time it is read, which is fine for one session and
-        # impossible to sum in SQL across every session a shoe was worn for.
-        distance = session.route_distance_km
-        if distance is not None:
-            session.recorded_distance_km = round(distance, 3)
-            session.save(update_fields=["recorded_distance_km", "updated_at"])
+            # Lock the parent for concurrent retries and deduplicate exact
+            # samples, including overlapping batches and duplicates in a batch.
+            fields = ('recorded_at', 'latitude', 'longitude', 'speed_mps', 'altitude_m')
+            points = upload.validated_data['points']
+            timestamps = [point['recorded_at'] for point in points]
+            known = set(session.route_points.filter(recorded_at__in=timestamps).values_list(*fields))
+            new_points = []
+            for point in points:
+                key = tuple(point.get(field) for field in fields)
+                if key not in known:
+                    known.add(key)
+                    new_points.append(SessionRoutePoint(session=session, **point))
+            SessionRoutePoint.objects.bulk_create(new_points)
+            distance = session.route_distance_km
+            if distance is not None:
+                session.recorded_distance_km = round(distance, 3)
+                session.save(update_fields=["recorded_distance_km", "updated_at"])
 
         # 200, matching the documented contract and the start/end actions.
         return Response(self.get_serializer(session).data)

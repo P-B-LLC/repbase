@@ -17,6 +17,15 @@ from drf_spectacular.utils import extend_schema_field
 
 from .media import signed_media_url
 
+
+class SessionFinishSerializer(serializers.Serializer):
+    ended_at = serializers.DateTimeField(required=False, help_text="Original device finish time; omit for server time.")
+
+    def validate_ended_at(self, value):
+        if value > timezone.now():
+            raise serializers.ValidationError("Finish time cannot be in the future.")
+        return value
+
 from .models import (
     CardioMachine,
     BodyWeightEntry,
@@ -408,12 +417,14 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
             )
         return attrs
 
+    @transaction.atomic
     def create(self, validated_data):
         ingredients = validated_data.pop("ingredients", [])
         saved = SavedFoodMeal.objects.create(**validated_data)
         self._replace_ingredients(saved, ingredients)
         return saved
 
+    @transaction.atomic
     def update(self, instance, validated_data):
         ingredients = validated_data.pop("ingredients", None)
         for field, value in validated_data.items():
@@ -1299,7 +1310,33 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
         return attrs
 
 
+class InitialWorkoutExerciseSerializer(WorkoutExerciseSerializer):
+    class Meta(WorkoutExerciseSerializer.Meta):
+        fields = ["exercise", "order", "target_sets", "target_reps", "target_weight_kg", "notes"]
+        read_only_fields = []
+
+
+class WorkoutPlanExerciseSerializer(InitialWorkoutExerciseSerializer):
+    relation_id = serializers.IntegerField(required=False, min_value=1)
+    order = serializers.IntegerField(min_value=1, max_value=10000)
+
+    class Meta(InitialWorkoutExerciseSerializer.Meta):
+        fields = ["relation_id", *InitialWorkoutExerciseSerializer.Meta.fields]
+
+
 class WorkoutTemplateSerializer(serializers.ModelSerializer):
+    exercise_plan = WorkoutPlanExerciseSerializer(
+        many=True, required=False, write_only=True, max_length=200,
+        help_text="Update-only: atomically replace the exercise plan, preserving supplied relation IDs.",
+    )
+    initial_exercises = InitialWorkoutExerciseSerializer(
+        many=True, required=False, write_only=True,
+        help_text="Create-only: save all initial exercises in the same transaction as the template.",
+    )
+    initial_date = serializers.DateField(
+        required=False, write_only=True,
+        help_text="Create-only: optionally schedule the new template in the same transaction.",
+    )
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
     # Declared explicitly so the field is "a machine or nothing" rather than
     # also accepting an empty string, which would put a third, meaningless
@@ -1326,10 +1363,73 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
             "cardio_target_minutes",
             "description",
             "exercises",
+            "initial_exercises",
+            "initial_date",
+            "exercise_plan",
             "created_at",
             "updated_at",
         ]
         read_only_fields = ["id", "owner", "created_at", "updated_at"]
+
+    def validate(self, attrs):
+        if not self.instance and "exercise_plan" in attrs:
+            raise serializers.ValidationError("Use initial_exercises when creating a workout.")
+        if self.instance and ("initial_exercises" in attrs or "initial_date" in attrs):
+            raise serializers.ValidationError("Initial exercises and date are only accepted for a new workout.")
+        orders = [entry.get("order", 1) for entry in attrs.get("initial_exercises", [])]
+        if len(orders) != len(set(orders)):
+            raise serializers.ValidationError({"initial_exercises": "Each exercise needs a distinct order."})
+        plan = attrs.get("exercise_plan", [])
+        plan_orders = [entry["order"] for entry in plan]
+        relations = [entry["relation_id"] for entry in plan if "relation_id" in entry]
+        if len(plan_orders) != len(set(plan_orders)) or len(relations) != len(set(relations)):
+            raise serializers.ValidationError({"exercise_plan": "Orders and relation IDs must be unique."})
+        return attrs
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        instance = WorkoutTemplate.objects.select_for_update().get(pk=instance.pk)
+        plan = validated_data.pop("exercise_plan", None)
+        if plan is not None:
+            rows = list(instance.workout_exercises.all())
+            by_id = {row.pk: row for row in rows}
+            if any(entry.get("relation_id") not in by_id for entry in plan if "relation_id" in entry):
+                raise serializers.ValidationError({"exercise_plan": "An exercise relation is not in this workout. Reload the plan."})
+            # Move existing rows aside first so exchanging positions never
+            # violates the unique(workout, order) constraint halfway through.
+            offset = max([row.order for row in rows] + [entry["order"] for entry in plan] + [0]) + 1
+            original = {(row.order, row.exercise_id): row for row in rows}
+            for index, row in enumerate(rows):
+                row.order = offset + index
+                row.save(update_fields=["order"])
+            kept = set()
+            reserved = {entry["relation_id"] for entry in plan if "relation_id" in entry}
+            for entry in plan:
+                values = dict(entry)
+                relation_id = values.pop("relation_id", None)
+                row = by_id.get(relation_id) if relation_id else original.get((values["order"], values["exercise"].pk))
+                if not relation_id and row is not None and row.pk in reserved:
+                    row = None
+                if row is not None and row.pk not in kept:
+                    for field, value in values.items():
+                        setattr(row, field, value)
+                    row.save()
+                else:
+                    row = WorkoutExercise.objects.create(workout=instance, **values)
+                kept.add(row.pk)
+            instance.workout_exercises.exclude(pk__in=kept).delete()
+        return super().update(instance, validated_data)
+
+    @transaction.atomic
+    def create(self, validated_data):
+        exercises = validated_data.pop("initial_exercises", [])
+        date = validated_data.pop("initial_date", None)
+        workout = super().create(validated_data)
+        for entry in exercises:
+            WorkoutExercise.objects.create(workout=workout, **entry)
+        if date is not None:
+            WorkoutSchedule.objects.create(owner=workout.owner, workout=workout, scheduled_date=date)
+        return workout
 
     def validate_name(self, value):
         """Report a duplicate name as a validation error, not a crash.
