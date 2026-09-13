@@ -9,6 +9,29 @@ on:
   workflow_call:
 
 jobs:
+  recovery-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: rytivo_test
+          POSTGRES_PASSWORD: local-ci-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      DJANGO_SETTINGS_MODULE: config.test_postgres
+      TEST_POSTGRES_PASSWORD: local-ci-only
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install -r requirements.txt "psycopg[binary]"
+      - run: python manage.py test core.test_save_recovery core.test_save_concurrency
+
   test:
     runs-on: ubuntu-latest
     steps:
