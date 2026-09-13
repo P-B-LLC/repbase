@@ -1,3 +1,4 @@
+import logging
 import secrets
 import uuid
 from datetime import timedelta
@@ -176,6 +177,8 @@ from .serializers import (
     SavedWorkoutResultSerializer,
     UpdatePostSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def home(request):
@@ -421,30 +424,47 @@ class PasswordResetRequestView(APIView):
                 ).update(used_at=timezone.now())
 
                 code = f"{secrets.randbelow(1_000_000):06d}"
-                PasswordResetCode.objects.create(
+                issued = PasswordResetCode.objects.create(
                     user=user,
                     code_hash=make_password(code),
                     expires_at=timezone.now() + PasswordResetCode.LIFETIME,
                 )
             minutes = int(PasswordResetCode.LIFETIME.total_seconds() // 60)
-            send_mail(
-                # Rytivo, not Repbase. This is the one email the product
-                # sends, it goes to someone who is already locked out, and a
-                # code arriving under a name they have never seen reads like
-                # the phishing attempt they should be watching for. The repo
-                # and the Python package keep the old name; what a user is
-                # shown does not have to.
-                subject="Your Rytivo reset code",
-                message=(
-                    f"Your Rytivo password reset code is {code}.\n\n"
-                    f"It works once and expires in {minutes} minutes. "
-                    "If you did not ask to reset your password, you can "
-                    "ignore this email and nothing will change."
-                ),
-                from_email=settings.DEFAULT_FROM_EMAIL,
-                recipient_list=[user.email],
-                fail_silently=False,
-            )
+            try:
+                send_mail(
+                    # Rytivo, not Repbase. This is the one email the product
+                    # sends, it goes to someone who is already locked out, and
+                    # a code arriving under a name they have never seen reads
+                    # like the phishing attempt they should be watching for.
+                    # The repo and the Python package keep the old name; what
+                    # a user is shown does not have to.
+                    subject="Your Rytivo reset code",
+                    message=(
+                        f"Your Rytivo password reset code is {code}.\n\n"
+                        f"It works once and expires in {minutes} minutes. "
+                        "If you did not ask to reset your password, you can "
+                        "ignore this email and nothing will change."
+                    ),
+                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    recipient_list=[user.email],
+                    fail_silently=False,
+                )
+            except Exception:
+                # The row is committed before the send, so a provider that
+                # refuses the message would otherwise leave a live code
+                # nobody received: an account with a reset outstanding and no
+                # way to reach it. Spend it, so asking again issues a fresh
+                # one rather than colliding with a ghost.
+                PasswordResetCode.objects.filter(
+                    pk=issued.pk, used_at__isnull=True
+                ).update(used_at=timezone.now())
+                # And still answer 204. A 500 here could only ever happen for
+                # an address that has an account, which is exactly the
+                # difference this endpoint exists to hide -- it would turn a
+                # mail outage into the account enumerator the 204 was written
+                # to prevent. The operator finds out from this log and from
+                # `manage.py check --deploy`. A stranger finds out nothing.
+                logger.exception("Password reset email could not be sent")
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 

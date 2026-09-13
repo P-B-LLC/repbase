@@ -246,6 +246,12 @@ SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration
+#
+# This product sends one email: a password reset code, to somebody who is
+# already locked out of their account. There is no retry queue and no second
+# channel, so email that cannot deliver is not a degraded feature -- it is an
+# account nobody can get back into. core.checks refuses to let a production
+# deploy discover that from its first locked-out user.
 
 if DEBUG:
     MAILERS = {
@@ -254,6 +260,10 @@ if DEBUG:
         },
     }
 else:
+    # Implicit TLS on port 465, or STARTTLS on 587, depending on the
+    # provider. Django refuses both at once, so asking for SSL settles it
+    # rather than raising on the combination that reads as more secure.
+    _smtp_ssl = os.getenv('SMTP_USE_SSL', 'false').lower() in {'1', 'true', 'yes'}
     MAILERS = {
         'default': {
             'BACKEND': 'django.core.mail.backends.smtp.EmailBackend',
@@ -262,8 +272,16 @@ else:
                 'port': int(os.getenv('SMTP_PORT', '587')),
                 'username': os.getenv('SMTP_USERNAME', ''),
                 'password': os.getenv('SMTP_PASSWORD', ''),
-                'use_tls': os.getenv('SMTP_USE_TLS', 'true').lower()
-                in {'1', 'true', 'yes'},
+                'use_ssl': _smtp_ssl,
+                'use_tls': False if _smtp_ssl else os.getenv(
+                    'SMTP_USE_TLS', 'true'
+                ).lower() in {'1', 'true', 'yes'},
+                # Django's default is no timeout at all. A provider that
+                # accepts the connection and then stops talking would hold
+                # the worker serving that request until the socket gave up
+                # on its own, and on a small deployment one worker is a
+                # noticeable share of the server.
+                'timeout': int(os.getenv('SMTP_TIMEOUT', '10')),
             },
         },
     }
