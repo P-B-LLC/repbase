@@ -8,7 +8,6 @@ from django.conf import settings
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
-from django.core.files.base import ContentFile
 from django.db import models, transaction
 from django.utils.dateparse import parse_date
 from django.db.models import (
@@ -48,7 +47,7 @@ from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
-from .photos import feed_variant
+from .post_publication import publication_media, PublicationMediaError
 from .save_recovery import IdempotentCreateMixin
 from .serializers import SessionFinishSerializer
 from .models import (
@@ -107,7 +106,6 @@ from .models import (
 )
 from .permissions import IsCustomExerciseOwnerOrAdmin
 from .serializers import (
-    ALLOWED_PHOTO_TYPES,
     AuthResponseSerializer,
     BodyWeightEntrySerializer,
     DailyStepCountRecordSerializer,
@@ -3241,6 +3239,15 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             context=self.get_serializer_context(),
         )
         payload.is_valid(raise_exception=True)
+        decoded = payload.validated_data.get("decoded_image")
+        extension = payload.validated_data.get("image_extension", ".jpg")
+        try:
+            with publication_media(decoded, extension) as media:
+                return self._publish_post(payload, media)
+        except PublicationMediaError:
+            raise ServiceUnavailable("Your post was not published because its photo could not be saved. Please retry.")
+
+    def _publish_post(self, payload, media):
         author = self.owner_profile()
         kind = payload.validated_data["kind"]
         post = create_post_from_source(
@@ -3255,34 +3262,10 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 "cooking_instructions", ""
             ),
         )
-        # Saved after the row exists, because the upload path is named from
-        # its id. Done before the card is read back, so a post never goes
-        # out over the wire without the photo it was created with.
-        decoded = payload.validated_data.get("decoded_image")
-        if decoded is not None:
-            # What Pillow read out of the bytes, falling back to the
-            # client's label only if Pillow is somehow unavailable.
-            extension = (
-                payload.validated_data.get("image_extension")
-                or ALLOWED_PHOTO_TYPES[payload.validated_data["content_type"]]
-            )
-            post.image.save(
-                f"{uuid.uuid4().hex}{extension}",
-                ContentFile(decoded),
-                save=True,
-            )
-            # And a card-sized copy beside it, if one is worth making. The
-            # feed used to send the original -- two to four megabytes to draw
-            # a card a few hundred points tall. None here means the original
-            # is already small enough or could not be read, and readers fall
-            # back to it, so nothing about the post depends on this working.
-            smaller = feed_variant(decoded)
-            if smaller is not None:
-                post.feed_image.save(
-                    f"{uuid.uuid4().hex}.jpg",
-                    ContentFile(smaller),
-                    save=True,
-                )
+        for field, name in media.items():
+            setattr(post, field, name)
+        if media:
+            post.save(update_fields=list(media))
         # Read back through the list queryset so the card returned from a create
         # is assembled by the code that assembles the card in the feed, rather
         # than by a second path that can disagree with it.
@@ -3820,26 +3803,30 @@ class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return queryset.order_by("kind", "name", "pk")
 
     def perform_create(self, serializer):
-        gear = serializer.save(owner=self.owner_profile())
-        self._clear_other_defaults(gear)
+        self._save_default_gear(serializer)
 
     def perform_update(self, serializer):
-        gear = serializer.save()
-        self._clear_other_defaults(gear)
+        self._save_default_gear(serializer)
 
-    def _clear_other_defaults(self, gear):
-        """Only one default per kind.
-
-        A constraint enforces this too, but a constraint can only refuse. This
-        is what makes choosing a new default work instead of failing.
-        """
-        if not gear.is_default:
-            return
-        Gear.objects.filter(
-            owner=gear.owner,
-            kind=gear.kind,
-            is_default=True,
-        ).exclude(pk=gear.pk).update(is_default=False)
+    def _save_default_gear(self, serializer):
+        # Lock the account, including when there are no gear rows yet. All
+        # default switches for this owner serialize; other owners do not wait.
+        with transaction.atomic():
+            owner = RepbaseUser.objects.select_for_update().get(pk=self.owner_profile().pk)
+            if serializer.instance is not None:
+                # The instance was read before waiting for the lock. Refresh it
+                # so an unrelated partial edit cannot resurrect an old default.
+                serializer.instance = Gear.objects.get(pk=serializer.instance.pk, owner=owner)
+            current = serializer.instance
+            desired = serializer.validated_data.get('is_default', getattr(current, 'is_default', False))
+            kind = serializer.validated_data.get('kind', getattr(current, 'kind', None))
+            if desired:
+                others = Gear.objects.filter(owner=owner, kind=kind, is_default=True)
+                if current is not None:
+                    others = others.exclude(pk=current.pk)
+                others.update(is_default=False)
+            # A failed save rolls back the previous default as well.
+            serializer.save(owner=owner)
 
 
 class TrainingStatsView(APIView):

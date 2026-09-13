@@ -14,7 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 def delete_pending_media(job_id, using='default'):
-    job = PendingMediaDeletion.objects.using(using).filter(pk=job_id).first()
+    with transaction.atomic(using=using):
+        return _delete_pending_media(job_id, using)
+
+
+def _delete_pending_media(job_id, using):
+    job = PendingMediaDeletion.objects.using(using).select_for_update().filter(pk=job_id).first()
     if job is None:
         return True
     # Never remove a file that another surviving row still references.

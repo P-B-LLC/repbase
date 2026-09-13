@@ -55,7 +55,8 @@ class RepbaseAPITestMixin:
     eight tests and ran them again under its own name.
     """
 
-    def _pre_setup(self):
+    @classmethod
+    def _pre_setup(cls):
         """Start every test with the throttle counters empty.
 
         They live in the cache, and no transaction rolls a cache back. Test

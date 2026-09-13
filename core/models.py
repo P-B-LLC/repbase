@@ -18,16 +18,47 @@ from django.utils import timezone
 class SaveReceipt(models.Model):
     """A successful create and its replay response, committed together."""
 
+    #: How long a key is worth honouring.
+    #:
+    #: A receipt exists so a phone that never heard the answer can ask again
+    #: and be told what happened rather than creating a second row. That is
+    #: worth something for as long as a client might still retry: the app
+    #: keeps pending saves in a file across relaunches, so the window is not
+    #: minutes -- a phone can be off, or out of signal, for a long time.
+    #:
+    #: It is not worth forever. One row per create per account, each holding
+    #: a full response body, kept for the life of the account, is a table
+    #: that only grows and whose largest rows belong to the most active
+    #: users. Thirty days keeps the retries that realistically happen and
+    #: bounds the rest.
+    #:
+    #: What is given up: a retry older than this creates a duplicate instead
+    #: of replaying. That is the behaviour from before receipts existed, so
+    #: the tail case degrades to the old normal rather than to something
+    #: worse.
+    RETENTION = timedelta(days=30)
+
     owner = models.ForeignKey("RepbaseUser", on_delete=models.CASCADE)
     key = models.UUIDField()
     path = models.CharField(max_length=255)
     request_hash = models.CharField(max_length=64)
     response = models.JSONField()
     status_code = models.PositiveSmallIntegerField(default=201)
-    created_at = models.DateTimeField(auto_now_add=True)
+    #: Indexed for the pruning query and nothing else. Without it the job
+    #: that keeps this table bounded has to read the table to find out what
+    #: to delete from it, which is the wrong shape for the one query that
+    #: runs when the table is at its largest.
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["owner", "path", "key"], name="unique_save_receipt")]
+
+    @classmethod
+    def prune(cls, now=None):
+        """Drop receipts too old to be replaying anything. Returns the count."""
+        cutoff = (now or timezone.now()) - cls.RETENTION
+        deleted, _ = cls.objects.filter(created_at__lt=cutoff).delete()
+        return deleted
 
 
 positive_decimal = MinValueValidator(Decimal("0.01"))
@@ -3219,13 +3250,33 @@ class FoodSearchCache(models.Model):
     on the timescale of a survey, not a day.
     """
 
+    #: When an answer stops being worth trusting and is fetched again.
+    #:
+    #: A week, because the data is public-domain reference material that
+    #: changes on the timescale of a survey, not a day.
     LIFETIME = timedelta(days=7)
+
+    #: When a row stops being worth keeping at all, which is a different
+    #: question and a much later answer.
+    #:
+    #: Past LIFETIME a row is stale but not useless: when FoodData Central
+    #: cannot be reached, the search endpoint serves the stale payload rather
+    #: than failing, because a week-old calorie count for oats is still the
+    #: calorie count for oats. Pruning on LIFETIME would quietly delete that
+    #: fallback and nobody would find out until an outage.
+    #:
+    #: So retention is keyed on how long ago the term was last worth
+    #: fetching. fetched_at refreshes whenever a search misses or goes stale,
+    #: which means a term people keep searching keeps its row and a term
+    #: somebody typed once in March does not. That distinction is the whole
+    #: point: the table grows by distinct terms, not by traffic.
+    RETENTION = timedelta(days=90)
 
     #: Case- and space-folded, so "Chicken  Breast" and "chicken breast" are
     #: one entry rather than two.
     term = models.CharField(max_length=200, unique=True)
     payload = models.JSONField()
-    fetched_at = models.DateTimeField(auto_now=True)
+    fetched_at = models.DateTimeField(auto_now=True, db_index=True)
 
     class Meta:
         ordering = ("-fetched_at",)
@@ -3236,6 +3287,13 @@ class FoodSearchCache(models.Model):
     @property
     def is_fresh(self):
         return timezone.now() - self.fetched_at < self.LIFETIME
+
+    @classmethod
+    def prune(cls, now=None):
+        """Drop terms nobody has looked up in a long time. Returns the count."""
+        cutoff = (now or timezone.now()) - cls.RETENTION
+        deleted, _ = cls.objects.filter(fetched_at__lt=cutoff).delete()
+        return deleted
 
     @staticmethod
     def normalize(term):
