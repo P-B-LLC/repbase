@@ -6,6 +6,8 @@ from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
+from functools import cached_property
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
@@ -631,13 +633,26 @@ class WorkoutSession(models.Model):
             return None
         return (self.ended_at - self.started_at).total_seconds()
 
-    @property
+    @cached_property
     def route_distance_km(self):
         """Distance along the recorded GPS route.
 
         Computed here rather than on the device so every client reports the
         same number for the same track. Returns None when the session has no
         usable route.
+
+        Cached per instance, along with the other track-derived values below,
+        because three of them ask for this one: pace, average speed and moving
+        pace each read route_distance_km, so serialising a single session ran
+        this loop four times over every point in the track. The session list
+        prefetches route_points and serialises fifty at a time, which made it
+        four haversine passes per session per page for one number that does
+        not change while the object is alive.
+
+        Anything that adds points has to work on a freshly loaded session, not
+        one whose properties have already been read. The upload endpoint does
+        exactly that -- it re-fetches under select_for_update inside the
+        transaction -- which is what makes this safe.
         """
         points = list(self.route_points.all())
         if len(points) < 2:
@@ -662,7 +677,7 @@ class WorkoutSession(models.Model):
             )
         return round(total, 3)
 
-    @property
+    @cached_property
     def route_elapsed_seconds(self):
         """Time spanned by the recorded track itself.
 
@@ -677,7 +692,7 @@ class WorkoutSession(models.Model):
         span = (points[-1].recorded_at - points[0].recorded_at).total_seconds()
         return round(span, 2) if span > 0 else None
 
-    @property
+    @cached_property
     def pace_seconds_per_km(self):
         """Average pace across the recorded route, in seconds per kilometer."""
         distance = self.route_distance_km
@@ -686,7 +701,7 @@ class WorkoutSession(models.Model):
             return None
         return round(elapsed / distance, 2)
 
-    @property
+    @cached_property
     def average_speed_kmh(self):
         """Average speed across the recorded route, including any stops."""
         distance = self.route_distance_km
@@ -695,7 +710,7 @@ class WorkoutSession(models.Model):
             return None
         return round(distance / (elapsed / 3600), 2)
 
-    @property
+    @cached_property
     def moving_seconds(self):
         """Time spent actually moving, ignoring stops.
 
@@ -721,7 +736,7 @@ class WorkoutSession(models.Model):
                 total += gap
         return round(total, 2)
 
-    @property
+    @cached_property
     def moving_pace_seconds_per_km(self):
         """Pace over moving time only — the number a runner compares."""
         distance = self.route_distance_km
@@ -834,7 +849,7 @@ class WorkoutSession(models.Model):
 
         return records
 
-    @property
+    @cached_property
     def elevation_gain_m(self):
         """Total height climbed, ignoring GPS drift.
 
@@ -847,7 +862,7 @@ class WorkoutSession(models.Model):
 
         return round(_accumulate(altitudes, ascending=True), 1)
 
-    @property
+    @cached_property
     def elevation_loss_m(self):
         """Total height descended, as a positive number."""
         altitudes = self._smoothed_altitudes()
@@ -867,7 +882,7 @@ class WorkoutSession(models.Model):
             return None
         return smoothed(raw)
 
-    @property
+    @cached_property
     def max_speed_kmh(self):
         """Fastest speed reached, from the device's own speed readings."""
         speeds = [
@@ -879,7 +894,7 @@ class WorkoutSession(models.Model):
             return None
         return round(max(speeds) * 3.6, 2)
 
-    @property
+    @cached_property
     def splits(self):
         """Time taken for each mile, in order.
 
