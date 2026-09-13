@@ -38,8 +38,10 @@ and operation UUIDs, plus atomic workout create/edit requests.
 ## Still open
 
 Backend commit `eccc2c3` now applies receipt handling to session/set creates and
-makes session start replay-safe. iOS still needs generated-header updates,
-durable operation identities, and end-to-end integration for these writes.
+makes session start replay-safe. iOS now has regenerated headers and durable
+session/set operation identities, including relog and checkpoint reconciliation.
+See iOS `WORKOUT_SAVE_GATE.md`. The latest full backend suite ran 288 tests,
+OK with two PostgreSQL-only skips; focused recovery tests passed all 27 cases.
 Device tests must verify interrupted transport, restart, edited retries, account
 changes, and protected local recovery files. This batch is not beta sign-off.
 No push, deployment, or production migration was performed.
