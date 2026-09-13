@@ -9,7 +9,21 @@ on:
   workflow_call:
 
 jobs:
-  recovery-postgres:
+  # The whole suite, against the database this actually ships on.
+  #
+  # It used to run two modules -- the ones written for the row-lock work --
+  # and that was backwards. The recovery tests were the ones LEAST in need of
+  # a real database, because they were written knowing they needed one. The
+  # risk lives in the other 299, which were all written against SQLite and
+  # have never once touched PostgreSQL.
+  #
+  # SQLite forgives things PostgreSQL does not: it serialises writers, so a
+  # missing row lock passes; it returns small tables in insertion order, so a
+  # query with no ORDER BY looks stable; it ignores GROUP BY rules that
+  # PostgreSQL enforces. Two real bugs here were exactly that shape -- a
+  # select_for_update on an aggregated query, and a paginator whose ordering
+  # had been silently dropped -- and both passed every SQLite run.
+  postgres:
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -30,7 +44,7 @@ jobs:
         with:
           python-version: "3.14"
       - run: pip install -r requirements.txt "psycopg[binary]"
-      - run: python manage.py test core.test_save_recovery core.test_save_concurrency
+      - run: python manage.py test core
 
   test:
     runs-on: ubuntu-latest
