@@ -1811,12 +1811,14 @@ class WorkoutRecurrenceViewSet(
     )
 )
 class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
-    # Every session in a list reports distance, pace, climb and splits, and
-    # each of those walks its route. Without prefetching, asking for a history
-    # of runs issues a query per session per figure.
     queryset = (
         WorkoutSession.objects.select_related("repbase_user", "workout")
-        .prefetch_related("route_points")
+        # No prefetch of route_points. Serialising a session reads its track
+        # values from route_summary, so the points are not touched -- and
+        # prefetching them meant a page of fifty sessions pulled every GPS fix
+        # of every one of them into memory to produce eight numbers. The
+        # points have their own endpoint for the one screen that draws them.
+
         # Counted in the same query rather than per session. A history of a
         # hundred sessions would otherwise be a hundred extra counts.
         .annotate(
@@ -2029,10 +2031,18 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
                     known.add(key)
                     new_points.append(SessionRoutePoint(session=session, **point))
             SessionRoutePoint.objects.bulk_create(new_points)
-            distance = session.route_distance_km
+            # Everything the track implies, worked out here because this is
+            # the only place points ever change. Serialising a session then
+            # reads seven stored values instead of walking the whole track
+            # once per value, which is what the session list was doing fifty
+            # sessions at a time.
+            summary = session.recompute_route_summary()
+            distance = summary["route_distance_km"]
             if distance is not None:
                 session.recorded_distance_km = round(distance, 3)
-                session.save(update_fields=["recorded_distance_km", "updated_at"])
+            session.save(
+                update_fields=["route_summary", "recorded_distance_km", "updated_at"]
+            )
 
         # 200, matching the documented contract and the start/end actions.
         return Response(self.get_serializer(session).data)

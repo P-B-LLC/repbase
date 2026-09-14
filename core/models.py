@@ -6,6 +6,7 @@ from datetime import timedelta
 from decimal import Decimal
 from urllib.parse import urlparse, urlunparse
 
+import functools
 from functools import cached_property
 
 from django.conf import settings
@@ -15,6 +16,52 @@ from django.db import models
 from zoneinfo import ZoneInfo, available_timezones
 
 from django.utils import timezone
+
+
+class TrackValue:
+    """A number derived from a session's GPS track.
+
+    Read from the stored summary when there is one, computed from the points
+    when there is not, and remembered on the instance either way.
+
+    The point of it is the session list. Four of these are read from list
+    responses -- the app plots distance, pace and climb per session to show
+    progress on a named workout -- so every one of them used to walk every
+    point of every session in the page, fifty at a time. A one-hour run at one
+    fix a second is 3,600 rows; the numbers they produce are seven floats and
+    a short list that cannot change once the track is uploaded.
+
+    So they are computed once, when the points arrive, and stored. Nothing
+    else in the codebase writes SessionRoutePoint, which is what makes a
+    stored summary safe rather than a second version of the truth waiting to
+    disagree with the first.
+
+    Computing remains the fallback rather than being deleted. A session whose
+    summary was never written still answers correctly, just slowly, which is
+    the right way round: no route has ever been recorded against this
+    database, so the fallback is for rows that should not exist rather than a
+    path anything depends on.
+    """
+
+    def __init__(self, compute):
+        self.compute = compute
+        functools.update_wrapper(self, compute)
+
+    def __set_name__(self, owner, name):
+        self.name = name
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self
+        summary = instance.route_summary
+        if summary is not None and self.name in summary:
+            value = summary[self.name]
+        else:
+            value = self.compute(instance)
+        # Shadow the descriptor on the instance, exactly as cached_property
+        # does, so repeated reads during one serialization cost nothing.
+        instance.__dict__[self.name] = value
+        return value
 
 
 class SaveReceipt(models.Model):
@@ -602,6 +649,11 @@ class WorkoutSession(models.Model):
         blank=True,
         validators=[MinValueValidator(0)],
     )
+    #: Every value derived from the GPS track, worked out once when the points
+    #: arrive. See TrackValue for why. Null means no track has been uploaded,
+    #: or the summary predates this column, in which case the values are
+    #: computed from the points as before.
+    route_summary = models.JSONField(null=True, blank=True, editable=False)
     #: The shoe or bike used. Null when the user did not say.
     gear = models.ForeignKey(
         "Gear",
@@ -633,7 +685,52 @@ class WorkoutSession(models.Model):
             return None
         return (self.ended_at - self.started_at).total_seconds()
 
-    @cached_property
+    #: The values TrackValue stores, and the only ones that actually need the
+    #: points. Pace, average speed and moving pace are arithmetic on these, so
+    #: they cost nothing once these are known and are not stored twice.
+    ROUTE_SUMMARY_FIELDS = (
+        "route_distance_km",
+        "route_elapsed_seconds",
+        "moving_seconds",
+        "max_speed_kmh",
+        "elevation_gain_m",
+        "elevation_loss_m",
+        "splits",
+    )
+
+    def recompute_route_summary(self):
+        """Work the track-derived values out from the points and keep them.
+
+        Call this after changing a session's points, on an instance loaded
+        for the purpose. It does not save; the caller decides what else to
+        write in the same statement.
+
+        The summary is cleared first because the values read it when it is
+        there -- leaving the old one in place would recompute nothing and
+        store what was already stored.
+        """
+        self.route_summary = None
+        self._forget_track_values()
+        self.route_summary = {
+            field: getattr(self, field) for field in self.ROUTE_SUMMARY_FIELDS
+        }
+        # Read again from the summary rather than from the points, so one
+        # instance cannot hold two answers to the same question.
+        self._forget_track_values()
+        return self.route_summary
+
+    def _forget_track_values(self):
+        for field in self.ROUTE_SUMMARY_FIELDS:
+            self.__dict__.pop(field, None)
+        # The three that are derived from them, cached the ordinary way.
+        for field in (
+            "pace_seconds_per_km",
+            "average_speed_kmh",
+            "moving_pace_seconds_per_km",
+        ):
+            self.__dict__.pop(field, None)
+
+    @TrackValue
     def route_distance_km(self):
         """Distance along the recorded GPS route.
 
@@ -677,7 +774,7 @@ class WorkoutSession(models.Model):
             )
         return round(total, 3)
 
-    @cached_property
+    @TrackValue
     def route_elapsed_seconds(self):
         """Time spanned by the recorded track itself.
 
@@ -710,7 +807,7 @@ class WorkoutSession(models.Model):
             return None
         return round(distance / (elapsed / 3600), 2)
 
-    @cached_property
+    @TrackValue
     def moving_seconds(self):
         """Time spent actually moving, ignoring stops.
 
@@ -849,7 +946,7 @@ class WorkoutSession(models.Model):
 
         return records
 
-    @cached_property
+    @TrackValue
     def elevation_gain_m(self):
         """Total height climbed, ignoring GPS drift.
 
@@ -862,7 +959,7 @@ class WorkoutSession(models.Model):
 
         return round(_accumulate(altitudes, ascending=True), 1)
 
-    @cached_property
+    @TrackValue
     def elevation_loss_m(self):
         """Total height descended, as a positive number."""
         altitudes = self._smoothed_altitudes()
@@ -882,7 +979,7 @@ class WorkoutSession(models.Model):
             return None
         return smoothed(raw)
 
-    @cached_property
+    @TrackValue
     def max_speed_kmh(self):
         """Fastest speed reached, from the device's own speed readings."""
         speeds = [
@@ -894,7 +991,7 @@ class WorkoutSession(models.Model):
             return None
         return round(max(speeds) * 3.6, 2)
 
-    @cached_property
+    @TrackValue
     def splits(self):
         """Time taken for each mile, in order.
 

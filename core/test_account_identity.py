@@ -8,7 +8,8 @@ work the application was doing badly on its own.
 from datetime import timedelta
 
 from django.contrib.auth import get_user_model
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
+from django.test.utils import CaptureQueriesContext
 from django.test import TestCase
 from django.utils import timezone
 
@@ -139,3 +140,127 @@ class TheTrackIsMeasuredOnceTests(RepbaseAPITestMixin, APITestCase):
         mine.refresh_from_db()
         self.assertIsNotNone(mine.recorded_distance_km)
         self.assertGreater(float(mine.recorded_distance_km), 0)
+
+
+class TheSessionListDoesNotWalkAnyTrackTests(RepbaseAPITestMixin, APITestCase):
+    """The cost this was about is a query count, so the test is a query count.
+
+    Four of the track-derived values are read from list responses -- the app
+    plots distance, pace and climb per session to show progress on a named
+    workout -- so the list cannot simply stop reporting them. It can stop
+    recomputing them, which is what the stored summary is for.
+    """
+
+    def setUp(self):
+        _, self.profile, token = self.create_account("runner")
+        self.authenticate(token)
+
+    def session_with_a_track(self, points=60):
+        session = WorkoutSession.objects.create(
+            repbase_user=self.profile, status=WorkoutSession.Status.COMPLETED
+        )
+        start = timezone.now() - timedelta(minutes=40)
+        SessionRoutePoint.objects.bulk_create([
+            SessionRoutePoint(
+                session=session,
+                recorded_at=start + timedelta(seconds=10 * step),
+                latitude=40.0 + step * 0.0004,
+                longitude=-105.0,
+                speed_mps=3.0,
+                altitude_m=1600 + step,
+            )
+            for step in range(points)
+        ])
+        session.recompute_route_summary()
+        session.save(update_fields=["route_summary"])
+        return session
+
+    def test_the_list_never_reads_the_point_table(self):
+        """The assertion that actually holds.
+
+        A query count alone would not have caught this: prefetch_related is
+        one query no matter how many sessions, so the old code passed "more
+        sessions, same number of queries" while pulling every GPS fix of every
+        session in the page into memory. The cost was rows and arithmetic, not
+        round trips. So this asserts the table is not read at all.
+        """
+        for _ in range(3):
+            self.session_with_a_track()
+
+        with CaptureQueriesContext(connection) as queries:
+            self.assertEqual(self.client.get("/api/v1/sessions/").status_code, 200)
+
+        touched = [q["sql"] for q in queries.captured_queries if "sessionroutepoint" in q["sql"].lower()]
+        self.assertEqual(touched, [], "the session list read the point table")
+
+    def test_more_sessions_do_not_cost_more_queries(self):
+        """And with the prefetch gone, nothing may quietly become an N+1."""
+        self.session_with_a_track()
+        with CaptureQueriesContext(connection) as first:
+            self.assertEqual(self.client.get("/api/v1/sessions/").status_code, 200)
+
+        for _ in range(4):
+            self.session_with_a_track()
+        with self.assertNumQueries(len(first.captured_queries)):
+            response = self.client.get("/api/v1/sessions/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 5)
+
+    def test_the_list_still_reports_what_the_app_plots(self):
+        """sessionHistory reads these four off the list to draw a progress
+        chart. Storing the summary must not quietly empty them."""
+        self.session_with_a_track()
+        row = self.client.get("/api/v1/sessions/").data["results"][0]
+        for field in (
+            "route_distance_km",
+            "pace_seconds_per_km",
+            "moving_pace_seconds_per_km",
+            "elevation_gain_m",
+        ):
+            self.assertIsNotNone(row[field], f"{field} went missing from the list")
+        self.assertTrue(row["splits"])
+        self.assertIsNotNone(row["max_speed_kmh"])
+
+    def test_the_stored_summary_matches_what_the_points_say(self):
+        """Otherwise this is a fast way to report the wrong number."""
+        session = self.session_with_a_track()
+        stored = dict(session.route_summary)
+
+        fresh = WorkoutSession.objects.get(pk=session.pk)
+        fresh.route_summary = None
+        for field in WorkoutSession.ROUTE_SUMMARY_FIELDS:
+            self.assertEqual(
+                stored[field], getattr(fresh, field), f"{field} disagrees with the track"
+            )
+
+    def test_uploading_more_points_updates_the_summary(self):
+        session = WorkoutSession.objects.create(repbase_user=self.profile)
+        start = timezone.now() - timedelta(minutes=10)
+
+        def upload(offset):
+            return self.client.post(
+                f"/api/v1/sessions/{session.id}/route/",
+                {"points": [
+                    {
+                        "recorded_at": (start + timedelta(seconds=10 * (offset + n))).isoformat(),
+                        "latitude": 40.0 + (offset + n) * 0.001,
+                        "longitude": -105.0,
+                        "speed_mps": 3.0,
+                    }
+                    for n in range(10)
+                ]},
+                format="json",
+            )
+
+        self.assertEqual(upload(0).status_code, 200)
+        session.refresh_from_db()
+        first = session.route_summary["route_distance_km"]
+
+        self.assertEqual(upload(10).status_code, 200)
+        session.refresh_from_db()
+        self.assertGreater(session.route_summary["route_distance_km"], first)
+        self.assertEqual(
+            round(float(session.recorded_distance_km), 3),
+            round(session.route_summary["route_distance_km"], 3),
+        )
