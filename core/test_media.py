@@ -69,7 +69,13 @@ class SignedMediaTests(RepbaseAPITestMixin, APITestCase):
 
     def test_a_tampered_signature_is_refused(self):
         url = self.url_for()
-        self.assertEqual(self.client.get(url[:-1] + 'f').status_code, 403)
+        # Change the last character to one it is not. Flipping it to a fixed
+        # letter looks equivalent and is not: a signature that already ends in
+        # that letter is not tampered with at all, and the test then asserts
+        # that a valid URL is refused -- which it is not, about one run in
+        # sixteen. It failed exactly that way once before this was noticed.
+        tampered = url[:-1] + ('0' if url[-1] != '0' else '1')
+        self.assertEqual(self.client.get(tampered).status_code, 403)
 
     def test_a_signature_for_one_file_does_not_open_another(self):
         """The part an attacker actually tries."""

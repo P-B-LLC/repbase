@@ -9812,6 +9812,7 @@ components:
         workout_name:
           type: string
           readOnly: true
+          nullable: true
         workout_type:
           type: string
           readOnly: true

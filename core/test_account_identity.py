@@ -264,3 +264,73 @@ class TheSessionListDoesNotWalkAnyTrackTests(RepbaseAPITestMixin, APITestCase):
             round(float(session.recorded_distance_km), 3),
             round(session.route_summary["route_distance_km"], 3),
         )
+
+
+class ASessionWithNoTemplateStillDecodesTests(RepbaseAPITestMixin, APITestCase):
+    """Deleting a workout template must not make its sessions unreadable.
+
+    `WorkoutSession.workout` is SET_NULL, so removing a template nulls it on
+    every session that used it. With a dotted source and no allow_null, DRF
+    does not send null for such a field -- it omits the key -- and the
+    generated Swift client decodes that key as required and throws. One
+    deletion made a whole training history undecodable, and a route upload
+    answered 200 and then failed in the app for points the server had stored.
+
+    Found by running the GPS path end to end in the simulator, not by reading
+    the code: the app always attaches a workout when it creates a session, so
+    nothing it does produces this shape.
+    """
+
+    def setUp(self):
+        _, self.profile, token = self.create_account("lifter")
+        self.authenticate(token)
+        self.session = WorkoutSession.objects.create(repbase_user=self.profile)
+
+    def test_every_documented_key_is_present_when_there_is_no_template(self):
+        body = self.client.get(f"/api/v1/sessions/{self.session.id}/").data
+        for key in ("workout", "workout_name", "workout_type"):
+            self.assertIn(key, body, f"{key} was dropped rather than sent as null")
+            self.assertIsNone(body[key])
+
+    def test_the_list_keeps_them_too(self):
+        row = self.client.get("/api/v1/sessions/").data["results"][0]
+        for key in ("workout_name", "workout_type"):
+            self.assertIn(key, row, f"{key} was dropped from the list")
+
+    def test_deleting_the_template_does_not_break_its_sessions(self):
+        """The path a real user takes to reach this."""
+        from .models import WorkoutTemplate
+
+        template = WorkoutTemplate.objects.create(owner=self.profile, name="Long run")
+        session = WorkoutSession.objects.create(
+            repbase_user=self.profile, workout=template
+        )
+        named = self.client.get(f"/api/v1/sessions/{session.id}/").data
+        self.assertEqual(named["workout_name"], "Long run")
+
+        template.delete()
+
+        orphaned = self.client.get(f"/api/v1/sessions/{session.id}/").data
+        self.assertIn("workout_name", orphaned)
+        self.assertIsNone(orphaned["workout_name"])
+
+    def test_uploading_a_route_to_such_a_session_answers_something_readable(self):
+        """What the probe actually hit: the upload succeeded and the response
+        it returned could not be decoded."""
+        start = timezone.now() - timedelta(minutes=5)
+        response = self.client.post(
+            f"/api/v1/sessions/{self.session.id}/route/",
+            {"points": [
+                {
+                    "recorded_at": (start + timedelta(seconds=10 * n)).isoformat(),
+                    "latitude": 40.0 + n * 0.0005,
+                    "longitude": -105.27,
+                    "speed_mps": 3.0,
+                }
+                for n in range(8)
+            ]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn("workout_name", response.data)
+        self.assertIsNotNone(response.data["route_distance_km"])

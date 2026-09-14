@@ -1806,7 +1806,18 @@ class SessionSplitSerializer(serializers.Serializer):
 
 class WorkoutSessionSerializer(serializers.ModelSerializer):
     repbase_user = serializers.PrimaryKeyRelatedField(read_only=True)
-    workout_name = serializers.CharField(source="workout.name", read_only=True)
+    #: allow_null for the same reason workout_type has it, which is the whole
+    #: bug: without it DRF does not send null when workout is None, it drops
+    #: the key entirely, and the generated client decodes the key as required
+    #: and throws. Deleting a workout template sets workout to NULL on every
+    #: session that used it, so one deletion made a user's whole training
+    #: history undecodable -- and a route upload answered 200 and then failed
+    #: in the app, for points the server had already stored.
+    workout_name = serializers.CharField(
+        source="workout.name",
+        read_only=True,
+        allow_null=True,
+    )
     #: The sport, so a client can tell what counts as having trained:
     #: sets for a lifting session, distance or time for a run.
     #: A session whose template was deleted has none, hence allow_null.
