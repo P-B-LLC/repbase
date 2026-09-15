@@ -162,3 +162,33 @@ class AnAccountWithNoPhotoTests(RepbaseAPITestMixin, APITestCase):
         call_command('transfer_media', '--audit', stdout=out)
         self.assertIn('referenced by a row: 0', out.getvalue())
         self.assertNotIn('None', out.getvalue())
+
+
+@override_settings(STORAGES={
+    'default': {'BACKEND': 'core.media_storage.ReservedNameInMemoryStorage'},
+    'renames': {'BACKEND': 'django.core.files.storage.InMemoryStorage'},
+})
+class ADestinationThatRenamesIsRefusedTests(RepbaseAPITestMixin, APITestCase):
+    """The alias flag exists for the object-storage move, and django-storages
+    does not implement the reserved-name contract. Without this the move would
+    fail partway through on an AttributeError, having already written files
+    under names it chose itself -- which is the exact failure the contract was
+    introduced to prevent, reached by a different road.
+    """
+
+    def setUp(self):
+        for name in stored_names(default_storage):
+            default_storage.delete(name)
+        _, self.profile, _ = self.create_account('mover')
+        post = Post.objects.create(author=self.profile, kind=Post.Kind.MEAL)
+        post.image = default_storage.save('post-photos/a.jpg', ContentFile(b'bytes'))
+        post.save(update_fields=['image'])
+
+    def test_it_refuses_before_writing_anything(self):
+        with self.assertRaises(CommandError) as refused:
+            call_command('transfer_media', '--to-alias', 'renames', stdout=StringIO())
+        self.assertIn('reserved', str(refused.exception).lower())
+
+    def test_an_unknown_alias_is_a_clear_error(self):
+        with self.assertRaises(CommandError):
+            call_command('transfer_media', '--to-alias', 'nowhere', stdout=StringIO())

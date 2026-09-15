@@ -83,9 +83,21 @@ class Command(BaseCommand):
             return ReservedNameFileSystemStorage(location=options['to_path'])
         if options['to_alias']:
             try:
-                return storages[options['to_alias']]
+                target = storages[options['to_alias']]
             except Exception as error:
                 raise CommandError(f'No storage alias {options["to_alias"]!r}.') from error
+            # Checked here rather than discovered on the first file. This is
+            # the flag the eventual object-storage move uses, and
+            # django-storages does not implement the contract -- so without
+            # this the move fails partway through with an AttributeError,
+            # having already written files under names it chose itself.
+            if not callable(getattr(target, 'save_reserved', None)):
+                raise CommandError(
+                    f'Storage alias {options["to_alias"]!r} does not preserve reserved '
+                    'names. Media must arrive under exactly the name its row refers '
+                    'to; see the contract in core/media_storage.py.'
+                )
+            return target
         return None
 
     def handle(self, *args, **options):

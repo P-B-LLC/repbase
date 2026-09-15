@@ -23,7 +23,8 @@ from django.test import TransactionTestCase
 
 User = get_user_model()
 
-EMAIL_INDEX = 'auth_user_email_upper_uniq'
+EMAIL_INDEX = 'auth_user_email_upper'
+EMAIL_UNIQUE_INDEX = 'auth_user_email_upper_uniq'
 USERNAME_INDEX = 'auth_user_username_upper_uniq'
 
 
@@ -46,12 +47,26 @@ class TheIdentityIndexesAreUsedTests(TransactionTestCase):
         plan = self.plan(User.objects.filter(username__iexact='person7'))
         self.assertIn(USERNAME_INDEX, plan, f'username lookup did not use the index:\n{plan}')
 
-    def test_an_email_lookup_uses_its_index(self):
-        """The one in doubt. The email index is partial -- WHERE email <> '' --
-        because two accounts here have no address and a plain unique index
-        would refuse to apply. A partial index only serves a query whose
-        predicate PostgreSQL can prove implies the index predicate, and
-        UPPER(email) = UPPER(?) does not say anything about email being
-        non-empty."""
+    def test_an_email_lookup_uses_an_index(self):
+        """The one that was wrong. 0051's index is partial -- WHERE email <> ''
+        -- because two accounts have no address, and PostgreSQL only uses a
+        partial index for a query it can prove matches the predicate.
+        UPPER(email) = UPPER(?) does not imply email <> '', so that index
+        enforces uniqueness and never serves a sign-in. 0053 adds a
+        non-partial one for the lookup; this is what says it is used."""
         plan = self.plan(User.objects.filter(email__iexact='person7@example.test'))
-        self.assertIn(EMAIL_INDEX, plan, f'email lookup did not use the index:\n{plan}')
+        self.assertIn(EMAIL_INDEX, plan, f'email lookup did not use an index:\n{plan}')
+
+    def test_the_unique_email_index_still_refuses_a_duplicate(self):
+        """Two indexes, two jobs. This is the other one's."""
+        from django.db import IntegrityError, transaction
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                User.objects.create(username='shouter', email='PERSON7@EXAMPLE.TEST')
+
+    def test_accounts_without_an_address_do_not_collide(self):
+        """Why the unique index has to stay partial."""
+        User.objects.create(username='blank-one', email='')
+        User.objects.create(username='blank-two', email='')
+        self.assertEqual(User.objects.filter(email='').count(), 2)
