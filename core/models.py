@@ -67,24 +67,9 @@ class TrackValue:
 class SaveReceipt(models.Model):
     """A successful create and its replay response, committed together."""
 
-    #: How long a key is worth honouring.
-    #:
-    #: A receipt exists so a phone that never heard the answer can ask again
-    #: and be told what happened rather than creating a second row. That is
-    #: worth something for as long as a client might still retry: the app
-    #: keeps pending saves in a file across relaunches, so the window is not
-    #: minutes -- a phone can be off, or out of signal, for a long time.
-    #:
-    #: It is not worth forever. One row per create per account, each holding
-    #: a full response body, kept for the life of the account, is a table
-    #: that only grows and whose largest rows belong to the most active
-    #: users. Thirty days keeps the retries that realistically happen and
-    #: bounds the rest.
-    #:
-    #: What is given up: a retry older than this creates a duplicate instead
-    #: of replaying. That is the behaviour from before receipts existed, so
-    #: the tail case degrades to the old normal rather than to something
-    #: worse.
+    # Full payload retention, NOT key retention. Phones retain uncertain saves
+    # indefinitely. A compact 409 tombstone reserves the key until account
+    # deletion and prevents a later retry from creating the same object twice.
     RETENTION = timedelta(days=30)
 
     owner = models.ForeignKey("RepbaseUser", on_delete=models.CASCADE)
@@ -93,10 +78,8 @@ class SaveReceipt(models.Model):
     request_hash = models.CharField(max_length=64)
     response = models.JSONField()
     status_code = models.PositiveSmallIntegerField(default=201)
-    #: Indexed for the pruning query and nothing else. Without it the job
-    #: that keeps this table bounded has to read the table to find out what
-    #: to delete from it, which is the wrong shape for the one query that
-    #: runs when the table is at its largest.
+    # Indexed for payload compaction. Used keys intentionally remain for the
+    # account lifetime; only full replay bodies have a retention window.
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
     class Meta:
@@ -104,10 +87,12 @@ class SaveReceipt(models.Model):
 
     @classmethod
     def prune(cls, now=None):
-        """Drop receipts too old to be replaying anything. Returns the count."""
+        """Compact expired payloads, never delete used keys. Returns count."""
         cutoff = (now or timezone.now()) - cls.RETENTION
-        deleted, _ = cls.objects.filter(created_at__lt=cutoff).delete()
-        return deleted
+        return cls.objects.filter(created_at__lt=cutoff, status_code__lt=300).update(
+            status_code=409,
+            response={'detail': 'This save was already processed, but its replay response has expired. Check your saved history before creating a new entry.'},
+        )
 
 
 positive_decimal = MinValueValidator(Decimal("0.01"))

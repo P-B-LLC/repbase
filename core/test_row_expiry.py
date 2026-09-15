@@ -97,17 +97,20 @@ class ReceiptsStopReplayingEventuallyTests(RepbaseAPITestMixin, APITestCase):
         self.receipt(SaveReceipt.RETENTION - timedelta(days=1))
         self.assertEqual(SaveReceipt.prune(), 0)
 
-    def test_a_receipt_past_the_window_goes(self):
-        self.receipt(SaveReceipt.RETENTION + timedelta(days=1))
+    def test_expired_payload_is_compacted_but_key_survives(self):
+        receipt = self.receipt(SaveReceipt.RETENTION + timedelta(days=1))
         self.assertEqual(SaveReceipt.prune(), 1)
-        self.assertFalse(SaveReceipt.objects.exists())
+        receipt.refresh_from_db()
+        self.assertEqual(receipt.status_code, 409)
+        self.assertIn('expired', receipt.response['detail'])
+        self.assertEqual(SaveReceipt.prune(), 0)
 
 
 class TheCommandTests(TestCase):
     def test_it_runs_on_an_empty_database(self):
         out = StringIO()
         call_command("prune_expired_rows", stdout=out)
-        self.assertIn("deleted 0 save receipts", out.getvalue())
+        self.assertIn("compacted 0 save receipts", out.getvalue())
 
     def test_dry_run_counts_without_deleting(self):
         entry = FoodSearchCache.objects.create(term="oats", payload=[])
