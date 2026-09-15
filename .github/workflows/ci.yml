@@ -43,8 +43,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      - run: pip install -r requirements.txt "psycopg[binary]"
+      - run: pip install -r requirements-production.txt
       - run: python manage.py test core
+      - name: Check production settings without contacting hosted services
+        env:
+          DJANGO_SETTINGS_MODULE: config.production
+          DJANGO_DEBUG: "false"
+          DJANGO_SECRET_KEY: ci-configuration-test-only-not-a-real-secret-0123456789-abcdefghij
+          DJANGO_ALLOWED_HOSTS: api.example.com
+          DATABASE_URL: postgresql://test:test@database.example.com/rytivo
+          REDIS_URL: rediss://:test@cache.example.com:6379/0
+          DJANGO_MEDIA_ROOT: /tmp/rytivo-ci-media
+          SMTP_HOST: smtp.example.com
+          SMTP_USERNAME: test
+          DEFAULT_FROM_EMAIL: test@example.com
+        run: python manage.py check --deploy --fail-level ERROR
 
   test:
     runs-on: ubuntu-latest

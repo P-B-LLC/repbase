@@ -20,9 +20,12 @@ from django.urls import include, path, re_path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from core.media import serve_media
+from config.health import live, ready
 from core.views import health, home, repbase_users
 
 urlpatterns = [
+    path('health/live/', live, name='health-live'),
+    path('health/ready/', ready, name='health-ready'),
     path('', home, name='home'),
     path('health/', health, name='health'),
     path('admin/', admin.site.urls),
