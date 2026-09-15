@@ -3787,8 +3787,8 @@ class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     def list(self, request, *args, **kwargs):
         return super().list(request, *args, **kwargs)
 
-    def get_queryset(self):
-        queryset = self.scope_to_owner(super().get_queryset()).annotate(
+    def gear_with_totals(self):
+        return self.scope_to_owner(super().get_queryset()).annotate(
             recorded_distance_total=Coalesce(
                 Sum("sessions__recorded_distance_km"),
                 Decimal("0"),
@@ -3800,6 +3800,8 @@ class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             last_used_at=Max("sessions__started_at"),
         )
 
+    def get_queryset(self):
+        queryset = self.gear_with_totals()
         kind = self.request.query_params.get("kind")
         if kind in Gear.Kind.values:
             queryset = queryset.filter(kind=kind)
@@ -3826,7 +3828,9 @@ class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             if serializer.instance is not None:
                 # The instance was read before waiting for the lock. Refresh it
                 # so an unrelated partial edit cannot resurrect an old default.
-                serializer.instance = Gear.objects.get(pk=serializer.instance.pk, owner=owner)
+                serializer.instance = get_object_or_404(
+                    Gear.objects.select_for_update(), pk=serializer.instance.pk, owner=owner,
+                )
             current = serializer.instance
             desired = serializer.validated_data.get('is_default', getattr(current, 'is_default', False))
             kind = serializer.validated_data.get('kind', getattr(current, 'kind', None))
@@ -3836,7 +3840,10 @@ class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                     others = others.exclude(pk=current.pk)
                 others.update(is_default=False)
             # A failed save rolls back the previous default as well.
-            serializer.save(owner=owner)
+            saved = serializer.save(owner=owner)
+            # The raw locked row lacks mileage/count/last-used annotations.
+            # Include retired gear too: retiring it must still return its totals.
+            serializer.instance = self.gear_with_totals().get(pk=saved.pk)
 
 
 class TrainingStatsView(APIView):
