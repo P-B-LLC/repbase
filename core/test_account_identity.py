@@ -334,3 +334,56 @@ class ASessionWithNoTemplateStillDecodesTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertIn("workout_name", response.data)
         self.assertIsNotNone(response.data["route_distance_km"])
+
+
+class RefreshingASessionForgetsItsTrackTests(RepbaseAPITestMixin, APITestCase):
+    """refresh_from_db has to refresh everything, not just the columns.
+
+    The track-derived values cache on the instance. Without clearing them, a
+    session refreshed after its points changed keeps answering with the old
+    distance -- and refresh_from_db is precisely what somebody calls when they
+    want current values.
+    """
+
+    def setUp(self):
+        _, self.profile, _ = self.create_account('runner')
+        self.session = WorkoutSession.objects.create(repbase_user=self.profile)
+        start = timezone.now() - timedelta(minutes=20)
+        SessionRoutePoint.objects.bulk_create([
+            SessionRoutePoint(
+                session=self.session,
+                recorded_at=start + timedelta(seconds=10 * step),
+                latitude=40.0 + step * 0.0005,
+                longitude=-105.0,
+                speed_mps=3.0,
+            )
+            for step in range(20)
+        ])
+
+    def test_refreshing_picks_up_points_added_since(self):
+        session = WorkoutSession.objects.get(pk=self.session.pk)
+        before = session.route_distance_km
+        self.assertIsNotNone(before)
+
+        SessionRoutePoint.objects.create(
+            session=self.session,
+            recorded_at=timezone.now(),
+            latitude=41.0,
+            longitude=-105.0,
+            speed_mps=3.0,
+        )
+
+        session.refresh_from_db()
+        self.assertGreater(session.route_distance_km, before)
+
+    def test_refreshing_picks_up_a_summary_written_elsewhere(self):
+        session = WorkoutSession.objects.get(pk=self.session.pk)
+        computed = session.route_distance_km
+
+        other = WorkoutSession.objects.get(pk=self.session.pk)
+        other.recompute_route_summary()
+        other.save(update_fields=['route_summary'])
+
+        session.refresh_from_db()
+        self.assertEqual(session.route_distance_km, computed)
+        self.assertIsNotNone(session.route_summary)

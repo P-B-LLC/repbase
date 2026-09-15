@@ -24,7 +24,7 @@ is why there is no separate backup command: a backup nobody can restore is
 not a backup, and restoring is this command pointed the other way.
 """
 
-from django.core.files.base import ContentFile
+from django.core.files.base import File
 from django.core.files.storage import default_storage, storages
 from django.core.management.base import BaseCommand, CommandError
 
@@ -129,22 +129,29 @@ class Command(BaseCommand):
 
         copied = skipped = 0
         for name in sorted(referenced):
-            with source.open(name, 'rb') as handle:
-                data = handle.read()
+            size = source.size(name)
             if target.exists(name):
                 # Idempotent, so an interrupted run is resumed by running it
-                # again rather than by starting over.
-                if target.size(name) == len(data):
+                # again rather than by starting over. Compared by asking both
+                # storages for a size rather than by reading the file, so
+                # resuming a mostly-done transfer costs almost nothing.
+                if target.size(name) == size:
                     skipped += 1
                     continue
                 raise CommandError(f'{name} exists at the destination with a different size.')
             if options['dry_run']:
                 copied += 1
                 continue
-            written = target.save_reserved(name, ContentFile(data))
+            with source.open(name, 'rb') as handle:
+                # Hand over the open file rather than its bytes. Django's
+                # storage writes a File in chunks, so a transfer costs one
+                # buffer instead of the size of the largest thing in it --
+                # which matters the first time somebody uploads a video
+                # rather than a photograph.
+                written = target.save_reserved(name, File(handle, name=name))
             if written != name:
                 raise CommandError(f'Destination renamed {name} to {written}.')
-            if target.size(name) != len(data):
+            if target.size(name) != size:
                 raise CommandError(f'{name} arrived at a different size.')
             copied += 1
 

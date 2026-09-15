@@ -704,6 +704,20 @@ class WorkoutSession(models.Model):
         self._forget_track_values()
         return self.route_summary
 
+    def refresh_from_db(self, using=None, fields=None, **kwargs):
+        """Re-reading the row must also forget what was derived from it.
+
+        The track values cache on the instance, so without this a session
+        refreshed after its points changed keeps answering with the old
+        distance -- and refresh_from_db is exactly what somebody reaches for
+        when they want current values. The route upload already re-fetches a
+        fresh instance, so this is not load-bearing there; it is here because
+        the next caller will assume refreshing refreshes everything, and they
+        should be right.
+        """
+        super().refresh_from_db(using=using, fields=fields, **kwargs)
+        self._forget_track_values()
+
     def _forget_track_values(self):
         for field in self.ROUTE_SUMMARY_FIELDS:
             self.__dict__.pop(field, None)

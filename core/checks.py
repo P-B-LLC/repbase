@@ -151,3 +151,67 @@ def email_can_reach_a_real_person(app_configs, **kwargs):
         )
 
     return problems
+
+
+@register(deploy=True)
+def scheduled_cleanup_is_running(app_configs, **kwargs):
+    """Are there rows a daily maintenance run would already have removed?
+
+    Three things have to happen on a clock rather than on a request, and
+    nothing in the application can make them happen -- `config.deploy
+    maintenance` does, and something has to call it. The failure mode is
+    silence: tables grow, storage keeps files no row points at, and the first
+    sign is a disk bill or a photo that outlived the account that uploaded it.
+
+    So this asks about the outcome rather than the ceremony. A job that runs
+    on a schedule and does nothing would satisfy "did it run"; it cannot
+    satisfy "is there anything left that it should have taken". Warnings
+    rather than errors, because a deployment that is a day old legitimately
+    has none of this, and an overdue row is a thing to fix rather than a
+    reason to refuse to start.
+    """
+    from datetime import timedelta
+
+    from django.utils import timezone
+
+    from .models import FoodSearchCache, PendingMediaDeletion, SaveReceipt
+
+    now = timezone.now()
+    overdue = []
+    try:
+        stale_terms = FoodSearchCache.objects.filter(
+            fetched_at__lt=now - FoodSearchCache.RETENTION
+        ).count()
+        stale_receipts = SaveReceipt.objects.filter(
+            created_at__lt=now - SaveReceipt.RETENTION, status_code__lt=300
+        ).count()
+        # A day, not a minute: these are retried after a storage failure and
+        # a handful in flight is normal.
+        stuck_deletions = PendingMediaDeletion.objects.filter(
+            created_at__lt=now - timedelta(days=1)
+        ).count()
+    except Exception:
+        # Before the first migrate there is nothing to ask. `check` runs ahead
+        # of `migrate` in the deploy entry point, and a missing table is not a
+        # configuration mistake.
+        return []
+
+    if stale_terms:
+        overdue.append(f'{stale_terms} expired food-search cache entries')
+    if stale_receipts:
+        overdue.append(f'{stale_receipts} save receipts whose payload should have been compacted')
+    if stuck_deletions:
+        overdue.append(f'{stuck_deletions} media deletions older than a day still waiting')
+
+    if not overdue:
+        return []
+    return [
+        Warning(
+            'Scheduled cleanup does not appear to be running: ' + ', '.join(overdue) + '.',
+            hint=(
+                'Run `python -m config.deploy maintenance` daily. Until something '
+                'does, two tables only grow and storage keeps files no row points at.'
+            ),
+            id='core.W007',
+        )
+    ]
