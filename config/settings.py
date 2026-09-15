@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 import os
 from pathlib import Path
+from .environment import database
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -84,34 +85,9 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/6.1/ref/settings/#databases
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-        # Keep the connection between requests instead of opening one per
-        # request. Free on SQLite, where "connecting" is opening a local
-        # file, and the difference between a fast and a slow endpoint on
-        # PostgreSQL, where it is a TCP round trip and an authentication
-        # handshake before any query runs -- paid on every request, including
-        # the ones that answer 304.
-        #
-        # 60 seconds rather than None. Connections held forever are how a
-        # deployment runs out of PostgreSQL's connection slots: every worker
-        # of every process keeps one whether or not it is doing anything.
-        #
-        # Set this to 0 if the database ends up behind PgBouncer in
-        # transaction mode. Django holding a connection open and a pooler
-        # handing that same connection to somebody else between statements
-        # are two answers to one question, and running both breaks in ways
-        # that look like random data from another request.
-        'CONN_MAX_AGE': int(os.getenv('DJANGO_CONN_MAX_AGE', '60')),
-        # Required once connections are reused: a connection can die while
-        # idle -- a database restart, a deploy, an idle timeout on the
-        # provider's side -- and without this the first request to inherit it
-        # fails rather than reconnecting.
-        'CONN_HEALTH_CHECKS': True,
-    }
-}
+# No URL keeps existing local development unchanged. Hosted entry points use
+# config.production, where PostgreSQL and verified TLS are mandatory.
+DATABASES = {'default': database(os.environ, BASE_DIR)}
 
 
 # Password validation
