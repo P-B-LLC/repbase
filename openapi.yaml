@@ -3923,6 +3923,53 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/social/comments/{id}/report/:
+    post:
+      operationId: social_comments_report_create
+      description: |-
+        Comments on a post.
+
+        Reading is governed by the post, not by the comment: if you may see the
+        post you may read what people said about it, and if you may not, its
+        comments are a 404 for the same reason the post is. Writing and deleting
+        belong to the comment's own author.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post comment.
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportPostRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ReportPostRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ReportPostRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostReportResult'
+          description: ''
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostReportResult'
+          description: ''
   /api/v1/social/feed/:
     get:
       operationId: social_feed_list

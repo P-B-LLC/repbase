@@ -91,6 +91,7 @@ from .models import (
     Personalization,
     Post,
     PostComment,
+    CommentReport,
     PostLike,
     PostMeal,
     PostMealEntry,
@@ -2235,9 +2236,12 @@ def annotate_social_counts(viewer, queryset):
     correlated subquery is one indexed lookup and cannot inflate a row.
     """
     def total(model, field):
+        rows = model.objects.all()
+        if model is PostComment:
+            rows = visible_comments_for(viewer, rows)
         return Coalesce(
             Subquery(
-                model.objects.filter(**{field: OuterRef("pk")})
+                rows.filter(**{field: OuterRef("pk")})
                 .order_by()
                 .values(field)
                 .annotate(n=Count("pk"))
@@ -2274,10 +2278,15 @@ def annotate_social_counts(viewer, queryset):
 def without_blocked_authors(viewer, queryset, field='author'):
     blocked = Block.objects.filter(
         Q(blocker=viewer, blocked=OuterRef(field)) | Q(blocker=OuterRef(field), blocked=viewer))
-    return queryset.annotate(_moderation_blocked=Exists(blocked)).filter(_moderation_blocked=False)
+    return queryset.filter(~Exists(blocked))
 
 
-def visible_posts_for(viewer, queryset):
+def visible_comments_for(viewer, queryset):
+    return without_blocked_authors(viewer, without_blocked_authors(viewer, queryset),
+                                   'parent__author').filter(is_hidden=False).exclude(parent__is_hidden=True)
+
+
+def visible_posts_for(viewer, queryset, include_reposts=True):
     """Narrow a post queryset to what one person is allowed to see.
 
     Both tests are correlated `Exists` subqueries rather than joins onto the
@@ -2310,7 +2319,7 @@ def visible_posts_for(viewer, queryset):
         Q(blocker=viewer, blocked=OuterRef("author"))
         | Q(blocker=OuterRef("author"), blocked=viewer)
     )
-    return queryset.annotate(
+    result = queryset.annotate(
         viewer_follows_author=Exists(follows_author),
         viewer_is_blocked=Exists(blocked_either_way),
     ).exclude(
@@ -2333,6 +2342,10 @@ def visible_posts_for(viewer, queryset):
             )
         )
     )
+    if include_reposts:
+        originals = visible_posts_for(viewer, Post.objects.filter(repost_of__isnull=True), include_reposts=False)
+        result = result.filter(~Q(kind=Post.Kind.REPOST) | Q(repost_of__in=originals))
+    return result
 
 
 def posts_for_cards():
@@ -3386,12 +3399,12 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
         readable = visible_posts_for(profile, Post.objects.all())
         queryset = (
-            without_blocked_authors(profile, PostComment.objects.filter(post__in=readable))
+            visible_comments_for(profile, PostComment.objects.filter(post__in=readable))
             .select_related("author", "author__user")
             .prefetch_related(
                 Prefetch(
                     "replies",
-                    queryset=without_blocked_authors(profile, PostComment.objects.all()).select_related(
+                    queryset=visible_comments_for(profile, PostComment.objects.all()).select_related(
                         "author", "author__user"
                     ),
                 )
@@ -3426,7 +3439,7 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         ).exists():
             raise NotFound("No such post.")
         parent = serializer.validated_data.get('parent')
-        if parent is not None and not without_blocked_authors(
+        if parent is not None and not visible_comments_for(
                 profile, PostComment.objects.filter(pk=parent.pk)).exists():
             raise NotFound('No such comment.')
         comment = serializer.save(author=profile)
@@ -3444,6 +3457,21 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 parent.author, profile, Notification.Kind.COMMENT,
                 post=post, comment=comment,
             )
+
+
+    @extend_schema(request=ReportPostSerializer, responses={200: PostReportResultSerializer, 201: PostReportResultSerializer})
+    @action(detail=True, methods=['post'], url_path='report')
+    def report(self, request, pk=None):
+        comment = self.get_object()
+        reporter = self.owner_profile()
+        if comment.author_id == reporter.pk:
+            raise ValidationError('You cannot report your own comment.')
+        body = ReportPostSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        # Do not moderate a report: quoting abuse must not prevent reporting it.
+        report, created = CommentReport.objects.get_or_create(comment=comment, reporter=reporter,
+            defaults={'reason': body.validated_data['reason'], 'detail': body.validated_data.get('detail', '')})
+        return Response({'reason': report.reason, 'already_reported': not created}, status=201 if created else 200)
 
 
 class NotificationViewSet(
@@ -3466,7 +3494,8 @@ class NotificationViewSet(
 
     def get_queryset(self):
         viewer = profile_for(self.request.user)
-        return without_blocked_authors(viewer, super().get_queryset().filter(recipient=viewer), 'actor')
+        return without_blocked_authors(viewer, super().get_queryset().filter(recipient=viewer), 'actor').exclude(
+            comment__is_hidden=True).exclude(comment__parent__is_hidden=True).exclude(post__is_hidden=True)
 
     @extend_schema(
         request=None,

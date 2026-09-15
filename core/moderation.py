@@ -26,7 +26,8 @@ class NoRedirects(urllib.request.HTTPRedirectHandler):
 
 
 PUBLIC_TEXT_FIELDS = {'caption', 'body', 'name', 'title', 'description', 'bio',
-                      'first_name', 'last_name', 'username', 'answer', 'cooking_instructions'}
+                      'first_name', 'last_name', 'username', 'answer', 'cooking_instructions',
+                      'city', 'country', 'handle'}
 
 
 def public_text(value):

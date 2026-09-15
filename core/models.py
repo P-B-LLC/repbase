@@ -2894,6 +2894,7 @@ class PostComment(models.Model):
         blank=True,
     )
     body = models.TextField(max_length=1000)
+    is_hidden = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -2905,6 +2906,23 @@ class PostComment(models.Model):
 
     def __str__(self):
         return f"comment on post {self.post_id}"
+
+
+class CommentReport(models.Model):
+    """Private moderator queue, deduplicated per reporter and comment."""
+    comment = models.ForeignKey(PostComment, on_delete=models.CASCADE, related_name='reports')
+    reporter = models.ForeignKey(RepbaseUser, on_delete=models.CASCADE, related_name='comment_reports')
+    reason = models.CharField(max_length=20, choices=PostReport.Reason.choices)
+    detail = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey('auth.User', on_delete=models.SET_NULL, null=True, blank=True)
+    resolution = models.CharField(max_length=20, choices=PostReport.Resolution.choices, blank=True)
+
+    class Meta:
+        ordering = ['created_at', 'id']
+        constraints = [models.UniqueConstraint(fields=['comment', 'reporter'], name='one_comment_report_per_person')]
+        indexes = [models.Index(fields=['reviewed_at', 'created_at'], name='comment_report_review_idx')]
 
 
 #: How many questions one profile may answer. Three keeps a profile readable

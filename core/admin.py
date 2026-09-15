@@ -9,6 +9,7 @@ from .models import (
     Exercise,
     Post,
     PostComment,
+    CommentReport,
     PostReport,
     RepbaseUser,
     SessionExercise,
@@ -175,7 +176,7 @@ class PostReportAdmin(admin.ModelAdmin):
             resolution=resolution,
         )
 
-    @admin.action(description="Looked — no action needed")
+    @admin.action(description="Looked — no action needed", permissions=['change'])
     def mark_no_action(self, request, queryset):
         count = self._resolve(request, queryset, PostReport.Resolution.NO_ACTION)
         self.message_user(request, f"{count} report(s) closed with no action.")
@@ -261,7 +262,7 @@ class PostAdmin(admin.ModelAdmin):
 
 @admin.register(PostComment)
 class PostCommentAdmin(admin.ModelAdmin):
-    list_display = ("id", "created_at", "author", "short_body", "post", "is_reply")
+    list_display = ("id", "created_at", "author", "short_body", "post", "is_reply", "is_hidden")
     search_fields = ("=id", "body", "author__user__username")
     list_select_related = ("author__user", "post")
     ordering = ("-created_at",)
@@ -273,6 +274,34 @@ class PostCommentAdmin(admin.ModelAdmin):
     @admin.display(boolean=True, description="reply")
     def is_reply(self, comment):
         return comment.parent_id is not None
+
+
+@admin.register(CommentReport)
+class CommentReportAdmin(admin.ModelAdmin):
+    list_display = ('created_at', 'comment', 'reporter', 'reason', 'reviewed_at', 'resolution')
+    list_filter = (OpenReportFilter, 'reason', 'resolution')
+    readonly_fields = ('comment', 'reporter', 'reason', 'detail', 'created_at', 'reviewed_at', 'reviewed_by', 'resolution')
+    list_select_related = ('comment', 'reporter')
+    ordering = ('created_at',)
+    actions = ('hide_comments', 'no_action')
+
+    def has_moderate_comments_permission(self, request):
+        return request.user.has_perms(('core.change_commentreport', 'core.change_postcomment'))
+
+    @admin.action(description='Hide reported comments and close their reports', permissions=['moderate_comments'])
+    @transaction.atomic
+    def hide_comments(self, request, queryset):
+        reports = list(queryset)
+        ids = [report.comment_id for report in reports]
+        PostComment.objects.filter(pk__in=ids).update(is_hidden=True)
+        CommentReport.objects.filter(comment_id__in=ids).update(reviewed_at=timezone.now(),
+            reviewed_by=request.user, resolution=PostReport.Resolution.HIDDEN)
+        for report in reports:
+            self.log_change(request, report, 'Hid reported comment and closed reports.')
+
+    @admin.action(description='Reviewed: no action required', permissions=['change'])
+    def no_action(self, request, queryset):
+        queryset.update(reviewed_at=timezone.now(), reviewed_by=request.user, resolution=PostReport.Resolution.NO_ACTION)
 
 
 @admin.register(Block)

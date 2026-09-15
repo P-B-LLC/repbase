@@ -557,6 +557,7 @@ class GymSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"name": "This gym is already listed. Search for it and join it instead."}
             )
+        check_public_content(attrs)
         return attrs
 
 
@@ -714,6 +715,7 @@ class ProfileSocialLinksRequestSerializer(serializers.Serializer):
             )
         if errors:
             raise serializers.ValidationError(errors)
+        check_public_content(cleaned)
         return cleaned
 
 
@@ -2421,10 +2423,19 @@ class PostCommentSerializer(serializers.ModelSerializer):
     def get_replies(self, comment):
         if comment.parent_id is not None:
             return []
+        request = self.context.get("request")
+        viewer = getattr(getattr(request, "user", None), "repbase_profile", None)
+        if viewer is None or comment.is_hidden:
+            return []
+        from .views import visible_comments_for
+        # Read endpoints prefetch the filtered set. PATCH responses do not;
+        # they must apply the same visibility rules before serializing replies.
+        cached = getattr(comment, '_prefetched_objects_cache', {})
+        rows = comment.replies.all() if 'replies' in cached else visible_comments_for(viewer, comment.replies.all())
         # Prefetched by the view. Sorting here rather than in the query keeps
         # the prefetch usable: re-ordering it would fetch the rows again.
         replies = sorted(
-            comment.replies.all(),
+            rows,
             key=lambda reply: (reply.created_at, reply.id),
         )
         return PostReplySerializer(replies, many=True, context=self.context).data
@@ -2724,7 +2735,11 @@ class PostSerializer(serializers.ModelSerializer):
 
     def get_comment_count(self, post) -> int:
         counted = getattr(post, "comment_total", None)
-        return counted if counted is not None else post.comments.count()
+        if counted is not None:
+            return counted
+        from .views import visible_comments_for
+        viewer = self._viewer()
+        return visible_comments_for(viewer, post.comments.all()).count() if viewer else 0
 
     def get_repost_count(self, post) -> int:
         counted = getattr(post, "repost_total", None)
@@ -2752,6 +2767,10 @@ class PostSerializer(serializers.ModelSerializer):
     def get_repost_of(self, post):
         original = post.repost_of
         if original is None:
+            return None
+        from .views import visible_posts_for
+        viewer = self._viewer()
+        if viewer is None or not visible_posts_for(viewer, Post.objects.filter(pk=original.pk)).exists():
             return None
         return RepostedPostSerializer(original, context=self.context).data
 

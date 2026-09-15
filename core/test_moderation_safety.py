@@ -12,7 +12,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
 from .moderation import check_public_content, ModerationUnavailable, public_text
-from .models import Block, FoodMeal, Post, PostComment, PostReport
+from .models import Block, CommentReport, FoodEntry, FoodMeal, Post, PostComment, PostReport
 from .tests import RepbaseAPITestMixin
 
 
@@ -97,8 +97,10 @@ class SocialSafetyIntegrationTests(RepbaseAPITestMixin, APITestCase):
 
     def test_snapshot_rejection_rolls_back_entire_post(self):
         meal = FoodMeal.objects.create(owner=self.owner, date=timezone.localdate(), name='Fixture', position=1)
-        with patch('core.moderation.check_public_content', side_effect=ValidationError('Rejected snapshot')):
+        FoodEntry.objects.create(meal=meal, name='Fixture food', calories=100, position=1)
+        with patch('core.moderation.check_public_content', side_effect=ValidationError('Rejected snapshot')) as moderation:
             response = self.client.post('/api/v1/social/posts/', {'kind': 'meal', 'source_id': meal.pk}, format='json')
+            moderation.assert_called_once()
         self.assertEqual(response.status_code, 400, response.data)
         self.assertFalse(Post.objects.filter(author=self.owner).exists())
 
@@ -110,3 +112,100 @@ class SocialSafetyIntegrationTests(RepbaseAPITestMixin, APITestCase):
             call_command('check_moderation_queue', stdout=output)
         self.assertNotIn('private report', output.getvalue())
         self.assertIn('overdue: 1', output.getvalue())
+
+    def test_comment_reporting_is_idempotent_private_and_does_not_require_provider(self):
+        comment = PostComment.objects.create(post=self.post, author=self.other, body='Fixture')
+        path = f'/api/v1/social/comments/{comment.pk}/report/'
+        with patch('core.moderation.check_public_content', side_effect=AssertionError('Must not moderate reports')):
+            first = self.client.post(path, {'reason': 'harassment', 'detail': 'Private report'}, format='json')
+            second = self.client.post(path, {'reason': 'harassment'}, format='json')
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(CommentReport.objects.count(), 1)
+        self.assertNotIn('Private report', str(first.data))
+
+    def test_hidden_parent_hides_thread_and_refuses_reply(self):
+        parent = PostComment.objects.create(post=self.post, author=self.other, body='Hidden', is_hidden=True)
+        reply = PostComment.objects.create(post=self.post, author=self.third, parent=parent, body='Reply')
+        self.assertEqual(self.client.get(f'/api/v1/social/comments/{reply.pk}/').status_code, 404)
+        result = self.client.post('/api/v1/social/comments/',
+            {'post': self.post.pk, 'parent': parent.pk, 'body': 'New reply'}, format='json')
+        self.assertEqual(result.status_code, 404)
+
+    def test_blocked_parent_prevents_direct_reply_read(self):
+        parent = PostComment.objects.create(post=self.post, author=self.other, body='Blocked')
+        reply = PostComment.objects.create(post=self.post, author=self.third, parent=parent, body='Reply')
+        Block.objects.create(blocker=self.other, blocked=self.owner)
+        self.assertEqual(self.client.get(f'/api/v1/social/comments/{reply.pk}/').status_code, 404)
+
+    def test_repost_cannot_resurface_hidden_or_blocked_original(self):
+        repost = Post.objects.create(author=self.other, kind='repost', repost_of=self.post)
+        self.post.is_hidden = True
+        self.post.save(update_fields=['is_hidden'])
+        self.assertEqual(self.client.get(f'/api/v1/social/posts/{repost.pk}/').status_code, 404)
+        self.post.is_hidden = False
+        self.post.save(update_fields=['is_hidden'])
+        Block.objects.create(blocker=self.owner, blocked=self.third)
+        self.assertEqual(self.client.get(f'/api/v1/social/posts/{repost.pk}/').status_code, 404)
+
+    def test_public_gym_and_social_handle_are_checked_before_save(self):
+        from .serializers import GymSerializer, ProfileSocialLinksRequestSerializer
+        with patch('core.serializers.check_public_content', side_effect=ValidationError('Rejected')) as moderation:
+            gym = GymSerializer(data={'name': 'Fixture gym', 'city': 'Fixture city', 'country': 'US'})
+            self.assertFalse(gym.is_valid())
+            self.assertEqual(moderation.call_args.args[0]['city'], 'Fixture city')
+            links = ProfileSocialLinksRequestSerializer(data={
+                'social_links': [{'platform': 'instagram', 'url': 'fixturehandle'}]})
+            self.assertFalse(links.is_valid())
+            self.assertEqual(moderation.call_args.args[0][0]['handle'], 'fixturehandle')
+
+    def test_hidden_and_blocked_comments_are_not_counted(self):
+        PostComment.objects.create(post=self.post, author=self.third, body='Visible')
+        parent = PostComment.objects.create(post=self.post, author=self.other, body='Hidden', is_hidden=True)
+        PostComment.objects.create(post=self.post, author=self.third, parent=parent, body='Hidden thread')
+        PostComment.objects.create(post=self.post, author=self.other, body='Blocked')
+        Block.objects.create(blocker=self.owner, blocked=self.other)
+        response = self.client.get(f'/api/v1/social/posts/{self.post.pk}/')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['comment_count'], 1)
+
+    def test_edit_response_does_not_leak_hidden_or_blocked_replies(self):
+        parent = PostComment.objects.create(post=self.post, author=self.owner, body='My parent')
+        PostComment.objects.create(post=self.post, author=self.other, parent=parent, body='Blocked reply')
+        PostComment.objects.create(post=self.post, author=self.third, parent=parent, body='Hidden reply', is_hidden=True)
+        Block.objects.create(blocker=self.owner, blocked=self.other)
+        response = self.client.patch(f'/api/v1/social/comments/{parent.pk}/', {'body': 'Edited'}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['replies'], [])
+
+    def test_read_only_moderator_cannot_close_or_hide_reports(self):
+        from django.contrib.admin import AdminSite
+        from django.test import RequestFactory
+        from .admin import CommentReportAdmin, PostReportAdmin
+        request = RequestFactory().get('/admin/')
+        request.user = MagicMock()
+        request.user.has_perm.return_value = False
+        request.user.has_perms.return_value = False
+        comment_admin = CommentReportAdmin(CommentReport, AdminSite())
+        post_admin = PostReportAdmin(PostReport, AdminSite())
+        self.assertNotIn('hide_comments', comment_admin.get_actions(request))
+        self.assertNotIn('no_action', comment_admin.get_actions(request))
+        self.assertNotIn('mark_no_action', post_admin.get_actions(request))
+
+    def test_moderator_hides_comment_and_closes_all_its_reports(self):
+        from django.contrib.admin import AdminSite
+        from django.test import RequestFactory
+        from .admin import CommentReportAdmin
+        comment = PostComment.objects.create(post=self.post, author=self.other, body='Fixture')
+        first = CommentReport.objects.create(comment=comment, reporter=self.owner, reason='hate')
+        CommentReport.objects.create(comment=comment, reporter=self.third, reason='hate')
+        request = RequestFactory().post('/admin/')
+        request.user = self.owner.user
+        moderator = CommentReportAdmin(CommentReport, AdminSite())
+        with patch.object(moderator, 'log_change') as audit:
+            moderator.hide_comments(request, CommentReport.objects.filter(pk=first.pk, reviewed_at__isnull=True))
+            audit.assert_called_once()
+        comment.refresh_from_db()
+        self.assertTrue(comment.is_hidden)
+        self.assertEqual(CommentReport.objects.filter(reviewed_at__isnull=False,
+            reviewed_by=request.user, resolution='hidden').count(), 2)
