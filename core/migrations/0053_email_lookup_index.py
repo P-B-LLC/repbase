@@ -10,11 +10,13 @@ That index is partial -- WHERE email <> '' -- because two accounts have no
 address and a plain unique index would have refused to apply. PostgreSQL will
 only use a partial index for a query it can prove matches the predicate, and
 UPPER(email) = 'SOMEBODY@EXAMPLE.TEST' says nothing about email being
-non-empty. Asked directly, with sequential scans disabled so a small table
-could not hide the answer behind a cheaper plan, the planner still chose:
+non-empty. Asked on PostgreSQL with only that index present, the planner chose:
 
     Seq Scan on auth_user
       Filter: (upper((email)::text) = 'PERSON7@EXAMPLE.TEST'::text)
+
+The same query uses an index once the non-partial one below exists, on the
+same table and the same settings, which is the comparison that settles it.
 
 So the two jobs need two indexes. The partial unique one keeps two accounts
 from sharing an address in different cases; this non-partial one is what the

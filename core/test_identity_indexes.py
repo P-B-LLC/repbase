@@ -1,25 +1,28 @@
 """Do the account-identity indexes actually get used?
 
-Adding an index and asserting the uniqueness it enforces is easy. Whether the
+Adding an index and testing the uniqueness it enforces is easy. Whether the
 planner will use it for the lookup it was also meant to speed up is a
 different question, and the answer depends on the shape of the index rather
 than on the intent behind it -- a partial index can only serve a query
 PostgreSQL can prove matches its predicate.
 
-So this asks PostgreSQL. Sequential scans are disabled first, because on a
-ten-row table a seq scan wins on cost and would hide whether the index is
-usable at all; with it off, a plan that still refuses the index is proof the
-index cannot serve that query.
+So this asks PostgreSQL, with sequential scans disabled, because on a small
+table a seq scan wins on cost and would hide whether the index is usable at
+all. `SET LOCAL` only applies inside a transaction, which is why these are a
+TestCase rather than a TransactionTestCase -- an earlier version was the
+latter, ran in autocommit, and disabled nothing while claiming to. It reached
+the right conclusion for the wrong reason, and a test that is right by
+accident will be wrong by accident later.
 
-SQLite skips these: it compiles __iexact to LIKE, not to UPPER(col) = UPPER(?),
-so it is answering a different question.
+SQLite skips these: it compiles __iexact to LIKE rather than to
+UPPER(col) = UPPER(?), so it is answering a different question.
 """
 
 from unittest import skipUnless
 
 from django.contrib.auth import get_user_model
 from django.db import connection
-from django.test import TransactionTestCase
+from django.test import TestCase
 
 User = get_user_model()
 
@@ -29,7 +32,7 @@ USERNAME_INDEX = 'auth_user_username_upper_uniq'
 
 
 @skipUnless(connection.vendor == 'postgresql', 'Planner behaviour is PostgreSQL-specific')
-class TheIdentityIndexesAreUsedTests(TransactionTestCase):
+class TheIdentityIndexesAreUsedTests(TestCase):
     def setUp(self):
         User.objects.bulk_create([
             User(username=f'person{n}', email=f'person{n}@example.test')
