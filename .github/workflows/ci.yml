@@ -57,6 +57,8 @@ jobs:
           SMTP_HOST: smtp.example.com
           SMTP_USERNAME: test
           DEFAULT_FROM_EMAIL: test@example.com
+          MODERATION_API_KEY: ci-placeholder-no-live-requests
+          MODERATION_DISCLOSURE_CONFIRMED: "true"
         run: python manage.py check --deploy --fail-level ERROR
 
   test:

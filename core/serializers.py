@@ -16,6 +16,7 @@ from rest_framework import serializers
 from drf_spectacular.utils import extend_schema_field
 
 from .media import signed_media_url
+from .moderation import check_public_content
 
 
 class SessionFinishSerializer(serializers.Serializer):
@@ -202,6 +203,7 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
         # only ever the client's word for what it sent.
         attrs["extension"] = verify_is_an_image(decoded)
         attrs["decoded"] = decoded
+        check_public_content(image=decoded)
         return attrs
 
     def save_to(self, profile):
@@ -644,6 +646,7 @@ class ProfilePromptWriteSerializer(serializers.Serializer):
         answer = value.strip()
         if not answer:
             raise serializers.ValidationError("Write something, or remove the question.")
+        check_public_content({'answer': answer})
         return answer
 
 
@@ -1072,6 +1075,10 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
 
 
 class RepbaseUserSerializer(serializers.ModelSerializer):
+    def validate(self, attrs):
+        check_public_content(attrs)
+        return attrs
+
     username = serializers.CharField(source="user.username", max_length=150)
     first_name = serializers.CharField(source="user.first_name", max_length=150)
     last_name = serializers.CharField(source="user.last_name", max_length=150)
@@ -1223,6 +1230,7 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
+        check_public_content(attrs)
         candidate = User(
             username=attrs["username"],
             email=attrs["email"],
@@ -2427,6 +2435,11 @@ class PostCommentSerializer(serializers.ModelSerializer):
         return viewer is not None and comment.author_id == viewer.id
 
     def validate(self, attrs):
+        check_public_content({'body': attrs.get('body', '')})
+        if self.instance is not None:
+            for field in ('post', 'parent'):
+                if field in attrs and getattr(attrs[field], 'pk', None) != getattr(self.instance, field + '_id'):
+                    raise serializers.ValidationError({field: 'A comment cannot be moved to another thread.'})
         post = attrs.get("post") or getattr(self.instance, "post", None)
         parent = attrs.get("parent")
         if parent is None:
@@ -2815,6 +2828,7 @@ class CreatePostSerializer(serializers.Serializer):
         if not raw:
             attrs.pop("image_base64", None)
             attrs.pop("content_type", None)
+            check_public_content(attrs)
             return attrs
         if not attrs.get("content_type"):
             raise serializers.ValidationError(
@@ -2822,6 +2836,7 @@ class CreatePostSerializer(serializers.Serializer):
             )
         attrs["decoded_image"] = decode_uploaded_image(raw)
         attrs["image_extension"] = verify_is_an_image(attrs["decoded_image"])
+        check_public_content(attrs, image=attrs['decoded_image'])
         return attrs
 
     # There is deliberately no `validate` resolving `source_id` here. Which
@@ -2851,6 +2866,7 @@ class UpdatePostSerializer(serializers.ModelSerializer):
         fields = ["caption", "visibility"]
 
     def validate_caption(self, value):
+        check_public_content({'caption': value})
         return value.strip()
 
 

@@ -7,6 +7,7 @@ from .environment import boolean, database, integer, production_values
 # settings.py chooses its mail backend at import time. Require DEBUG=false
 # before importing this module via the deployment entry points.
 DEBUG = False
+MODERATION_ENABLED = True
 globals().update(production_values(os.environ))
 DATABASES = {'default': database(os.environ, BASE_DIR, production=True)}  # noqa: F405
 SESSION_COOKIE_SECURE = True

@@ -2271,6 +2271,12 @@ def annotate_social_counts(viewer, queryset):
     )
 
 
+def without_blocked_authors(viewer, queryset, field='author'):
+    blocked = Block.objects.filter(
+        Q(blocker=viewer, blocked=OuterRef(field)) | Q(blocker=OuterRef(field), blocked=viewer))
+    return queryset.annotate(_moderation_blocked=Exists(blocked)).filter(_moderation_blocked=False)
+
+
 def visible_posts_for(viewer, queryset):
     """Narrow a post queryset to what one person is allowed to see.
 
@@ -3279,10 +3285,12 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         # Read back through the list queryset so the card returned from a create
         # is assembled by the code that assembles the card in the feed, rather
         # than by a second path that can disagree with it.
-        return Response(
-            self.get_serializer(self.get_queryset().get(pk=post.pk)).data,
-            status=status.HTTP_201_CREATED,
-        )
+        data = self.get_serializer(self.get_queryset().get(pk=post.pk)).data
+        # Snapshot titles/food names are user supplied too. The surrounding
+        # publication transaction rolls back on rejection or provider failure.
+        from .moderation import check_public_content
+        check_public_content(data)
+        return Response(data, status=status.HTTP_201_CREATED)
 
     def partial_update(self, request, *args, **kwargs):
         post = self.get_object()
@@ -3378,12 +3386,12 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
         readable = visible_posts_for(profile, Post.objects.all())
         queryset = (
-            PostComment.objects.filter(post__in=readable)
+            without_blocked_authors(profile, PostComment.objects.filter(post__in=readable))
             .select_related("author", "author__user")
             .prefetch_related(
                 Prefetch(
                     "replies",
-                    queryset=PostComment.objects.select_related(
+                    queryset=without_blocked_authors(profile, PostComment.objects.all()).select_related(
                         "author", "author__user"
                     ),
                 )
@@ -3417,6 +3425,10 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             pk=getattr(post, "pk", None)
         ).exists():
             raise NotFound("No such post.")
+        parent = serializer.validated_data.get('parent')
+        if parent is not None and not without_blocked_authors(
+                profile, PostComment.objects.filter(pk=parent.pk)).exists():
+            raise NotFound('No such comment.')
         comment = serializer.save(author=profile)
 
         notify(
@@ -3453,9 +3465,8 @@ class NotificationViewSet(
     )
 
     def get_queryset(self):
-        return super().get_queryset().filter(
-            recipient=profile_for(self.request.user)
-        )
+        viewer = profile_for(self.request.user)
+        return without_blocked_authors(viewer, super().get_queryset().filter(recipient=viewer), 'actor')
 
     @extend_schema(
         request=None,

@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
 
@@ -144,8 +145,11 @@ class PostReportAdmin(admin.ModelAdmin):
     )
     list_select_related = ("post__author__user", "reporter__user")
     readonly_fields = ("post", "reporter", "reason", "detail", "created_at")
-    ordering = ("-created_at",)
+    ordering = ("created_at",)
     actions = ("mark_no_action", "hide_reported_posts", "unhide_reported_posts")
+
+    def has_moderate_posts_permission(self, request):
+        return request.user.has_perms(('core.change_postreport', 'core.change_post'))
 
     @admin.display(description="author", ordering="post__author")
     def post_author(self, report):
@@ -176,7 +180,8 @@ class PostReportAdmin(admin.ModelAdmin):
         count = self._resolve(request, queryset, PostReport.Resolution.NO_ACTION)
         self.message_user(request, f"{count} report(s) closed with no action.")
 
-    @admin.action(description="Hide the reported post")
+    @admin.action(description="Hide the reported post", permissions=['moderate_posts'])
+    @transaction.atomic
     def hide_reported_posts(self, request, queryset):
         posts = Post.objects.filter(reports__in=queryset).distinct()
         hidden = posts.update(is_hidden=True, hidden_at=timezone.now())
@@ -191,7 +196,8 @@ class PostReportAdmin(admin.ModelAdmin):
             request, f"{hidden} post(s) hidden, {count} report(s) closed."
         )
 
-    @admin.action(description="Unhide the reported post")
+    @admin.action(description="Unhide the reported post", permissions=['moderate_posts'])
+    @transaction.atomic
     def unhide_reported_posts(self, request, queryset):
         posts = Post.objects.filter(reports__in=queryset).distinct()
         shown = posts.update(is_hidden=False, hidden_at=None)
@@ -255,8 +261,8 @@ class PostAdmin(admin.ModelAdmin):
 
 @admin.register(PostComment)
 class PostCommentAdmin(admin.ModelAdmin):
-    list_display = ("created_at", "author", "short_body", "post", "is_reply")
-    search_fields = ("body", "author__user__username")
+    list_display = ("id", "created_at", "author", "short_body", "post", "is_reply")
+    search_fields = ("=id", "body", "author__user__username")
     list_select_related = ("author__user", "post")
     ordering = ("-created_at",)
 

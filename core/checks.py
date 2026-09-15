@@ -52,6 +52,21 @@ def _default_mailer() -> dict:
 
 
 @register(deploy=True)
+def social_moderation_ready(app_configs, **kwargs):
+    if settings.DEBUG:
+        return []
+    if not settings.MODERATION_ENABLED or not settings.MODERATION_API_KEY:
+        return [Error('Production social publishing requires configured automated moderation.',
+                      hint='Configure MODERATION_API_KEY and enable moderation. Do not bypass it to ship.',
+                      id='core.E006')]
+    if not settings.MODERATION_DISCLOSURE_CONFIRMED:
+        return [Error('The third-party moderation disclosure/permission release gate is not confirmed.',
+                      hint='Verify in-app permission and privacy disclosures before setting MODERATION_DISCLOSURE_CONFIRMED=true.',
+                      id='core.E007')]
+    return []
+
+
+@register(deploy=True)
 def email_can_reach_a_real_person(app_configs, **kwargs):
     mailer = _default_mailer()
     backend = str(mailer.get('BACKEND', ''))
