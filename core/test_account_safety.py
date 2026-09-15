@@ -11,7 +11,7 @@ from .models import PendingMediaDeletion, Post
 from .tests import RepbaseAPITestMixin
 
 
-@override_settings(STORAGES={'default': {'BACKEND': 'django.core.files.storage.InMemoryStorage'}})
+@override_settings(STORAGES={'default': {'BACKEND': 'core.media_storage.ReservedNameInMemoryStorage'}})
 class AccountMediaCleanupTests(RepbaseAPITestMixin, APITestCase):
     def setUp(self):
         self.user, self.profile, self.token = self.create_account('cleanup')

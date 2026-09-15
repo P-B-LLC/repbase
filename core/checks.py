@@ -35,6 +35,18 @@ UNDELIVERABLE_SUFFIXES = ('.local', '.localhost', '.invalid', '.example', '.test
 UNCONFIGURED_HOSTS = ('', 'localhost', '127.0.0.1', '::1')
 
 
+@register(deploy=True)
+def publication_storage_preserves_names(app_configs, **kwargs):
+    from django.core.files.storage import default_storage
+    if callable(getattr(default_storage, 'save_reserved', None)):
+        return []
+    return [Error(
+        'Photo publication requires storage that preserves reserved upload names.',
+        hint='Configure ReservedNameFileSystemStorage or an adapter implementing save_reserved without renaming.',
+        id='core.E005',
+    )]
+
+
 def _default_mailer() -> dict:
     return (getattr(settings, 'MAILERS', None) or {}).get('default') or {}
 

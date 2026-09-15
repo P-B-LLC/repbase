@@ -25,7 +25,7 @@ from .tests import RepbaseAPITestMixin
 
 
 @override_settings(
-    STORAGES={'default': {'BACKEND': 'django.core.files.storage.InMemoryStorage'}}
+    STORAGES={'default': {'BACKEND': 'core.media_storage.ReservedNameInMemoryStorage'}}
 )
 class SignedMediaTests(RepbaseAPITestMixin, APITestCase):
     def setUp(self):

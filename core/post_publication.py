@@ -19,6 +19,10 @@ class PublicationMediaError(Exception):
 def publication_media(decoded, extension):
     files = []
     if decoded is not None:
+        if not callable(getattr(default_storage, 'save_reserved', None)):
+            # Fail before uploading anything. Guessing the final filename
+            # after upload cannot recover from a crash inside storage.save().
+            raise PublicationMediaError('Storage does not support reserved upload names.')
         files.append(('image', f'post-photos/{uuid.uuid4().hex}{extension}', decoded))
         smaller = feed_variant(decoded)
         if smaller is not None:
@@ -38,10 +42,10 @@ def publication_media(decoded, extension):
             fields = {}
             for field, name, data in files:
                 try:
-                    actual = default_storage.save(name, ContentFile(data))
+                    actual = default_storage.save_reserved(name, ContentFile(data))
                     written.append(actual)
-                    # Storage backends may choose another available filename.
-                    PendingMediaDeletion.objects.filter(name=name).update(name=actual)
+                    if actual != name:
+                        raise PublicationMediaError('Storage violated the reserved-name contract.')
                     fields[field] = actual
                 except Exception as error:
                     raise PublicationMediaError('Photo storage is unavailable.') from error

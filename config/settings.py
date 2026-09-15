@@ -160,6 +160,10 @@ DATA_UPLOAD_MAX_MEMORY_SIZE = 8 * 1024 * 1024
 
 MEDIA_URL = 'media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+STORAGES = {
+    'default': {'BACKEND': 'core.media_storage.ReservedNameFileSystemStorage'},
+    'staticfiles': {'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage'},
+}
 
 # Uploaded photos are served by core.media behind a keyed signature, in every
 # configuration rather than only under DEBUG. See that module for why the

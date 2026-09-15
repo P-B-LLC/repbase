@@ -1,8 +1,9 @@
 import base64
 import io
+import tempfile
 from unittest.mock import patch
 
-from django.core.files.storage import InMemoryStorage
+from .media_storage import ReservedNameFileSystemStorage, ReservedNameInMemoryStorage
 from django.db import IntegrityError
 from django.utils import timezone
 from PIL import Image
@@ -17,7 +18,7 @@ class BetaPublicationTests(RepbaseAPITestMixin, APITransactionTestCase):
     def setUp(self):
         _, self.profile, token = self.create_account('beta-publication')
         self.authenticate(token)
-        self.storage = InMemoryStorage()
+        self.storage = ReservedNameInMemoryStorage()
         self.meal = FoodMeal.objects.create(owner=self.profile, date=timezone.localdate(), name='Meal', position=1)
         FoodEntry.objects.create(meal=self.meal, name='Rice', calories=100, position=1)
         image = io.BytesIO()
@@ -104,6 +105,14 @@ class BetaPublicationTests(RepbaseAPITestMixin, APITransactionTestCase):
         self.assertFalse(PendingMediaDeletion.objects.exists())
 
     def test_interrupted_request_leaves_cleanup_record_before_file_write(self):
+        self.assert_interrupted_upload_is_recoverable()
+
+    def test_interrupted_filesystem_upload_keeps_exact_cleanup_name(self):
+        with tempfile.TemporaryDirectory() as location:
+            self.storage = ReservedNameFileSystemStorage(location=location)
+            self.assert_interrupted_upload_is_recoverable()
+
+    def assert_interrupted_upload_is_recoverable(self):
         class InterruptedPublication(BaseException):
             pass
         save = self.storage.save
