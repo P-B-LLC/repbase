@@ -105,3 +105,57 @@ Isolated Mac validation, September 15, 2026 (no existing database or media used)
 - PostgreSQL CI configuration is updated, but no PostgreSQL server is available
   in this validation environment. Its actual CI run and hosted TLS/connectivity
   checks remain open. No signed app, deployment, or database cutover is claimed.
+
+## Photos
+
+Media is the only thing here a deployment cannot recreate. The database can be
+migrated and the code redeployed; a lost photo is gone.
+
+**Where it lives.** A mounted volume at `DJANGO_MEDIA_ROOT`, today. That is a
+real answer and it has a real limit worth naming rather than discovering: a
+volume attaches to one machine, so it survives a deploy only while the
+provider keeps giving you the same machine, and `WEB_CONCURRENCY` spanning two
+hosts would split it. Object storage is the endpoint. What stands between here
+and there is not a rewrite — everything already reads and writes through
+`default_storage` — but an adapter satisfying the reserved-name contract in
+`core/media_storage.py`, because `django-storages` renames on collision and a
+renamed file is one no row can find.
+
+**Privacy does not change with storage.** Photos are served by `core.media`
+behind an HMAC signature in every configuration. The bucket or directory stays
+private and no public URL is ever handed out. A storage swap that made objects
+publicly readable would defeat the signature entirely, so it is the one thing
+to check on any adapter.
+
+**Moving and backing up are the same command**, which is deliberate: a backup
+nobody can restore is not a backup, and restoring is this pointed the other
+way.
+
+```bash
+python manage.py transfer_media --audit                 # compare rows to storage
+python manage.py transfer_media --to-path /backups/media
+python manage.py transfer_media --to-alias objectstore  # once an alias exists
+```
+
+It copies what rows point at rather than what the directory holds, writes
+through the destination's reserved-name contract so every file arrives under
+the name its row refers to, verifies size, and is idempotent — an interrupted
+run is resumed by running it again. It refuses to copy while a referenced file
+is missing, because carrying that gap forward makes the old storage, which
+still holds the evidence, the thing you delete.
+
+Verified against the live media on 2026-09-15: 15 referenced files, 21 MB,
+copied and re-verified, and a signed URL generated before the move serves
+correctly from the copy with `DEBUG=false` — same name, same signature,
+different storage. Three orphans were reported and deliberately not copied.
+
+**Orphans are reported, never deleted.** Those three are files no row points
+at, left by uploads that failed before the cleanup machinery existed. The
+audit names them; removing them is a human decision, because a tool that
+deletes files it believes unreferenced is one bad query away from deleting
+photos.
+
+**Cleanup runs on a clock.** `python -m config.deploy maintenance`, daily: it
+prunes expired rows, retries media deletions that failed in storage, and
+audits media against the database. One entry rather than a list a cron can get
+half right.
