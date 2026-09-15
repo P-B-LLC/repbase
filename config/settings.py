@@ -301,4 +301,4 @@ DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@repbase.local')
 MODERATION_ENABLED = os.getenv('MODERATION_ENABLED', 'false').lower() == 'true'
 MODERATION_API_KEY = os.getenv('MODERATION_API_KEY', '')
 MODERATION_DISCLOSURE_CONFIRMED = os.getenv('MODERATION_DISCLOSURE_CONFIRMED', 'false').lower() == 'true'
-MODERATION_CONTACT_EMAIL = os.getenv('MODERATION_CONTACT_EMAIL', 'aaronpio18@gmail.com')
+MODERATION_CONTACT_EMAIL = os.getenv('MODERATION_CONTACT_EMAIL', 'support@rytivo.app')
