@@ -46,7 +46,10 @@ requirements; neither the classifier nor passing tests guarantees App Review app
 
 ## Human queues and response process
 
-Temporary contact chosen by the owner: **aaronpio18@gmail.com**. The owner must
+The safety contact is **support@rytivo.app**, which is what the app, the backend
+default and the published legal documents all say. It has no mailbox behind it
+yet: create one and confirm somebody reads it before beta, because an appeal
+address nobody answers is worse than none. The owner must
 confirm it is monitored and assign a primary moderator plus backup. No account,
 mailbox or staff credential has been created by this implementation.
 

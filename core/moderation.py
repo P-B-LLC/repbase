@@ -2,6 +2,15 @@
 
 The remote classifier supplements human reports; it is not an Apple approval
 guarantee. Only explicitly public-facing text and uploaded photos are sent.
+
+Consent is checked here rather than trusted from the client's behaviour. The
+app asks per submission, but a build from last month, a script, or curl does
+not -- and "the app shows a dialog" is not a property the server can rely on.
+So a submission has to carry the consent version this server requires, and a
+request without it is refused before anything leaves the machine. Bumping
+MODERATION_CONSENT_VERSION invalidates every older client at once, which is
+the point of versioning it: if what is disclosed changes, agreement to the
+previous wording stops counting.
 """
 import base64
 import io
@@ -9,14 +18,41 @@ import json
 import urllib.request
 
 from django.conf import settings
-from PIL import Image, ImageOps
-from rest_framework.exceptions import APIException, ValidationError
+from PIL import Image, ImageFile, ImageOps, UnidentifiedImageError
+from rest_framework.exceptions import APIException, PermissionDenied, ValidationError
+
+#: A truncated upload should be a validation error, not a 500 halfway through
+#: preprocessing. Pillow is told to refuse rather than improvise.
+ImageFile.LOAD_TRUNCATED_IMAGES = False
+
+#: Refuse a decompression bomb before allocating for it. Well above anything a
+#: phone camera produces and far below what exhausts the machine.
+MAX_IMAGE_PIXELS = 50_000_000
 
 
 class ModerationUnavailable(APIException):
     status_code = 503
     default_detail = 'Safety checks are temporarily unavailable. Nothing was published; please try again.'
     default_code = 'moderation_unavailable'
+
+
+class ModerationConsentRequired(PermissionDenied):
+    default_detail = (
+        'This submission needs permission for safety review before it can be sent. '
+        'Update the app, then try again.'
+    )
+    default_code = 'moderation_consent_required'
+
+
+CONSENT_HEADER = 'HTTP_X_MODERATION_CONSENT'
+
+
+def consent_given(request):
+    """Whether this request carries agreement to the current disclosure."""
+    if request is None:
+        return False
+    supplied = (request.META.get(CONSENT_HEADER) or '').strip()
+    return bool(supplied) and supplied == settings.MODERATION_CONSENT_VERSION
 
 
 class NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -45,7 +81,49 @@ def public_text(value):
     return found
 
 
-def check_public_content(value=None, *, image=None):
+def review_copy(image):
+    """A clean JPEG of an upload, or a validation error explaining why not.
+
+    Everything here is a decision about untrusted bytes. The file already
+    passed a type sniff; that says what it claims to be, not that it decodes.
+    A truncated JPEG sniffs clean and then raises partway through
+    preprocessing, which is a 500 for what is really a bad upload -- and it
+    was reproduced, not imagined.
+
+    So the image is fully decoded before anything is done with it, the pixel
+    count is refused before it is allocated for, and every way Pillow can fail
+    becomes a message the person can act on.
+    """
+    try:
+        with Image.open(io.BytesIO(image)) as probe:
+            width, height = probe.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise ValidationError('This image is too large to check. Please use a smaller one.')
+            if getattr(probe, 'n_frames', 1) != 1:
+                raise ValidationError('Please use a still image, not an animated image.')
+            # verify() invalidates the object, so the work happens on a second
+            # open. That is Pillow's documented shape, not superstition.
+            probe.verify()
+        with Image.open(io.BytesIO(image)) as source:
+            # Force the whole thing through the decoder now. Anything broken
+            # raises here, where it can be answered, rather than inside the
+            # publication transaction.
+            source.load()
+            clean = ImageOps.exif_transpose(source).convert('RGB')
+            clean.thumbnail((2048, 2048))
+            output = io.BytesIO()
+            clean.save(output, format='JPEG', quality=90)
+    except ValidationError:
+        raise
+    except (UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError, SyntaxError):
+        raise ValidationError(
+            'This image could not be read. It may be damaged or incomplete; '
+            'try exporting it again.'
+        ) from None
+    return output.getvalue()
+
+
+def check_public_content(value=None, *, image=None, request=None):
     if not settings.MODERATION_ENABLED:
         # Development only. Production deployment checks refuse this state.
         return
@@ -57,18 +135,16 @@ def check_public_content(value=None, *, image=None):
             raise ValidationError('This shared content is too long to check. Please shorten it.')
         inputs.append({'type': 'text', 'text': text})
     if image is not None:
-        with Image.open(io.BytesIO(image)) as source:
-            if getattr(source, 'n_frames', 1) != 1:
-                raise ValidationError('Please use a still image, not an animated image.')
-            # Remove EXIF/location metadata before sending the review copy.
-            clean = ImageOps.exif_transpose(source).convert('RGB')
-            clean.thumbnail((2048, 2048))
-            output = io.BytesIO()
-            clean.save(output, format='JPEG', quality=90)
         inputs.append({'type': 'image_url', 'image_url': {
-            'url': 'data:image/jpeg;base64,' + base64.b64encode(output.getvalue()).decode('ascii')}})
+            'url': 'data:image/jpeg;base64,' + base64.b64encode(review_copy(image)).decode('ascii')}})
     if not inputs:
         return
+    # Nothing has left the machine yet. Consent is checked here, at the last
+    # moment before transmission and after the cheap refusals, so a damaged
+    # image is still answered as a damaged image rather than as a consent
+    # problem.
+    if not consent_given(request):
+        raise ModerationConsentRequired()
     if not settings.MODERATION_DISCLOSURE_CONFIRMED:
         # Operator release gate, not a substitute for per-submission permission.
         raise ModerationUnavailable()
@@ -76,10 +152,13 @@ def check_public_content(value=None, *, image=None):
     if not key:
         raise ModerationUnavailable()
     body = json.dumps({'model': 'omni-moderation-2024-09-26', 'input': inputs}).encode()
-    request = urllib.request.Request('https://api.openai.com/v1/moderations', data=body,
+    # Named for what it is: `request` is the caller's HTTP request, which the
+    # consent check above needs, and reusing that name here cost a confusing
+    # minute once already.
+    outbound = urllib.request.Request('https://api.openai.com/v1/moderations', data=body,
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}, method='POST')
     try:
-        with urllib.request.build_opener(NoRedirects()).open(request, timeout=8) as response:
+        with urllib.request.build_opener(NoRedirects()).open(outbound, timeout=8) as response:
             result = json.loads(response.read(262145))
         results = result['results']
         if not isinstance(results, list) or not results or any(
@@ -89,5 +168,13 @@ def check_public_content(value=None, *, image=None):
         # Includes timeouts, rate limits and malformed responses. No fail-open.
         raise ModerationUnavailable() from None
     if any(row['flagged'] for row in results):
-        raise ValidationError('This content could not be published under our community standards. '
-                              'Please revise it, or appeal to ' + settings.MODERATION_CONTACT_EMAIL + '.')
+        # Coded, because the app has to tell a refusal apart from an outage to
+        # know whether retrying is worth offering, and a human-readable string
+        # is not something a client should be matching on.
+        raise ValidationError({
+            'detail': (
+                'This content could not be published under our community standards. '
+                'Please revise it, or appeal to ' + settings.MODERATION_CONTACT_EMAIL + '.'
+            ),
+            'code': 'moderation_rejected',
+        })

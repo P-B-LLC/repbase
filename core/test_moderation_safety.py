@@ -11,13 +11,26 @@ from PIL import Image
 from rest_framework.exceptions import ValidationError
 from rest_framework.test import APITestCase
 
+from django.conf import settings as django_settings
+
 from .moderation import check_public_content, ModerationUnavailable, public_text
+
+
+def consented():
+    """A request carrying agreement to the current disclosure.
+
+    The server refuses to transmit without it, so every test that expects
+    content to reach the provider has to look like a client that asked.
+    """
+    class _Request:
+        META = {'HTTP_X_MODERATION_CONSENT': django_settings.MODERATION_CONSENT_VERSION}
+    return _Request()
 from .models import Block, CommentReport, FoodEntry, FoodMeal, Post, PostComment, PostReport
 from .tests import RepbaseAPITestMixin
 
 
 @override_settings(MODERATION_ENABLED=True, MODERATION_API_KEY='fake-unit-test-key',
-                   MODERATION_DISCLOSURE_CONFIRMED=True, MODERATION_CONTACT_EMAIL='aaronpio18@gmail.com')
+                   MODERATION_DISCLOSURE_CONFIRMED=True, MODERATION_CONTACT_EMAIL='support@rytivo.app')
 class ProviderModerationTests(SimpleTestCase):
     def response(self, payload):
         result = MagicMock()
@@ -30,7 +43,7 @@ class ProviderModerationTests(SimpleTestCase):
         with patch('core.moderation.urllib.request.build_opener') as opener:
             opener.return_value.open.return_value = self.response({'results': [{'flagged': False}]})
             check_public_content({'caption': 'Training today', 'email': 'private@test.test',
-                                  'password': 'private-secret', 'weight_kg': '50'}, image=photo.getvalue())
+                                  'password': 'private-secret', 'weight_kg': '50'}, image=photo.getvalue(), request=consented())
             request = opener.return_value.open.call_args.args[0]
             body = json.loads(request.data)
             self.assertEqual(body['input'][0]['text'], 'Training today')
@@ -41,25 +54,25 @@ class ProviderModerationTests(SimpleTestCase):
         with patch('core.moderation.urllib.request.build_opener') as opener:
             opener.return_value.open.return_value = self.response({'results': [{'flagged': True}]})
             with self.assertRaises(ValidationError) as caught:
-                check_public_content({'caption': 'fixture'})
-            self.assertIn('aaronpio18@gmail.com', str(caught.exception))
+                check_public_content({'caption': 'fixture'}, request=consented())
+            self.assertIn('support@rytivo.app', str(caught.exception))
 
     def test_timeout_and_malformed_results_fail_closed(self):
         with patch('core.moderation.urllib.request.build_opener') as opener:
             for payload in [{}, {'results': []}, {'results': [{'flagged': 'false'}]}]:
                 opener.return_value.open.return_value = self.response(payload)
                 with self.assertRaises(ModerationUnavailable):
-                    check_public_content({'body': 'fixture'})
+                    check_public_content({'body': 'fixture'}, request=consented())
             opener.return_value.open.side_effect = TimeoutError('secret provider diagnostic')
             with self.assertRaises(ModerationUnavailable) as caught:
-                check_public_content({'body': 'fixture'})
+                check_public_content({'body': 'fixture'}, request=consented())
             self.assertNotIn('secret', str(caught.exception))
 
     def test_missing_key_and_unconfirmed_disclosure_do_not_send_content(self):
         with patch('core.moderation.urllib.request.build_opener') as opener:
             for settings in [{'MODERATION_API_KEY': ''}, {'MODERATION_DISCLOSURE_CONFIRMED': False}]:
                 with override_settings(**settings), self.assertRaises(ModerationUnavailable):
-                    check_public_content({'body': 'fixture'})
+                    check_public_content({'body': 'fixture'}, request=consented())
             opener.assert_not_called()
 
     def test_public_field_allowlist_reaches_nested_snapshots(self):
@@ -95,10 +108,10 @@ class SocialSafetyIntegrationTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertFalse(PostComment.objects.exists())
 
-    def test_snapshot_rejection_rolls_back_entire_post(self):
+    def test_snapshot_rejection_creates_no_post_at_all(self):
         meal = FoodMeal.objects.create(owner=self.owner, date=timezone.localdate(), name='Fixture', position=1)
         FoodEntry.objects.create(meal=meal, name='Fixture food', calories=100, position=1)
-        with patch('core.moderation.check_public_content', side_effect=ValidationError('Rejected snapshot')) as moderation:
+        with patch('core.views.check_public_content', side_effect=ValidationError('Rejected snapshot')) as moderation:
             response = self.client.post('/api/v1/social/posts/', {'kind': 'meal', 'source_id': meal.pk}, format='json')
             moderation.assert_called_once()
         self.assertEqual(response.status_code, 400, response.data)

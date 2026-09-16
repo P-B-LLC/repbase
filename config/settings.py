@@ -302,3 +302,7 @@ MODERATION_ENABLED = os.getenv('MODERATION_ENABLED', 'false').lower() == 'true'
 MODERATION_API_KEY = os.getenv('MODERATION_API_KEY', '')
 MODERATION_DISCLOSURE_CONFIRMED = os.getenv('MODERATION_DISCLOSURE_CONFIRMED', 'false').lower() == 'true'
 MODERATION_CONTACT_EMAIL = os.getenv('MODERATION_CONTACT_EMAIL', 'support@rytivo.app')
+# Bumped when what the consent dialog discloses changes. A client sending an
+# older version is refused, because agreement to the previous wording is not
+# agreement to this one.
+MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-09-15')
