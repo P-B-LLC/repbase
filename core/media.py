@@ -52,6 +52,7 @@ import time
 
 from django.conf import settings
 from django.core.files.storage import default_storage
+from django.db.models import Q
 from django.http import FileResponse, HttpResponse, HttpResponseForbidden, HttpResponseNotModified
 from django.utils.crypto import constant_time_compare, salted_hmac
 from django.utils.http import urlencode
@@ -116,6 +117,33 @@ def verify(name, expires, signature, now=None):
     return constant_time_compare(signature, _signature(name, expires_at))
 
 
+def taken_down(name):
+    """Whether a stored file belongs to a post a moderator has hidden.
+
+    Hiding a post used to remove it from the feed and leave its photo served,
+    which meant a takedown did not take the thing down: the signed URL stayed
+    valid for the rest of its window -- up to about a week -- and anyone
+    holding it, including whoever reported the post, could keep opening it.
+
+    This is the database query the rest of this module was written to avoid,
+    and it is worth it here and only here. With X-Accel-Redirect it is the
+    only work the process does for an image, both columns are indexed, and the
+    responses carry `immutable`, so a client that has seen a photo does not
+    ask again. Profile photos cannot be hidden, so they never reach the query
+    at all.
+
+    What it cannot do is recall a copy somebody already downloaded. Nothing
+    can.
+    """
+    from .models import Post
+
+    if not name.startswith('post-photos/'):
+        return False
+    return Post.objects.filter(
+        Q(image=name) | Q(feed_image=name), is_hidden=True
+    ).exists()
+
+
 def serve_media(request, path):
     """A signed photo.
 
@@ -131,6 +159,11 @@ def serve_media(request, path):
 
     if not verify(name, request.GET.get("e"), request.GET.get("s")):
         return HttpResponseForbidden("This photo link has expired.")
+
+    if taken_down(name):
+        # Checked after the signature, so this cannot be used to ask which
+        # photos exist or which posts a moderator has acted on.
+        return HttpResponseForbidden("This photo is no longer available.")
 
     accel = getattr(settings, "MEDIA_ACCEL_REDIRECT_ROOT", "")
     if accel:

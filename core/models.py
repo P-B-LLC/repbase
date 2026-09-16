@@ -2137,6 +2137,9 @@ class Post(models.Model):
         upload_to=post_photo_path,
         blank=True,
         null=True,
+        # Indexed because serving a photo asks whether its post has been taken
+        # down, and that question is asked once per image request.
+        db_index=True,
     )
     #: A smaller copy of `image`, for drawing a card.
     #:
@@ -2150,6 +2153,7 @@ class Post(models.Model):
         upload_to=post_feed_photo_path,
         blank=True,
         null=True,
+        db_index=True,
     )
     visibility = models.CharField(
         max_length=20,
