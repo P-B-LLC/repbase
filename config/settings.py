@@ -306,3 +306,14 @@ MODERATION_CONTACT_EMAIL = os.getenv('MODERATION_CONTACT_EMAIL', 'support@rytivo
 # older version is refused, because agreement to the previous wording is not
 # agreement to this one.
 MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-09-15')
+# How long a worker may be held waiting for the classifier.
+#
+# This is a capacity setting, not a patience setting. The provider call is
+# blocking and gunicorn runs synchronous workers, so one submission occupies
+# one worker for up to this long and every other request -- feeds, workout
+# saves -- queues behind it. At the documented starting point of two workers,
+# two people posting at once is the whole server stalled for the duration.
+#
+# Size it with WEB_CONCURRENCY together, not separately. See
+# HOSTED_CONFIGURATION.md.
+MODERATION_TIMEOUT_SECONDS = min(max(int(os.getenv('MODERATION_TIMEOUT_SECONDS', '8')), 1), 60)
