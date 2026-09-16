@@ -53,7 +53,13 @@ class ModerationConsentRequired(PermissionDenied):
     }
     default_code = 'moderation_consent_required'
 
-CONSENT_HEADER = 'HTTP_X_MODERATION_CONSENT'
+#: The header as it appears on the wire, and as the contract documents it.
+CONSENT_HEADER_NAME = 'X-Moderation-Consent'
+#: Django's spelling of the same header. Derived rather than written out
+#: twice: the two drifting apart would mean the documented name and the
+#: checked name were different headers, and every submission would be refused
+#: for want of one nobody was told to send.
+CONSENT_HEADER = 'HTTP_' + CONSENT_HEADER_NAME.upper().replace('-', '_')
 
 
 def consent_given(request):

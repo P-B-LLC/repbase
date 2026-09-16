@@ -96,6 +96,18 @@ paths:
   /api/v1/auth/register/:
     post:
       operationId: auth_register_create
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - auth
       requestBody:
@@ -1716,6 +1728,18 @@ paths:
         Not owned by anyone: a gym one user adds is exactly the gym the next user
         should be able to join, which is the whole point of the list. Anyone signed
         in may add one; nobody may edit or delete somebody else's.
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - gyms
       requestBody:
@@ -1777,6 +1801,17 @@ paths:
         should be able to join, which is the whole point of the list. Anyone signed
         in may add one; nobody may edit or delete somebody else's.
       parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       - in: path
         name: id
         schema:
@@ -1816,6 +1851,17 @@ paths:
         should be able to join, which is the whole point of the list. Anyone signed
         in may add one; nobody may edit or delete somebody else's.
       parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       - in: path
         name: id
         schema:
@@ -1910,6 +1956,18 @@ paths:
           description: ''
     put:
       operationId: me_update
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - me
       requestBody:
@@ -1936,6 +1994,18 @@ paths:
           description: ''
     patch:
       operationId: me_partial_update
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - me
       requestBody:
@@ -2068,6 +2138,18 @@ paths:
     put:
       operationId: me_photo_update
       description: Replace the profile photo. Any previous file is deleted.
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - me
       requestBody:
@@ -2129,6 +2211,18 @@ paths:
       operationId: me_prompts_update
       description: Replace every answered question with the set sent. Sending an empty
         list clears them.
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - me
       requestBody:
@@ -2183,6 +2277,18 @@ paths:
       description: Replace every social link with the set sent. Each entry may carry
         a full https URL or a bare handle; a handle is turned into that platform canonical
         URL. Sending an empty list removes them all.
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - me
       requestBody:
@@ -3807,6 +3913,18 @@ paths:
         post you may read what people said about it, and if you may not, its
         comments are a 404 for the same reason the post is. Writing and deleting
         belong to the comment's own author.
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - social
       requestBody:
@@ -3870,6 +3988,17 @@ paths:
         comments are a 404 for the same reason the post is. Writing and deleting
         belong to the comment's own author.
       parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       - in: path
         name: id
         schema:
@@ -4219,6 +4348,18 @@ paths:
       description: Post a workout, meal or planner entry the requester owns. The server
         reads the source and builds the snapshot; the request names the object and
         never carries its contents.
+      parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       tags:
       - social
       requestBody:
@@ -4278,6 +4419,17 @@ paths:
       description: Change the caption or who can see this post. The snapshot records
         what happened and is not editable.
       parameters:
+      - in: header
+        name: X-Moderation-Consent
+        schema:
+          type: string
+        description: Agreement to the current safety-review disclosure, as the version
+          string the server publishes in MODERATION_CONSENT_VERSION. Required when
+          moderation is enabled and the submission carries public-facing text or a
+          photo; the content is not sent for review without it, and the submission
+          is refused with 403 and code `moderation_consent_required`. A value from
+          an older disclosure is refused the same way, because agreement to previous
+          wording is not agreement to this one.
       - in: path
         name: id
         schema:

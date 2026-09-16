@@ -105,6 +105,16 @@ class ProviderModerationTests(SimpleTestCase):
         the field names themselves would be sent as if they were content."""
         self.assertEqual(public_text({'name': {'weight_kg': '50'}}), [])
 
+    def test_the_documented_header_is_the_one_that_is_checked(self):
+        """Two spellings of one header: the wire name the contract publishes,
+        and Django's META key the server reads. Derived from a single constant
+        so they cannot drift -- if they ever did, every submission would be
+        refused for want of a header nobody had been told to send, and both
+        halves would look correct in isolation."""
+        from .moderation import CONSENT_HEADER, CONSENT_HEADER_NAME
+        self.assertEqual(CONSENT_HEADER_NAME, 'X-Moderation-Consent')
+        self.assertEqual(CONSENT_HEADER, 'HTTP_X_MODERATION_CONSENT')
+
     def test_the_configured_timeout_is_the_one_used(self):
         """It bounds how long a synchronous worker is held, so it is a capacity
         setting. A default hardcoded back into the call would not fail any
