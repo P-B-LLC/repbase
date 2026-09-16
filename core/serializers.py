@@ -203,7 +203,7 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
         # only ever the client's word for what it sent.
         attrs["extension"] = verify_is_an_image(decoded)
         attrs["decoded"] = decoded
-        check_public_content(image=decoded)
+        check_public_content(image=decoded, request=self.context.get("request"))
         return attrs
 
     def save_to(self, profile):
@@ -557,7 +557,7 @@ class GymSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"name": "This gym is already listed. Search for it and join it instead."}
             )
-        check_public_content(attrs)
+        check_public_content(attrs, request=self.context.get("request"))
         return attrs
 
 
@@ -647,7 +647,9 @@ class ProfilePromptWriteSerializer(serializers.Serializer):
         answer = value.strip()
         if not answer:
             raise serializers.ValidationError("Write something, or remove the question.")
-        check_public_content({'answer': answer})
+        # Deliberately not checked here. Three answers are saved together, and
+        # checking each separately was three sequential provider calls for one
+        # edit; the set is checked once in validate_prompts.
         return answer
 
 
@@ -715,7 +717,7 @@ class ProfileSocialLinksRequestSerializer(serializers.Serializer):
             )
         if errors:
             raise serializers.ValidationError(errors)
-        check_public_content(cleaned)
+        check_public_content(cleaned, request=self.context.get("request"))
         return cleaned
 
 
@@ -737,6 +739,8 @@ class ProfilePromptsRequestSerializer(serializers.Serializer):
         questions = [entry["question"] for entry in value]
         if len(set(questions)) != len(questions):
             raise serializers.ValidationError("Each question can only be answered once.")
+        # One call for the whole set rather than one per answer.
+        check_public_content(value, request=self.context.get("request"))
         return value
 
 
@@ -827,7 +831,14 @@ def highlight_payload(highlight):
             best.session_exercise.session.ended_at
             or best.session_exercise.session.created_at
         )
-        exercise_name = best.session_exercise.exercise.name
+        # Only a built-in exercise name goes on a public profile. A custom one
+        # is text the owner wrote, it has never been through moderation, and it
+        # can be edited after the fact -- so a highlight would be a way to put
+        # arbitrary words on a public page and change them later. Exercises the
+        # app shipped with have no creator; anything else falls back to the
+        # canonical lift name, which is the label the card shows anyway.
+        exercise = best.session_exercise.exercise
+        exercise_name = exercise.name if exercise.created_by_id is None else highlight.get_lift_display()
     elif highlight.manual_weight_kg is not None and highlight.manual_reps is not None:
         weight, reps, source = highlight.manual_weight_kg, highlight.manual_reps, "manual"
         performed_at, exercise_name = None, None
@@ -1078,7 +1089,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
 
 class RepbaseUserSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
-        check_public_content(attrs)
+        check_public_content(attrs, request=self.context.get("request"))
         return attrs
 
     username = serializers.CharField(source="user.username", max_length=150)
@@ -1232,7 +1243,7 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def validate(self, attrs):
-        check_public_content(attrs)
+        check_public_content(attrs, request=self.context.get("request"))
         candidate = User(
             username=attrs["username"],
             email=attrs["email"],
@@ -2446,7 +2457,7 @@ class PostCommentSerializer(serializers.ModelSerializer):
         return viewer is not None and comment.author_id == viewer.id
 
     def validate(self, attrs):
-        check_public_content({'body': attrs.get('body', '')})
+        check_public_content({'body': attrs.get('body', '')}, request=self.context.get("request"))
         if self.instance is not None:
             for field in ('post', 'parent'):
                 if field in attrs and getattr(attrs[field], 'pk', None) != getattr(self.instance, field + '_id'):
@@ -2763,14 +2774,47 @@ class PostSerializer(serializers.ModelSerializer):
         viewer = self._viewer()
         return bool(viewer) and post.reposts.filter(author=viewer).exists()
 
+    def _visible_repost_targets(self):
+        """Which reposted originals this viewer may see, for the whole page.
+
+        One query per response rather than one per repost. It asks
+        `visible_posts_for` rather than re-stating the visibility rules as an
+        annotation: a second opinion about who may see what is exactly the
+        thing that drifts, and the drift would be silent and in the unsafe
+        direction.
+        """
+        cached = self.context.get('_visible_repost_targets')
+        if cached is not None:
+            return cached
+
+        from .views import visible_posts_for
+
+        parent = self.parent
+        batch = parent.instance if isinstance(parent, serializers.ListSerializer) else self.instance
+        if batch is None:
+            batch = []
+        elif isinstance(batch, Post):
+            batch = [batch]
+        wanted = {
+            item.repost_of_id for item in batch
+            if getattr(item, 'repost_of_id', None) is not None
+        }
+        viewer = self._viewer()
+        visible = set()
+        if wanted and viewer is not None:
+            visible = set(
+                visible_posts_for(viewer, Post.objects.filter(pk__in=wanted))
+                .values_list('pk', flat=True)
+            )
+        self.context['_visible_repost_targets'] = visible
+        return visible
+
     @extend_schema_field(RepostedPostSerializer(allow_null=True))
     def get_repost_of(self, post):
         original = post.repost_of
         if original is None:
             return None
-        from .views import visible_posts_for
-        viewer = self._viewer()
-        if viewer is None or not visible_posts_for(viewer, Post.objects.filter(pk=original.pk)).exists():
+        if original.pk not in self._visible_repost_targets():
             return None
         return RepostedPostSerializer(original, context=self.context).data
 
@@ -2847,7 +2891,6 @@ class CreatePostSerializer(serializers.Serializer):
         if not raw:
             attrs.pop("image_base64", None)
             attrs.pop("content_type", None)
-            check_public_content(attrs)
             return attrs
         if not attrs.get("content_type"):
             raise serializers.ValidationError(
@@ -2855,7 +2898,6 @@ class CreatePostSerializer(serializers.Serializer):
             )
         attrs["decoded_image"] = decode_uploaded_image(raw)
         attrs["image_extension"] = verify_is_an_image(attrs["decoded_image"])
-        check_public_content(attrs, image=attrs['decoded_image'])
         return attrs
 
     # There is deliberately no `validate` resolving `source_id` here. Which
@@ -2885,7 +2927,7 @@ class UpdatePostSerializer(serializers.ModelSerializer):
         fields = ["caption", "visibility"]
 
     def validate_caption(self, value):
-        check_public_content({'caption': value})
+        check_public_content({'caption': value}, request=self.context.get("request"))
         return value.strip()
 
 

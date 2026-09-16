@@ -48,6 +48,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
 from .post_publication import publication_media, PublicationMediaError
+from .moderation import check_public_content
 from .save_recovery import IdempotentCreateMixin
 from .serializers import SessionFinishSerializer
 from .models import (
@@ -2373,6 +2374,35 @@ def posts_for_cards():
     )
 
 
+def public_text_for_source(source, kind):
+    """Everything user-written that a post's snapshot will carry.
+
+    Gathered from the source before anything is created, so the whole
+    submission can be reviewed in one call and outside any transaction. It
+    used to be read off the finished card, which meant a second provider
+    round trip -- up to the eight-second timeout -- held open inside the
+    publication transaction, with the row locks that implies.
+
+    The relations walked here are the ones `source_for` prefetches, which is
+    not a coincidence: those are what the snapshot builder reads.
+    """
+    if kind == Post.Kind.WORKOUT:
+        return {
+            'title': getattr(source.workout, 'name', '') or '',
+            'names': [
+                {'name': item.exercise.name}
+                for item in source.session_exercises.all()
+                if item.exercise_id
+            ],
+        }
+    if kind == Post.Kind.MEAL:
+        return {
+            'name': source.name or '',
+            'names': [{'name': entry.name} for entry in source.entries.all()],
+        }
+    return {'title': source.title or '', 'description': getattr(source, 'notes', '') or ''}
+
+
 def source_for(author, kind, source_id):
     """The workout, meal or planner entry a post is being made from.
 
@@ -3268,21 +3298,39 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             context=self.get_serializer_context(),
         )
         payload.is_valid(raise_exception=True)
+        author = self.owner_profile()
+        kind = payload.validated_data["kind"]
+        source = source_for(author, kind, payload.validated_data["source_id"])
         decoded = payload.validated_data.get("decoded_image")
         extension = payload.validated_data.get("image_extension", ".jpg")
+        # One call, covering everything that will be published -- the caption,
+        # the photo, and the user-written text the snapshot will carry -- and
+        # made before any transaction is open. This used to be two: the
+        # caption and photo during validation, and the assembled card again
+        # from inside the publication transaction, where a provider round trip
+        # held row locks for as long as it took.
+        check_public_content(
+            {
+                "caption": payload.validated_data.get("caption", ""),
+                "cooking_instructions": payload.validated_data.get("cooking_instructions", ""),
+                "source": public_text_for_source(source, kind),
+            },
+            image=decoded,
+            request=request,
+        )
         try:
             with publication_media(decoded, extension) as media:
-                return self._publish_post(payload, media)
+                return self._publish_post(payload, media, source)
         except PublicationMediaError:
             raise ServiceUnavailable("Your post was not published because its photo could not be saved. Please retry.")
 
-    def _publish_post(self, payload, media):
+    def _publish_post(self, payload, media, source):
         author = self.owner_profile()
         kind = payload.validated_data["kind"]
         post = create_post_from_source(
             author,
             kind,
-            source_for(author, kind, payload.validated_data["source_id"]),
+            source,
             payload.validated_data.get("caption", ""),
             payload.validated_data.get("visibility", Post.Visibility.PUBLIC),
             payload.validated_data.get("shows_weights", True),
@@ -3299,10 +3347,6 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         # is assembled by the code that assembles the card in the feed, rather
         # than by a second path that can disagree with it.
         data = self.get_serializer(self.get_queryset().get(pk=post.pk)).data
-        # Snapshot titles/food names are user supplied too. The surrounding
-        # publication transaction rolls back on rejection or provider failure.
-        from .moderation import check_public_content
-        check_public_content(data)
         return Response(data, status=status.HTTP_201_CREATED)
 
     def partial_update(self, request, *args, **kwargs):
