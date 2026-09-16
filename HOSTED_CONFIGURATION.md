@@ -27,6 +27,21 @@ or certify beta readiness. The current SQLite file and media are unchanged.
   poolers use its direct endpoint or a provider-specific reviewed adapter.
 - Budget connections for workers, deployments overlapping, commands and admin
   access. Start with two synchronous web workers, then measure before scaling.
+- **Size `WEB_CONCURRENCY` against moderation, not just the database.** The
+  classifier call is blocking and the workers are synchronous, so a submission
+  holds one worker for up to `MODERATION_TIMEOUT_SECONDS` (default 8) while it
+  waits on OpenAI. At two workers, two people posting at once is the whole
+  server stalled — feeds and workout saves queue behind them, because there is
+  no third worker to answer. Nine endpoints are affected: registration, the
+  four profile edits, gym creation, comment creation, and creating or editing
+  a post.
+
+  Beta traffic makes this survivable, not absent. Pick one before inviting
+  strangers: raise `WEB_CONCURRENCY` (each worker costs a database connection,
+  so raise the connection budget with it), lower `MODERATION_TIMEOUT_SECONDS`
+  so a slow provider fails closed sooner, or move to threaded workers, which
+  is the real fix for blocking I/O and the larger change. Measure first — this
+  is a documented interaction, not a measured one.
 
 ## Reproducible deployment (Linux host, Python matching CI)
 

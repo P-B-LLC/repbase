@@ -76,13 +76,34 @@ PUBLIC_TEXT_FIELDS = {'caption', 'body', 'name', 'title', 'description', 'bio',
 
 
 def public_text(value):
-    """Extract an allowlist, not arbitrary account/health/credential fields."""
+    """Extract an allowlist, not arbitrary account/health/credential fields.
+
+    The shape matters as much as the key. Recursion loses the key on the way
+    down, so a bare string inside a list is anonymous by the time it is looked
+    at -- there is no way to tell `{'bio': ['...']}` from `{'weight_kg': [...]}`
+    once the list is entered. That is why a list under an allowlisted key is
+    read here, where the key is still in hand, rather than in the list branch
+    below.
+
+    Nothing currently sends that shape: `public_text_for_source` builds
+    `[{'name': ...}]`, dicts all the way down, which the recursion already
+    reaches. This is for the next caller, because the failure mode is silence
+    -- text would be published having been checked by nobody, and no test
+    anywhere would go red.
+    """
     found = []
     if isinstance(value, dict):
         for key, item in value.items():
-            if key in PUBLIC_TEXT_FIELDS and isinstance(item, str) and item.strip():
+            allowed = key in PUBLIC_TEXT_FIELDS
+            if allowed and isinstance(item, str) and item.strip():
                 found.append(item.strip())
             elif isinstance(item, (dict, list, tuple)):
+                if allowed and isinstance(item, (list, tuple)):
+                    # Plain strings under a public key are as public as the
+                    # same text written directly under it. Lists only: a dict
+                    # would iterate its keys, which are field names.
+                    found.extend(entry.strip() for entry in item
+                                 if isinstance(entry, str) and entry.strip())
                 found.extend(public_text(item))
     elif isinstance(value, (list, tuple)):
         for item in value:
@@ -167,7 +188,8 @@ def check_public_content(value=None, *, image=None, request=None):
     outbound = urllib.request.Request('https://api.openai.com/v1/moderations', data=body,
         headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}, method='POST')
     try:
-        with urllib.request.build_opener(NoRedirects()).open(outbound, timeout=8) as response:
+        with urllib.request.build_opener(NoRedirects()).open(
+                outbound, timeout=settings.MODERATION_TIMEOUT_SECONDS) as response:
             result = json.loads(response.read(262145))
         results = result['results']
         if not isinstance(results, list) or not results or any(

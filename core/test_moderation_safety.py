@@ -79,6 +79,43 @@ class ProviderModerationTests(SimpleTestCase):
         self.assertEqual(public_text({'meal': {'name': 'Lunch', 'entries': [{'name': 'Rice'}]},
                                       'token': 'secret'}), ['Lunch', 'Rice'])
 
+    def test_plain_strings_under_a_public_key_are_not_skipped(self):
+        """A list of bare strings used to vanish, silently.
+
+        Recursion loses the key, so by the time a string inside a list is
+        looked at there is nothing left to say whether it was public. The
+        result was text published having been checked by nobody, with no test
+        anywhere going red. Nothing sends this shape today; the point is that
+        the next caller to try it is not quietly unmoderated.
+        """
+        self.assertEqual(public_text({'caption': ['first', '  second  ', '', 'third']}),
+                         ['first', 'second', 'third'])
+
+    def test_a_list_under_a_private_key_is_still_ignored(self):
+        """The negative control. Widening the public keys must not widen the
+        private ones, or measurements start leaving the machine."""
+        self.assertEqual(public_text({'weight_kg': ['50', '51'], 'password': ['hunter2']}), [])
+
+    def test_mixed_entries_under_a_public_key_are_all_reached(self):
+        self.assertEqual(public_text({'name': ['plain', {'name': 'nested'}]}),
+                         ['plain', 'nested'])
+
+    def test_a_dict_under_a_public_key_does_not_leak_its_field_names(self):
+        """Iterating a dict yields keys. If the list handling caught dicts too,
+        the field names themselves would be sent as if they were content."""
+        self.assertEqual(public_text({'name': {'weight_kg': '50'}}), [])
+
+    def test_the_configured_timeout_is_the_one_used(self):
+        """It bounds how long a synchronous worker is held, so it is a capacity
+        setting. A default hardcoded back into the call would not fail any
+        other test -- it would just make the knob in the deployment docs a
+        lie."""
+        with override_settings(MODERATION_TIMEOUT_SECONDS=3):
+            with patch('core.moderation.urllib.request.build_opener') as opener:
+                opener.return_value.open.return_value = self.response({'results': [{'flagged': False}]})
+                check_public_content({'caption': 'fixture'}, request=consented())
+                self.assertEqual(opener.return_value.open.call_args.kwargs['timeout'], 3)
+
 
 class SocialSafetyIntegrationTests(RepbaseAPITestMixin, APITestCase):
     def setUp(self):

@@ -22,7 +22,7 @@
 
 set -uo pipefail
 
-REPO="/Users/user299988/Documents/repbase"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT=5000
 PROBE="/api/v1/step-counts/"
 LABEL="com.repbase.devserver"
