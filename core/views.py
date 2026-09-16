@@ -48,7 +48,7 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
 from .post_publication import publication_media, PublicationMediaError
-from .moderation import check_public_content
+from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IdempotentCreateMixin
 from .serializers import SessionFinishSerializer
 from .models import (
@@ -180,6 +180,36 @@ from .serializers import (
 
 logger = logging.getLogger(__name__)
 
+#: Documented on every operation that can publish something.
+#:
+#: The contract is the canonical description of this API, and it did not
+#: mention this header at all. The iOS client works because a hand-written
+#: middleware attaches it; a client generated from the contract alone would
+#: have had every submission refused with 403 and found nothing here saying
+#: why. The name comes from `moderation.CONSENT_HEADER_NAME` rather than being
+#: typed again, so the documented header cannot drift from the checked one.
+#:
+#: Optional rather than required, because that is what is true: a server with
+#: moderation disabled never asks for it, and neither does a submission
+#: carrying no public-facing text. When it is asked for and missing, the answer
+#: is 403 `moderation_consent_required`.
+MODERATION_CONSENT_PARAMETER = OpenApiParameter(
+    name=CONSENT_HEADER_NAME,
+    type=OpenApiTypes.STR,
+    location=OpenApiParameter.HEADER,
+    required=False,
+    description=(
+        "Agreement to the current safety-review disclosure, as the version "
+        "string the server publishes in MODERATION_CONSENT_VERSION. Required "
+        "when moderation is enabled and the submission carries public-facing "
+        "text or a photo; the content is not sent for review without it, and "
+        "the submission is refused with 403 and code "
+        "`moderation_consent_required`. A value from an older disclosure is "
+        "refused the same way, because agreement to previous wording is not "
+        "agreement to this one."
+    ),
+)
+
 
 def home(request):
     return JsonResponse(
@@ -219,7 +249,8 @@ class RegisterView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
 
-    @extend_schema(request=RegisterSerializer, responses={201: AuthResponseSerializer})
+    @extend_schema(request=RegisterSerializer, responses={201: AuthResponseSerializer},
+                   parameters=[MODERATION_CONSENT_PARAMETER])
     def post(self, request):
         serializer = RegisterSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
@@ -577,6 +608,10 @@ class LogoutView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+@extend_schema_view(
+    put=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
+    patch=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
+)
 class MeView(RetrieveUpdateDestroyAPIView):
     serializer_class = RepbaseUserSerializer
     permission_classes = [IsAuthenticated]
@@ -624,6 +659,7 @@ class MePromptsView(APIView):
         )
 
     @extend_schema(
+        parameters=[MODERATION_CONSENT_PARAMETER],
         request=ProfilePromptsRequestSerializer,
         responses={200: ProfilePromptSerializer(many=True)},
         description=(
@@ -674,6 +710,7 @@ class MeSocialLinksView(APIView):
         )
 
     @extend_schema(
+        parameters=[MODERATION_CONSENT_PARAMETER],
         request=ProfileSocialLinksRequestSerializer,
         responses={200: ProfileSocialLinkSerializer(many=True)},
         description=(
@@ -770,6 +807,7 @@ class MePhotoView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(
+        parameters=[MODERATION_CONSENT_PARAMETER],
         request=ProfilePhotoUploadSerializer,
         responses={200: RepbaseUserSerializer},
         description="Replace the profile photo. Any previous file is deleted.",
@@ -1572,6 +1610,11 @@ class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mo
             )
         ]
     )
+)
+@extend_schema_view(
+    create=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
+    update=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
+    partial_update=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
 )
 class GymViewSet(viewsets.ModelViewSet):
     """Gyms, shared by everyone who trains at them.
@@ -2798,6 +2841,10 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
     # schema, and a documented PUT that answers 405 is worse than no PUT.
     update=extend_schema(exclude=True),
 )
+@extend_schema_view(
+    create=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
+    partial_update=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
+)
 class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     """Posts: what someone has chosen to show other people.
 
@@ -3419,6 +3466,10 @@ class FeedViewSet(OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericView
         )
 
 
+@extend_schema_view(
+    create=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
+    partial_update=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
+)
 class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     """Comments on a post.
 
