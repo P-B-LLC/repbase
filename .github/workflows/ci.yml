@@ -8,6 +8,13 @@ on:
   # second copy of them that can drift away from the ones that matter.
   workflow_call:
 
+# Only the newest run for a branch matters. Linux minutes are the cheap ones,
+# but the full suite runs twice here -- once on SQLite and once on PostgreSQL
+# -- so a superseded push still burns ten minutes of somebody's allowance.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # The whole suite, against the database this actually ships on.
   #
