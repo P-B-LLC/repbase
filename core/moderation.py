@@ -32,17 +32,26 @@ MAX_IMAGE_PIXELS = 50_000_000
 
 class ModerationUnavailable(APIException):
     status_code = 503
-    default_detail = 'Safety checks are temporarily unavailable. Nothing was published; please try again.'
+    # A dict, not a string, because DRF renders exc.detail as the body and a
+    # bare string gives {"detail": ...} with no code. The client keys off the
+    # code to tell an outage from a refusal -- one is worth a retry button and
+    # the other is not -- and default_code never reaches the wire.
+    default_detail = {
+        'detail': 'Safety checks are temporarily unavailable. Nothing was published; please try again.',
+        'code': 'moderation_unavailable',
+    }
     default_code = 'moderation_unavailable'
 
 
 class ModerationConsentRequired(PermissionDenied):
-    default_detail = (
-        'This submission needs permission for safety review before it can be sent. '
-        'Update the app, then try again.'
-    )
+    default_detail = {
+        'detail': (
+            'This submission needs permission for safety review before it can be sent. '
+            'Update the app, then try again.'
+        ),
+        'code': 'moderation_consent_required',
+    }
     default_code = 'moderation_consent_required'
-
 
 CONSENT_HEADER = 'HTTP_X_MODERATION_CONSENT'
 

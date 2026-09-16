@@ -221,7 +221,7 @@ class RegisterView(APIView):
 
     @extend_schema(request=RegisterSerializer, responses={201: AuthResponseSerializer})
     def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
+        serializer = RegisterSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         profile = serializer.save()
         token = Token.objects.create(user=profile.user)
@@ -632,7 +632,7 @@ class MePromptsView(APIView):
         ),
     )
     def put(self, request):
-        serializer = ProfilePromptsRequestSerializer(data=request.data)
+        serializer = ProfilePromptsRequestSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         profile = profile_for(request.user)
 
@@ -683,7 +683,7 @@ class MeSocialLinksView(APIView):
         ),
     )
     def put(self, request):
-        serializer = ProfileSocialLinksRequestSerializer(data=request.data)
+        serializer = ProfileSocialLinksRequestSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         profile = profile_for(request.user)
 
@@ -775,7 +775,7 @@ class MePhotoView(APIView):
         description="Replace the profile photo. Any previous file is deleted.",
     )
     def put(self, request):
-        serializer = ProfilePhotoUploadSerializer(data=request.data)
+        serializer = ProfilePhotoUploadSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         profile = serializer.save_to(profile_for(request.user))
         return Response(
@@ -3351,7 +3351,7 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def partial_update(self, request, *args, **kwargs):
         post = self.get_object()
-        payload = UpdatePostSerializer(data=request.data, partial=True)
+        payload = UpdatePostSerializer(data=request.data, partial=True, context={"request": request})
         payload.is_valid(raise_exception=True)
         for field, value in payload.validated_data.items():
             setattr(post, field, value)

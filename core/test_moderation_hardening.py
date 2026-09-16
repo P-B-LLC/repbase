@@ -208,3 +208,158 @@ class CustomExerciseNamesStayPrivateTests(RepbaseAPITestMixin, TestCase):
         payload, name = self.payload_for('words I chose myself', created_by=self.owner)
         self.assertNotEqual(payload['exercise_name'], name)
         self.assertEqual(payload['exercise_name'], payload['lift_label'])
+
+
+class EveryRefusalTellsTheAppWhichKindItIsTests(SimpleTestCase):
+    """The app decides whether to offer a retry from the code, not the status.
+
+    This was wrong once and silently: only the rejection carried a code, so an
+    outage and a consent failure both reached the app as an unexplained status
+    and were shown as "unexpected response". DRF renders `exc.detail` as the
+    body, and a bare string detail produces no code at all -- `default_code`
+    never reaches the wire. The audit that found it was a print of the three
+    bodies; this is that print, kept.
+    """
+
+    def bodies(self):
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        from rest_framework.views import exception_handler
+
+        from .moderation import ModerationConsentRequired, ModerationUnavailable
+
+        raised = [
+            DRFValidationError({'detail': 'refused', 'code': 'moderation_rejected'}),
+            ModerationUnavailable(),
+            ModerationConsentRequired(),
+        ]
+        return [exception_handler(exception, {}) for exception in raised]
+
+    def test_each_one_carries_a_code_and_a_sentence(self):
+        for response in self.bodies():
+            self.assertIn('code', response.data, response.data)
+            self.assertIn('detail', response.data, response.data)
+            self.assertTrue(str(response.data['detail']).strip())
+
+    def test_the_codes_are_the_ones_the_client_knows(self):
+        """The client matches on exactly these three. Renaming one here
+        without renaming it there turns a useful message back into a status
+        code, which is the failure this whole path exists to avoid."""
+        codes = {str(response.data['code']) for response in self.bodies()}
+        self.assertEqual(
+            codes,
+            {'moderation_rejected', 'moderation_unavailable', 'moderation_consent_required'},
+        )
+
+    def test_an_outage_is_the_only_one_worth_retrying(self):
+        statuses = {
+            str(response.data['code']): response.status_code
+            for response in self.bodies()
+        }
+        self.assertEqual(statuses['moderation_unavailable'], 503)
+        self.assertEqual(statuses['moderation_rejected'], 400)
+        self.assertEqual(statuses['moderation_consent_required'], 403)
+
+
+@override_settings(**LIVE)
+class TheEndpointsStillWorkThroughTheRealStackTests(RepbaseAPITestMixin, APITestCase):
+    """Consent is threaded from the request into the serializers, and a
+    serializer that cannot see the request refuses everything.
+
+    Registration is the one that would hurt: it moderates a username and a
+    display name, it is the first thing anybody does, and nobody signing up
+    can report that it is broken. So it gets exercised through the client
+    rather than by calling the checker directly.
+    """
+
+    def headers(self, version=None):
+        if version is None:
+            version = settings.MODERATION_CONSENT_VERSION
+        return {'HTTP_X_MODERATION_CONSENT': version}
+
+    def register(self, username, **extra):
+        with patch('core.moderation.urllib.request.build_opener') as opener:
+            opener.return_value.open.return_value = allowed_response()
+            return self.client.post(
+                '/api/v1/auth/register/',
+                {
+                    'username': username,
+                    'email': f'{username}@example.test',
+                    'password': 'a-long-enough-password-1',
+                    'first_name': 'Test',
+                    'last_name': 'Person',
+                },
+                format='json',
+                **extra,
+            )
+
+    def test_registering_works_when_the_client_declares_its_disclosure(self):
+        response = self.register('newcomer', **self.headers())
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_registering_without_it_is_refused_and_says_why(self):
+        response = self.register('older-build')
+        self.assertEqual(response.status_code, 403, response.data)
+        self.assertEqual(response.data.get('code'), 'moderation_consent_required')
+
+    def test_an_unknown_disclosure_version_is_refused(self):
+        response = self.register('stale-build', **self.headers('1999-01-01'))
+        self.assertEqual(response.status_code, 403, response.data)
+
+    def test_editing_a_caption_works_through_the_real_stack(self):
+        """Every serializer that moderates needs the request, and four of them
+        were built without it -- registration, the profile photo, the prompts
+        and the social links -- so consent could never be found and all four
+        refused everything. A checker wired to a context nobody passed is
+        indistinguishable from a working one until it is called this way."""
+        _, owner, token = self.create_account("editor")
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        post = Post.objects.create(author=owner, kind=Post.Kind.MEAL)
+        with patch('core.moderation.urllib.request.build_opener') as opener:
+            opener.return_value.open.return_value = allowed_response()
+            response = self.client.patch(
+                f'/api/v1/social/posts/{post.pk}/',
+                {'caption': 'a new caption'},
+                format='json',
+                **self.headers(),
+            )
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_creating_a_gym_works_through_the_real_stack(self):
+        """Gyms, comments and the profile go through viewsets, which do pass a
+        context. Asserted rather than assumed: assuming it is what left four
+        other flows refusing everything."""
+        _, _, token = self.create_account('gym-adder')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        with patch('core.moderation.urllib.request.build_opener') as opener:
+            opener.return_value.open.return_value = allowed_response()
+            response = self.client.post(
+                '/api/v1/gyms/',
+                {'name': 'Iron Works', 'city': 'Boulder'},
+                format='json',
+                **self.headers(),
+            )
+        self.assertIn(response.status_code, (200, 201), response.data)
+
+    def test_commenting_works_through_the_real_stack(self):
+        _, owner, token = self.create_account('commenter')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        post = Post.objects.create(author=owner, kind=Post.Kind.MEAL)
+        with patch('core.moderation.urllib.request.build_opener') as opener:
+            opener.return_value.open.return_value = allowed_response()
+            response = self.client.post(
+                '/api/v1/social/comments/',
+                {'post': post.pk, 'body': 'Nice one'},
+                format='json',
+                **self.headers(),
+            )
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_editing_the_profile_works_through_the_real_stack(self):
+        _, _, token = self.create_account('profile-editor')
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {token.key}')
+        with patch('core.moderation.urllib.request.build_opener') as opener:
+            opener.return_value.open.return_value = allowed_response()
+            response = self.client.patch(
+                '/api/v1/me/', {'bio': 'Training for a half.'}, format='json', **self.headers()
+            )
+        self.assertEqual(response.status_code, 200, response.data)
