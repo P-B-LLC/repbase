@@ -56,7 +56,7 @@ echo "==> static files"
 if run "$APP/.venv/bin/python" -c 'import django;django.setup();from django.conf import settings;raise SystemExit(0 if settings.STATIC_ROOT else 1)' 2>/dev/null; then
     run "$APP/.venv/bin/python" "$APP/manage.py" collectstatic --noinput >/dev/null
 else
-    echo "    skipped: STATIC_ROOT unset under $DJANGO_SETTINGS_MODULE"
+    echo "    skipped: STATIC_ROOT is unset under the configured settings module"
 fi
 
 echo "==> checks"
