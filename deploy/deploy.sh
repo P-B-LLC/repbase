@@ -16,6 +16,26 @@
 
 set -euo pipefail
 
+# Run from a copy, because this script is inside the tree it checks out.
+#
+# bash reads a script incrementally, so replacing the file mid-run makes it
+# resume at a byte offset into different text. That is exactly what happened
+# the first time this ran: the checkout succeeded, and bash then executed a
+# line from the version it had already buffered.
+#
+# The copy fixes the text for the duration. The version you invoke is the
+# version that runs to completion; the one it checks out takes effect next
+# time, which is the same contract every other file in the tree has.
+if [ -z "${REPBASE_DEPLOY_PINNED:-}" ]; then
+    pinned="$(mktemp)"
+    cat "$0" > "$pinned"
+    chmod +x "$pinned"
+    export REPBASE_DEPLOY_PINNED=1
+    trap 'rm -f "$pinned"' EXIT
+    "$pinned" "$@"
+    exit $?
+fi
+
 APP=/home/django/app
 USER=django
 REF="${1:-origin/main}"

@@ -17,6 +17,16 @@ Earlier the code was uploaded rather than cloned, and nothing on the box
 recorded its origin. If you find yourself copying files up again, that is the
 regression this directory exists to prevent.
 
+## A note on the script updating itself
+
+`deploy.sh` lives in the tree it checks out, so it copies itself to a
+temporary file and runs from there. bash reads a script incrementally, and
+replacing the file mid-run makes it resume at a byte offset into different
+text — which is what happened the first time this ran.
+
+The version you invoke is the version that runs to completion. The one it
+checks out takes effect on the next deploy.
+
 ## Deploying
 
 ```bash
