@@ -43,7 +43,18 @@ REF="${1:-origin/main}"
 [ "$(id -u)" -eq 0 ] || { echo "Run as root." >&2; exit 1; }
 [ -d "$APP/.git" ] || { echo "$APP is not a git checkout. Clone it first." >&2; exit 1; }
 
-run() { sudo -u "$USER" env $(grep -v '^#' /etc/repbase.env | xargs -d'\n') "$@"; }
+# Sourcing parses the quoting the way systemd's EnvironmentFile does. The
+# previous `xargs` form split every value on whitespace, so the first setting
+# to contain a space — DEFAULT_FROM_EMAIL, "Rytivo <noreply@rytivo.app>" —
+# broke the deploy. `sudo -E` then carries the environment across, because the
+# file is root-only and the django user cannot read it itself.
+run() {
+    set -a
+    # shellcheck disable=SC1091
+    . /etc/repbase.env
+    set +a
+    sudo -E -u "$USER" "$@"
+}
 
 was="$(git -C "$APP" rev-parse --short HEAD)"
 
@@ -95,8 +106,39 @@ else
     echo "    skipped: STATIC_ROOT is unset under the configured settings module"
 fi
 
+# `check --deploy` decides whether this deploy is allowed to restart anything.
+#
+# ACKNOWLEDGE_CHECKS names errors that are known, accepted and deliberately
+# deferred — nothing else. Any error not on that list still stops the deploy,
+# so this cannot quietly become "skip the checks": a new problem introduced by
+# the commit being deployed fails exactly as before.
+#
+# Naming one here is a decision to run in production with that protection
+# missing. core.E006 says in its own hint not to bypass it to ship, and that
+# remains true; putting it on this list defers it, it does not answer it.
 echo "==> checks"
-run "$APP/.venv/bin/python" "$APP/manage.py" check --deploy
+if ! check_output="$(run "$APP/.venv/bin/python" "$APP/manage.py" check --deploy 2>&1)"; then
+    printf '%s\n' "$check_output"
+    failed="$(printf '%s\n' "$check_output" | grep -oE '\(([a-z_]+\.E[0-9]+)\)' | tr -d '()' | sort -u)"
+    unexpected=""
+    for id in $failed; do
+        case " ${ACKNOWLEDGE_CHECKS:-} " in
+            *" $id "*) ;;
+            *) unexpected="$unexpected $id" ;;
+        esac
+    done
+    if [ -z "$failed" ] || [ -n "$unexpected" ]; then
+        echo >&2
+        echo "Deploy stopped by checks:${unexpected:- (no error id could be read)}" >&2
+        echo "Fix them, or name an accepted one in ACKNOWLEDGE_CHECKS." >&2
+        exit 1
+    fi
+    echo
+    echo "!! DEPLOYING WITH KNOWN CHECKS UNRESOLVED:$(printf ' %s' $failed)"
+    echo "!! These are production protections that are not in place."
+    printf '%s deployed %s with unresolved:%s\n' \
+        "$(date -Is)" "$REF" "$(printf ' %s' $failed)" >> /var/log/repbase-deploy.log
+fi
 
 echo "==> restarting"
 systemctl restart repbase
