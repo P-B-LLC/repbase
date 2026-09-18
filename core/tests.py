@@ -5,6 +5,7 @@ import tempfile
 import warnings
 from unittest import mock
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
@@ -3871,3 +3872,133 @@ class IdempotentSaveAcceptsACharsetTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(second.status_code, 201, second.data)
         self.assertEqual(second.data["id"], first.data["id"])
         self.assertEqual(PlannerEntry.objects.filter(owner=self.profile).count(), 1)
+
+
+class FinishingAWorkoutTicksItsTaskTests(RepbaseAPITestMixin, APITestCase):
+    """The calendar has to agree that the training happened.
+
+    A scheduled workout exists twice: as a WorkoutSession, which knows whether
+    it was done, and as a PlannerEntry, which is what the calendar draws. Only
+    the session was being finished, so after training the day still read
+    "Push Day" unticked and "0 of 2 done" -- the planner reporting outstanding
+    work that had just been completed, which is the one number it exists to
+    get right.
+
+    The zone cases are the ones worth having. `scheduled_date` is a date and
+    `ended_at` is an instant, so the match depends on whose day is meant. The
+    server keeps UTC; for anyone west of it an evening session converts to
+    tomorrow, finds no task for that date, and silently ticks nothing -- the
+    failure this would have shipped with, and the reason `zone_for` is asked
+    rather than `timezone.localdate`.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("trainee")
+        self.authenticate(self.token)
+        self.workout = WorkoutTemplate.objects.create(owner=self.profile, name="Push Day")
+
+    def _task_on(self, day, workout=None):
+        return PlannerEntry.objects.create(
+            owner=self.profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="Push Day",
+            category="workout",
+            scheduled_date=day,
+            workout=self.workout if workout is None else workout,
+        )
+
+    def _session(self, started_at):
+        return WorkoutSession.objects.create(
+            repbase_user=self.profile,
+            workout=self.workout,
+            status=WorkoutSession.Status.ACTIVE,
+            started_at=started_at,
+        )
+
+    def _end(self, session, ended_at):
+        return self.client.post(
+            f"/api/v1/sessions/{session.id}/end/",
+            {"ended_at": ended_at.isoformat()},
+            format="json",
+        )
+
+    def test_finishing_marks_the_day_task_complete(self):
+        started = timezone.now() - timedelta(hours=1)
+        task = self._task_on(timezone.localtime(started, ZoneInfo("UTC")).date())
+        response = self._end(self._session(started), timezone.now())
+
+        self.assertEqual(response.status_code, 200, response.data)
+        task.refresh_from_db()
+        self.assertIsNotNone(task.completed_at, "the calendar must show the workout done")
+
+    def test_an_evening_session_ticks_its_own_day_not_tomorrow(self):
+        # 21:00 in Chicago is the small hours of the next day in UTC. The task
+        # belongs to the day the person trained, which is the earlier one.
+        #
+        # Taken relative to now, and in the past: the serializer refuses a
+        # finish time in the future, so a fixed date here passes or fails
+        # depending on when the suite is run.
+        self.profile.time_zone = "America/Chicago"
+        self.profile.save(update_fields=["time_zone"])
+        chicago = ZoneInfo("America/Chicago")
+        started = (
+            timezone.localtime(timezone.now(), chicago) - timedelta(days=2)
+        ).replace(hour=21, minute=0, second=0, microsecond=0)
+        their_day = self._task_on(started.date())
+        utc_day = self._task_on(started.astimezone(ZoneInfo("UTC")).date())
+        self.assertNotEqual(their_day.scheduled_date, utc_day.scheduled_date)
+
+        self._end(self._session(started), started + timedelta(hours=1))
+
+        their_day.refresh_from_db()
+        utc_day.refresh_from_db()
+        self.assertIsNotNone(their_day.completed_at, "ticked the day they trained")
+        self.assertIsNone(utc_day.completed_at, "must not tick the server's day")
+
+    def test_a_session_running_past_midnight_belongs_to_the_day_it_began(self):
+        # Past, for the same reason as above: a future finish time is refused.
+        started = (timezone.now() - timedelta(days=2)).replace(
+            hour=23, minute=30, second=0, microsecond=0
+        )
+        started_day = self._task_on(timezone.localtime(started, ZoneInfo("UTC")).date())
+        self._end(self._session(started), started + timedelta(hours=1))
+
+        started_day.refresh_from_db()
+        self.assertIsNotNone(started_day.completed_at)
+
+    def test_finishing_again_keeps_the_first_completion_time(self):
+        started = timezone.now() - timedelta(hours=1)
+        task = self._task_on(timezone.localtime(started, ZoneInfo("UTC")).date())
+        session = self._session(started)
+        self._end(session, timezone.now())
+        task.refresh_from_db()
+        first = task.completed_at
+
+        self._end(session, timezone.now() + timedelta(minutes=5))
+        task.refresh_from_db()
+        self.assertEqual(task.completed_at, first, "a retry must not rewrite history")
+
+    def test_somebody_elses_task_is_never_touched(self):
+        other, other_profile, _ = self.create_account("stranger")
+        started = timezone.now() - timedelta(hours=1)
+        theirs = PlannerEntry.objects.create(
+            owner=other_profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="Push Day",
+            category="workout",
+            scheduled_date=timezone.localtime(started, ZoneInfo("UTC")).date(),
+            workout=self.workout,
+        )
+        self._end(self._session(started), timezone.now())
+
+        theirs.refresh_from_db()
+        self.assertIsNone(theirs.completed_at)
+
+    def test_a_session_with_no_workout_finishes_without_incident(self):
+        loose = WorkoutSession.objects.create(
+            repbase_user=self.profile,
+            status=WorkoutSession.Status.ACTIVE,
+            started_at=timezone.now() - timedelta(hours=1),
+        )
+        response = self._end(loose, timezone.now())
+        self.assertEqual(response.status_code, 200, response.data)
