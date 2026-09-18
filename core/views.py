@@ -833,6 +833,7 @@ class MePhotoView(APIView):
         )
 
 
+
 @extend_schema_view(
     list=extend_schema(
         parameters=[
@@ -1818,6 +1819,42 @@ class WorkoutRecurrenceViewSet(
             instance.save(update_fields=["effective_until", "updated_at"])
 
 
+def training_day_of(session):
+    """The day a session's training belongs to, in its owner's own zone.
+
+    The day it *began*: a workout running past midnight is one evening's
+    training, not two days of it. And in the owner's zone rather than the
+    server's, which keeps UTC -- asking in server time files an evening
+    session under tomorrow, which is the mistake `today_for` exists for.
+
+    None when the session never started and never ended, which is a session
+    that records no training and so belongs to no day.
+    """
+    began = session.started_at or session.ended_at
+    if began is None:
+        return None
+    return timezone.localtime(began, zone_for(session.repbase_user)).date()
+
+
+def planner_tasks_for(session):
+    """The planner tasks standing for this session's training.
+
+    The two directions -- ticking on finish, unticking when the session is
+    thrown away -- have to agree on which task that is, and the rule is
+    fiddly enough (the right day, in the right zone) that two copies of it
+    would drift. There is deliberately one.
+    """
+    day = training_day_of(session)
+    if not session.workout_id or day is None:
+        return PlannerEntry.objects.none()
+    return PlannerEntry.objects.filter(
+        owner=session.repbase_user,
+        workout_id=session.workout_id,
+        scheduled_date=day,
+        kind=PlannerEntry.Kind.TASK,
+    )
+
+
 @extend_schema_view(
     list=extend_schema(
         parameters=[
@@ -1879,6 +1916,52 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
     serializer_class = WorkoutSessionSerializer
     permission_classes = [IsAuthenticated]
     owner_lookup = "repbase_user"
+
+    def perform_destroy(self, instance):
+        """Throwing the session away un-ticks the task it ticked.
+
+        The mirror of `end`, and the half that was missing. Undo on a
+        finished day deletes its sessions, so without this the training
+        vanished from Training while the calendar went on showing the day
+        as done -- the same two-screens-disagreeing problem as before, just
+        pointing the other way.
+
+        Nothing is unticked while any finished session still accounts for
+        the day. Undo deletes them one at a time, and a day trained twice
+        must not come unticked by the first of the two going.
+
+        A task the person ticked by hand on a day that also holds a session
+        is unticked with it. There is nothing recorded to tell the two
+        apart, and "no session for this day" is the better reading.
+        """
+        day = training_day_of(instance)
+        tasks = (
+            planner_tasks_for(instance)
+            if instance.status == WorkoutSession.Status.COMPLETED
+            else PlannerEntry.objects.none()
+        )
+        owner_id = instance.repbase_user_id
+        workout_id = instance.workout_id
+        instance.delete()
+
+        if day is None or not workout_id:
+            return
+        # A day either side in UTC, rather than scanning every session ever
+        # recorded. No zone is offset far enough for a local day's training
+        # to have started outside that window, and the exact comparison is
+        # done per session below anyway.
+        others = WorkoutSession.objects.filter(
+            repbase_user_id=owner_id,
+            workout_id=workout_id,
+            status=WorkoutSession.Status.COMPLETED,
+            started_at__date__gte=day - timedelta(days=1),
+            started_at__date__lte=day + timedelta(days=1),
+        ).select_related("repbase_user")
+        if any(training_day_of(other) == day for other in others):
+            return
+        tasks.filter(completed_at__isnull=False).update(
+            completed_at=None, updated_at=timezone.now()
+        )
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
@@ -1993,27 +2076,14 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
             # server's: the website reads the same rows and would otherwise
             # disagree with the phone about the same day.
             #
-            # Matched on the day the session *began*, in the user's own zone.
-            # A workout that runs past midnight belongs to the day it started,
-            # and the server keeps UTC -- asking in server time files an
-            # evening session under tomorrow and finds no task at all, which
-            # is the bug `today_for` was written for.
+            # Which task that is, and why that day, is `planner_tasks_for`.
             #
             # Only an untouched task is claimed, so a retry cannot overwrite
             # the time an earlier finish recorded, and `updated_at` is set by
             # hand because `.update()` does not run `auto_now`.
-            if session.workout_id:
-                began = session.started_at or ended_at
-                local_day = timezone.localtime(
-                    began, zone_for(session.repbase_user)
-                ).date()
-                PlannerEntry.objects.filter(
-                    owner=session.repbase_user,
-                    workout_id=session.workout_id,
-                    scheduled_date=local_day,
-                    kind=PlannerEntry.Kind.TASK,
-                    completed_at__isnull=True,
-                ).update(completed_at=ended_at, updated_at=timezone.now())
+            planner_tasks_for(session).filter(completed_at__isnull=True).update(
+                completed_at=ended_at, updated_at=timezone.now()
+            )
         return Response(self.get_serializer(session).data)
 
     @extend_schema(
