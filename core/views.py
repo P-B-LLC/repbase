@@ -103,6 +103,8 @@ from .models import (
     notify,
     today_for,
     normalize_gym_text,
+    planner_tasks_for,
+    training_day_of,
     plan_recurring_week,
     week_start_for,
     zone_for,
@@ -1817,42 +1819,6 @@ class WorkoutRecurrenceViewSet(
         else:
             instance.effective_until = current_week
             instance.save(update_fields=["effective_until", "updated_at"])
-
-
-def training_day_of(session):
-    """The day a session's training belongs to, in its owner's own zone.
-
-    The day it *began*: a workout running past midnight is one evening's
-    training, not two days of it. And in the owner's zone rather than the
-    server's, which keeps UTC -- asking in server time files an evening
-    session under tomorrow, which is the mistake `today_for` exists for.
-
-    None when the session never started and never ended, which is a session
-    that records no training and so belongs to no day.
-    """
-    began = session.started_at or session.ended_at
-    if began is None:
-        return None
-    return timezone.localtime(began, zone_for(session.repbase_user)).date()
-
-
-def planner_tasks_for(session):
-    """The planner tasks standing for this session's training.
-
-    The two directions -- ticking on finish, unticking when the session is
-    thrown away -- have to agree on which task that is, and the rule is
-    fiddly enough (the right day, in the right zone) that two copies of it
-    would drift. There is deliberately one.
-    """
-    day = training_day_of(session)
-    if not session.workout_id or day is None:
-        return PlannerEntry.objects.none()
-    return PlannerEntry.objects.filter(
-        owner=session.repbase_user,
-        workout_id=session.workout_id,
-        scheduled_date=day,
-        kind=PlannerEntry.Kind.TASK,
-    )
 
 
 @extend_schema_view(

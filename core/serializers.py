@@ -29,6 +29,7 @@ class SessionFinishSerializer(serializers.Serializer):
 
 from .models import (
     CardioMachine,
+    completed_sessions_for,
     BodyWeightEntry,
     DailyStepCount,
     Gear,
@@ -1631,6 +1632,34 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         if kind == PlannerEntry.Kind.EVENT and attrs.get("is_complete"):
             raise serializers.ValidationError(
                 {"is_complete": "An event happens rather than being completed."}
+            )
+
+        # A workout that was trained cannot be un-trained by a checkbox.
+        #
+        # The session is the record of the training; the tick is only the
+        # plan's account of it. While they were allowed to differ, Training
+        # showed a finished session with its sets and volume while Home said
+        # "up next" and offered Start, and the calendar counted the day as
+        # outstanding -- the app telling somebody to do a workout they had
+        # just done. The tick is the one that has to give, because it is the
+        # one carrying no evidence.
+        #
+        # Undo remains the way out: it deletes the session, and deleting the
+        # session unticks the task (see `WorkoutSessionViewSet.perform_destroy`).
+        # That is a different act from clearing a checkbox, and it says so.
+        if (
+            self.instance is not None
+            and attrs.get("is_complete") is False
+            and kind == PlannerEntry.Kind.TASK
+            and completed_sessions_for(self.instance)
+        ):
+            raise serializers.ValidationError(
+                {
+                    "is_complete": (
+                        "This workout has a recorded session, so it stays "
+                        "done. Use Undo in Training to remove the session."
+                    )
+                }
             )
 
         # Tasks and events draw from different halves of the category list.
