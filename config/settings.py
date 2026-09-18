@@ -245,6 +245,17 @@ SECURE_SSL_REDIRECT = not DEBUG and os.getenv(
 SECURE_HSTS_SECONDS = int(os.getenv('DJANGO_SECURE_HSTS_SECONDS', '0'))
 SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
 
+# Behind a TLS-terminating proxy, this is how the app learns the request
+# arrived over HTTPS. Without it every absolute URL the API builds says
+# `http://` — and iOS App Transport Security refuses a plain-HTTP image
+# before it can follow the redirect, so profile photos silently never load.
+#
+# Off unless asked for. The header is a claim the client could make itself,
+# so trusting it is only safe where a proxy always overwrites it, which is
+# true of this deployment's nginx and is not true of `runserver`.
+if os.getenv('TRUST_PROXY_SSL_HEADER', 'false').lower() in {'1', 'true', 'yes'}:
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
 
 # Email
 # https://docs.djangoproject.com/en/6.1/topics/email/#topic-email-configuration

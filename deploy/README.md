@@ -44,18 +44,32 @@ copy.
 ## Deploys are gated on configuration
 
 `check --deploy` runs before the restart, and the repository adds its own
-checks on top of Django's. Until the production configuration exists, it
-fails with:
+checks on top of Django's. A failed deploy puts the checkout back on the
+commit that is still serving, so `HEAD` keeps telling the truth.
 
-- `core.E002` — `DEFAULT_FROM_EMAIL` is on `.local`, a domain that cannot
-  receive mail
-- `core.E003` — no SMTP host, so every password reset would fail
+Mail is configured now, so `core.E002` and `core.E003` are answered. What
+remains is:
+
 - `core.E006` — social publishing is on without automated moderation
 
-That is the gate working, not a bug, and `core.E006` says in its own hint not
-to bypass it to ship. It does mean **no deploy can complete until those are
-configured**. A failed deploy puts the checkout back on the commit that is
-still serving, so `HEAD` keeps telling the truth.
+## Deferring a check, out loud
+
+A check that is known, accepted and deliberately deferred can be named in
+`ACKNOWLEDGE_CHECKS`:
+
+```bash
+ACKNOWLEDGE_CHECKS="core.E006" /home/django/app/deploy/deploy.sh
+```
+
+Anything *not* named still stops the deploy, so this never degrades into "skip
+the checks" — a new fault in the commit being deployed fails exactly as it did
+before. Each deploy that uses it prints a loud banner and appends a line to
+`/var/log/repbase-deploy.log`.
+
+Naming a check here is a decision to run without that protection. `core.E006`
+says in its own hint not to bypass it to ship, and that remains true: listing
+it defers the problem rather than answering it. Posts and comments currently
+reach other people without being screened.
 
 ## Layout
 
