@@ -4097,3 +4097,108 @@ class UndoingAWorkoutUnticksItsTaskTests(RepbaseAPITestMixin, APITestCase):
 
         self.task.refresh_from_db()
         self.assertIsNotNone(self.task.completed_at)
+
+
+class ATrainedWorkoutStaysDoneTests(RepbaseAPITestMixin, APITestCase):
+    """The plan cannot contradict the training.
+
+    Unticking a workout task cleared `completed_at` and left the session
+    alone, so Training showed a finished session with its sets and volume
+    while Home said "up next" and offered Start, and the calendar counted
+    the day as outstanding. The app was telling somebody to do a workout
+    they had just done.
+
+    Between the two, the tick is the one that gives: it is the half carrying
+    no evidence. Undo is still the way out, and it is a different act --
+    it deletes the session, and that unticks the task on the way through.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("stayer")
+        self.authenticate(self.token)
+        self.workout = WorkoutTemplate.objects.create(owner=self.profile, name="Push Day")
+        self.started = timezone.now() - timedelta(hours=1)
+        self.day = timezone.localtime(self.started, ZoneInfo("UTC")).date()
+        self.task = PlannerEntry.objects.create(
+            owner=self.profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="Push Day",
+            category="workout",
+            scheduled_date=self.day,
+            workout=self.workout,
+        )
+
+    def _train(self):
+        session = WorkoutSession.objects.create(
+            repbase_user=self.profile,
+            workout=self.workout,
+            status=WorkoutSession.Status.ACTIVE,
+            started_at=self.started,
+        )
+        self.client.post(f"/api/v1/sessions/{session.id}/end/", {}, format="json")
+        return session
+
+    def _untick(self):
+        return self.client.patch(
+            f"/api/v1/planner/{self.task.id}/", {"is_complete": False}, format="json"
+        )
+
+    def test_unticking_a_trained_workout_is_refused(self):
+        self._train()
+        response = self._untick()
+
+        self.assertEqual(response.status_code, 400, response.data)
+        self.task.refresh_from_db()
+        self.assertIsNotNone(self.task.completed_at, "it stays done")
+
+    def test_the_refusal_says_where_to_undo(self):
+        self._train()
+        self.assertIn("Undo in Training", str(self._untick().data))
+
+    def test_undo_is_still_a_way_out(self):
+        session = self._train()
+        self.assertEqual(
+            self.client.delete(f"/api/v1/sessions/{session.id}/").status_code, 204
+        )
+        self.task.refresh_from_db()
+        self.assertIsNone(self.task.completed_at, "deleting the session unticks it")
+
+    def test_a_task_with_no_session_unticks_freely(self):
+        # The rule is about evidence, not about workouts. A plan nobody
+        # followed is still the person's to correct.
+        self.task.completed_at = timezone.now()
+        self.task.save(update_fields=["completed_at"])
+
+        self.assertEqual(self._untick().status_code, 200)
+        self.task.refresh_from_db()
+        self.assertIsNone(self.task.completed_at)
+
+    def test_an_ordinary_task_is_untouched_by_this(self):
+        chore = PlannerEntry.objects.create(
+            owner=self.profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="study",
+            category="study",
+            scheduled_date=self.day,
+            completed_at=timezone.now(),
+        )
+        response = self.client.patch(
+            f"/api/v1/planner/{chore.id}/", {"is_complete": False}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        chore.refresh_from_db()
+        self.assertIsNone(chore.completed_at)
+
+    def test_another_days_session_does_not_pin_this_one(self):
+        # A session three days ago says nothing about today's plan.
+        WorkoutSession.objects.create(
+            repbase_user=self.profile,
+            workout=self.workout,
+            status=WorkoutSession.Status.COMPLETED,
+            started_at=self.started - timedelta(days=3),
+            ended_at=self.started - timedelta(days=3) + timedelta(minutes=40),
+        )
+        self.task.completed_at = timezone.now()
+        self.task.save(update_fields=["completed_at"])
+
+        self.assertEqual(self._untick().status_code, 200)

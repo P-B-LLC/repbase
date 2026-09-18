@@ -3327,6 +3327,62 @@ def today_for(profile):
     return timezone.localtime(timezone.now(), zone_for(profile)).date()
 
 
+# A planned workout is two records: the planner task somebody meant to do, and
+# the session saying they did. These three tie them together, and they live
+# here rather than in views because the serializer needs the last one and
+# serializers cannot import views.
+
+
+def training_day_of(session):
+    """The day a session's training belongs to, in its owner's own zone.
+
+    The day it *began*: a workout running past midnight is one evening's
+    training, not two days of it. And in the owner's zone rather than the
+    server's, which keeps UTC -- asking in server time files an evening
+    session under tomorrow, which is the mistake `today_for` exists for.
+
+    None when the session never started and never ended, which records no
+    training and so belongs to no day.
+    """
+    began = session.started_at or session.ended_at
+    if began is None:
+        return None
+    return timezone.localtime(began, zone_for(session.repbase_user)).date()
+
+
+def planner_tasks_for(session):
+    """The planner tasks standing for this session's training."""
+    day = training_day_of(session)
+    if not session.workout_id or day is None:
+        return PlannerEntry.objects.none()
+    return PlannerEntry.objects.filter(
+        owner=session.repbase_user,
+        workout_id=session.workout_id,
+        scheduled_date=day,
+        kind=PlannerEntry.Kind.TASK,
+    )
+
+
+def completed_sessions_for(entry):
+    """The finished sessions that say this task's workout was trained.
+
+    The inverse of `planner_tasks_for`, and the reason a tick cannot argue
+    with a session. Bounded to a day either side in UTC before the exact
+    per-session comparison, because no zone is offset far enough for a local
+    day's training to have started outside that window.
+    """
+    if entry.workout_id is None or entry.scheduled_date is None:
+        return []
+    candidates = WorkoutSession.objects.filter(
+        repbase_user=entry.owner,
+        workout_id=entry.workout_id,
+        status=WorkoutSession.Status.COMPLETED,
+        started_at__date__gte=entry.scheduled_date - timedelta(days=1),
+        started_at__date__lte=entry.scheduled_date + timedelta(days=1),
+    ).select_related("repbase_user")
+    return [s for s in candidates if training_day_of(s) == entry.scheduled_date]
+
+
 class Personalization(models.Model):
     """What somebody said they wanted from Repbase when they first opened it.
 
