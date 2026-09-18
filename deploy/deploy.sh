@@ -58,6 +58,22 @@ if ! sudo -u "$USER" git -C "$APP" diff --quiet || ! sudo -u "$USER" git -C "$AP
     exit 1
 fi
 
+
+# Put the checkout back if anything after this point fails.
+#
+# The promise this script makes is that `git rev-parse HEAD` says what is
+# running. A failed deploy that leaves the tree on the new commit while the
+# old process still serves traffic breaks exactly that promise, and quietly:
+# the service is healthy, so nothing looks wrong.
+restore() {
+    local code=$?
+    if [ "$code" -ne 0 ] && [ "$(git -C "$APP" rev-parse --short HEAD)" != "$was" ]; then
+        echo "==> deploy failed; putting the checkout back to $was" >&2
+        sudo -u "$USER" git -C "$APP" checkout --quiet --detach "$was" || true
+    fi
+    return $code
+}
+trap restore EXIT
 echo "==> checking out $REF"
 sudo -u "$USER" git -C "$APP" checkout --quiet --detach "$REF"
 now="$(git -C "$APP" rev-parse --short HEAD)"

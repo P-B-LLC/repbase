@@ -41,6 +41,22 @@ It refuses to run if the checkout has uncommitted changes, because that means
 somebody edited the server by hand and overwriting it would destroy the only
 copy.
 
+## Deploys are gated on configuration
+
+`check --deploy` runs before the restart, and the repository adds its own
+checks on top of Django's. Until the production configuration exists, it
+fails with:
+
+- `core.E002` — `DEFAULT_FROM_EMAIL` is on `.local`, a domain that cannot
+  receive mail
+- `core.E003` — no SMTP host, so every password reset would fail
+- `core.E006` — social publishing is on without automated moderation
+
+That is the gate working, not a bug, and `core.E006` says in its own hint not
+to bypass it to ship. It does mean **no deploy can complete until those are
+configured**. A failed deploy puts the checkout back on the commit that is
+still serving, so `HEAD` keeps telling the truth.
+
 ## Layout
 
 | Path | What it is |
