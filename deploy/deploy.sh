@@ -53,7 +53,10 @@ run() {
     # shellcheck disable=SC1091
     . /etc/repbase.env
     set +a
-    sudo -E -u "$USER" "$@"
+    # -H as well as -E: preserving root's environment wholesale also preserved
+    # its HOME, and psycopg then looked for the database certificate under
+    # /root, which the django user cannot read.
+    sudo -H -E -u "$USER" "$@"
 }
 
 was="$(git -C "$APP" rev-parse --short HEAD)"
