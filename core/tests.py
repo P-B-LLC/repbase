@@ -1,4 +1,6 @@
 import io
+import json
+import uuid
 import tempfile
 import warnings
 from unittest import mock
@@ -3794,3 +3796,78 @@ class PagingIsStableAcrossPagesTests(RepbaseAPITestMixin, APITestCase):
             warnings.simplefilter("error", UnorderedObjectListWarning)
             self.assertEqual(self.client.get("/api/v1/gyms/").status_code, 200)
             self.assertEqual(self.client.get("/api/v1/sessions/").status_code, 200)
+
+
+class IdempotentSaveAcceptsACharsetTests(RepbaseAPITestMixin, APITestCase):
+    """A JSON body is allowed to say which encoding it is in.
+
+    ``Content-Type`` carries parameters, and DRF's ``request.content_type``
+    hands the header back verbatim rather than parsed. The mixin compared that
+    whole string to "application/json", so a client sending the perfectly
+    ordinary "application/json; charset=utf-8" was told its body was not JSON.
+
+    That client was the iOS app: swift-openapi-generator always sends the
+    charset. Every save carrying an Idempotency-Key -- planner entries,
+    workouts, sessions, set entries, food entries, saved meals -- came back
+    400 for a week, while anything without a key went through, which is why
+    signing in worked and nothing could be written. curl sends no charset by
+    default and no key at all, so every hand-made request said it was fine.
+
+    The header is the whole point of these tests. Sending a body and asserting
+    on the row is not enough: it was never the body that was wrong.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("charset")
+        self.authenticate(self.token)
+        self.entry = {
+            "title": "study",
+            "scheduled_date": str(timezone.localdate()),
+            "kind": "task",
+            "category": "home",
+        }
+
+    def _post(self, content_type, key=None):
+        return self.client.post(
+            "/api/v1/planner/",
+            data=json.dumps(self.entry),
+            content_type=content_type,
+            **({"HTTP_IDEMPOTENCY_KEY": str(key)} if key else {}),
+        )
+
+    def test_a_charset_is_not_a_reason_to_refuse_the_save(self):
+        response = self._post("application/json; charset=utf-8", key=uuid.uuid4())
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(PlannerEntry.objects.filter(owner=self.profile).count(), 1)
+
+    def test_the_parameter_may_be_spelled_any_way_a_client_spells_it(self):
+        # Media types are case-insensitive and the separator may carry spaces.
+        for content_type in (
+            "application/json;charset=utf-8",
+            "Application/JSON; charset=UTF-8",
+            "application/json ; charset=iso-8859-1",
+        ):
+            with self.subTest(content_type=content_type):
+                response = self._post(content_type, key=uuid.uuid4())
+                self.assertEqual(response.status_code, 201, response.data)
+
+    def test_a_body_that_really_is_not_json_is_still_refused(self):
+        # The check still has a job: this is what it was written to catch.
+        response = self.client.post(
+            "/api/v1/planner/",
+            data="title=study",
+            content_type="application/x-www-form-urlencoded",
+            HTTP_IDEMPOTENCY_KEY=str(uuid.uuid4()),
+        )
+        self.assertEqual(response.status_code, 400, response.data)
+        self.assertEqual(PlannerEntry.objects.filter(owner=self.profile).count(), 0)
+
+    def test_a_charset_does_not_break_the_replay(self):
+        # The point of the key: the same save twice leaves one row.
+        key = uuid.uuid4()
+        first = self._post("application/json; charset=utf-8", key=key)
+        second = self._post("application/json; charset=utf-8", key=key)
+        self.assertEqual(first.status_code, 201, first.data)
+        self.assertEqual(second.status_code, 201, second.data)
+        self.assertEqual(second.data["id"], first.data["id"])
+        self.assertEqual(PlannerEntry.objects.filter(owner=self.profile).count(), 1)

@@ -30,7 +30,17 @@ class IdempotentCreateMixin:
             key = uuid.UUID(raw_key)
         except (ValueError, AttributeError):
             raise ValidationError({"Idempotency-Key": "Use a UUID for this save."})
-        if request.content_type != "application/json":
+        # Compare the media type, not the raw header. DRF hands back
+        # CONTENT_TYPE verbatim -- parameters and all -- and a JSON body is
+        # entitled to carry one. swift-openapi-generator sends
+        # "application/json; charset=utf-8", so every save from the iOS app
+        # arrived with a charset and was refused by this equality: planner
+        # entries, workouts and food alike, because those are exactly the
+        # requests that carry an Idempotency-Key. The 400 said the body was
+        # not JSON when it was, and the app, having no better word for it,
+        # showed "please try again" -- advice that could never work.
+        media_type = request.content_type.split(";")[0].strip().lower()
+        if media_type != "application/json":
             raise ValidationError("Idempotent saves require a JSON request body.")
         # Key order must not alter the meaning of a retried JSON object.
         canonical = json.dumps(json.loads(JSONRenderer().render(request.data)), sort_keys=True, separators=(",", ":"))
