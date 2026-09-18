@@ -105,6 +105,7 @@ from .models import (
     normalize_gym_text,
     plan_recurring_week,
     week_start_for,
+    zone_for,
 )
 from .permissions import IsCustomExerciseOwnerOrAdmin
 from .serializers import (
@@ -1978,6 +1979,41 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
             session.ended_at = ended_at
             session.full_clean()
             session.save(update_fields=["status", "ended_at", "updated_at"])
+
+            # A finished workout ticks its own task off.
+            #
+            # The planner entry and the session are two records of one
+            # intention, and only the session knew it had happened. The
+            # calendar went on showing "Push Day" unticked and the day as
+            # "0/2" after the training was done, which reads as not having
+            # trained -- and the one number a planner exists to get right is
+            # what is still outstanding.
+            #
+            # Done here rather than in the app because the link is the
+            # server's: the website reads the same rows and would otherwise
+            # disagree with the phone about the same day.
+            #
+            # Matched on the day the session *began*, in the user's own zone.
+            # A workout that runs past midnight belongs to the day it started,
+            # and the server keeps UTC -- asking in server time files an
+            # evening session under tomorrow and finds no task at all, which
+            # is the bug `today_for` was written for.
+            #
+            # Only an untouched task is claimed, so a retry cannot overwrite
+            # the time an earlier finish recorded, and `updated_at` is set by
+            # hand because `.update()` does not run `auto_now`.
+            if session.workout_id:
+                began = session.started_at or ended_at
+                local_day = timezone.localtime(
+                    began, zone_for(session.repbase_user)
+                ).date()
+                PlannerEntry.objects.filter(
+                    owner=session.repbase_user,
+                    workout_id=session.workout_id,
+                    scheduled_date=local_day,
+                    kind=PlannerEntry.Kind.TASK,
+                    completed_at__isnull=True,
+                ).update(completed_at=ended_at, updated_at=timezone.now())
         return Response(self.get_serializer(session).data)
 
     @extend_schema(
