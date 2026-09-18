@@ -4002,3 +4002,98 @@ class FinishingAWorkoutTicksItsTaskTests(RepbaseAPITestMixin, APITestCase):
         )
         response = self._end(loose, timezone.now())
         self.assertEqual(response.status_code, 200, response.data)
+
+
+class UndoingAWorkoutUnticksItsTaskTests(RepbaseAPITestMixin, APITestCase):
+    """Throwing the training away has to unsay it too.
+
+    Finishing a session ticks the task standing for it. Undo deletes the
+    day's sessions, and nothing was undoing the tick -- so the training
+    disappeared from Training while the calendar went on reporting the day
+    as done. The same two screens disagreeing as before, pointing the other
+    way, which is why this is worth having rather than only its mirror.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("undoer")
+        self.authenticate(self.token)
+        self.workout = WorkoutTemplate.objects.create(owner=self.profile, name="Push Day")
+        self.started = timezone.now() - timedelta(hours=1)
+        self.task = PlannerEntry.objects.create(
+            owner=self.profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="Push Day",
+            category="workout",
+            scheduled_date=timezone.localtime(self.started, ZoneInfo("UTC")).date(),
+            workout=self.workout,
+        )
+
+    def _finished_session(self, started=None):
+        session = WorkoutSession.objects.create(
+            repbase_user=self.profile,
+            workout=self.workout,
+            status=WorkoutSession.Status.ACTIVE,
+            started_at=started or self.started,
+        )
+        self.client.post(f"/api/v1/sessions/{session.id}/end/", {}, format="json")
+        return session
+
+    def test_deleting_the_session_unticks_the_task(self):
+        session = self._finished_session()
+        self.task.refresh_from_db()
+        self.assertIsNotNone(self.task.completed_at, "precondition: finishing ticked it")
+
+        response = self.client.delete(f"/api/v1/sessions/{session.id}/")
+        self.assertEqual(response.status_code, 204, getattr(response, "data", None))
+
+        self.task.refresh_from_db()
+        self.assertIsNone(self.task.completed_at, "the day is no longer trained")
+
+    def test_a_day_trained_twice_stays_ticked_until_the_last_one_goes(self):
+        # Undo deletes a day's sessions one at a time. The first delete must
+        # not untick a day the second still accounts for.
+        first = self._finished_session()
+        second = self._finished_session(started=self.started + timedelta(minutes=20))
+
+        self.client.delete(f"/api/v1/sessions/{first.id}/")
+        self.task.refresh_from_db()
+        self.assertIsNotNone(self.task.completed_at, "one session still says it happened")
+
+        self.client.delete(f"/api/v1/sessions/{second.id}/")
+        self.task.refresh_from_db()
+        self.assertIsNone(self.task.completed_at, "now nothing does")
+
+    def test_another_days_session_is_not_disturbed(self):
+        other_day = self.started - timedelta(days=3)
+        other_task = PlannerEntry.objects.create(
+            owner=self.profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="Push Day",
+            category="workout",
+            scheduled_date=timezone.localtime(other_day, ZoneInfo("UTC")).date(),
+            workout=self.workout,
+        )
+        self._finished_session(started=other_day)
+        session = self._finished_session()
+
+        self.client.delete(f"/api/v1/sessions/{session.id}/")
+
+        other_task.refresh_from_db()
+        self.assertIsNotNone(other_task.completed_at, "a different day keeps its tick")
+
+    def test_deleting_an_unfinished_session_changes_nothing(self):
+        # It never ticked anything, so it has nothing to take back -- and a
+        # task ticked by hand must survive abandoning a session.
+        self.task.completed_at = timezone.now()
+        self.task.save(update_fields=["completed_at"])
+        abandoned = WorkoutSession.objects.create(
+            repbase_user=self.profile,
+            workout=self.workout,
+            status=WorkoutSession.Status.ACTIVE,
+            started_at=self.started,
+        )
+
+        self.client.delete(f"/api/v1/sessions/{abandoned.id}/")
+
+        self.task.refresh_from_db()
+        self.assertIsNotNone(self.task.completed_at)
