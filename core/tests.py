@@ -11,6 +11,7 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.base import ContentFile
+from django.db import IntegrityError, transaction
 from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
@@ -4202,3 +4203,255 @@ class ATrainedWorkoutStaysDoneTests(RepbaseAPITestMixin, APITestCase):
         self.task.save(update_fields=["completed_at"])
 
         self.assertEqual(self._untick().status_code, 200)
+
+
+class PlannerSubtaskTests(RepbaseAPITestMixin, APITestCase):
+    """Steps under a task, and the rules that keep the pair honest.
+
+    The shape is the one the workout tick already follows: the record of the
+    work wins, and the half carrying no evidence is derived from it. Here the
+    steps are the record and the heading is derived.
+    """
+
+    PLANNER = "/api/v1/planner/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("planner")
+        self.authenticate(self.token)
+        self.today = timezone.now().date()
+
+    def make(self, title, **extra):
+        body = {
+            "kind": "task",
+            "title": title,
+            "scheduled_date": str(self.today),
+            "category": "other",
+        }
+        body.update(extra)
+        response = self.client.post(self.PLANNER, body, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data
+
+    def tick(self, entry_id, done=True):
+        return self.client.patch(
+            "{}{}/".format(self.PLANNER, entry_id),
+            {"is_complete": done},
+            format="json",
+        )
+
+    def remove(self, entry_id):
+        return self.client.delete("{}{}/".format(self.PLANNER, entry_id))
+
+    def fetch(self, entry_id):
+        response = self.client.get("{}{}/".format(self.PLANNER, entry_id))
+        self.assertEqual(response.status_code, 200)
+        return response.data
+
+    # ------------------------------------------------------------- the shape
+
+    def test_a_step_is_nested_under_its_parent_and_not_listed_beside_it(self):
+        """A day lists headings. A step drawn twice would be counted twice."""
+        parent = self.make("Move house")
+        self.make("Book the van", parent=parent["id"])
+        self.make("Pack the kitchen", parent=parent["id"])
+
+        listed = self.client.get(self.PLANNER, {"start": self.today, "end": self.today})
+        self.assertEqual(listed.status_code, 200)
+        rows = listed.data["results"]
+        self.assertEqual([row["title"] for row in rows], ["Move house"])
+        self.assertEqual(rows[0]["subtask_count"], 2)
+        self.assertEqual(rows[0]["completed_subtask_count"], 0)
+        self.assertEqual(
+            sorted(step["title"] for step in rows[0]["subtasks"]),
+            ["Book the van", "Pack the kitchen"],
+        )
+
+    def test_the_steps_can_be_asked_for_on_their_own(self):
+        parent = self.make("Move house")
+        self.make("Book the van", parent=parent["id"])
+
+        listed = self.client.get(self.PLANNER, {"parent": parent["id"]})
+        self.assertEqual(
+            [row["title"] for row in listed.data["results"]], ["Book the van"]
+        )
+
+    def test_a_step_takes_its_parents_day(self):
+        """Otherwise a checklist scatters and the heading sits on an empty day."""
+        parent = self.make("Move house")
+        step = self.make(
+            "Book the van",
+            parent=parent["id"],
+            scheduled_date=str(self.today + timedelta(days=6)),
+        )
+        self.assertEqual(step["scheduled_date"], str(self.today))
+
+    # -------------------------------------------------- the parent is derived
+
+    def test_the_parent_finishes_when_its_last_step_does(self):
+        parent = self.make("Move house")
+        one = self.make("Book the van", parent=parent["id"])
+        two = self.make("Pack the kitchen", parent=parent["id"])
+
+        self.assertEqual(self.tick(one["id"]).status_code, 200)
+        self.assertFalse(self.fetch(parent["id"])["is_complete"])
+
+        self.assertEqual(self.tick(two["id"]).status_code, 200)
+        finished = self.fetch(parent["id"])
+        self.assertTrue(finished["is_complete"])
+        self.assertIsNotNone(finished["completed_at"])
+
+    def test_reopening_a_step_reopens_the_parent(self):
+        parent = self.make("Move house")
+        one = self.make("Book the van", parent=parent["id"])
+        self.tick(one["id"])
+        self.assertTrue(self.fetch(parent["id"])["is_complete"])
+
+        self.assertEqual(self.tick(one["id"], done=False).status_code, 200)
+        reopened = self.fetch(parent["id"])
+        self.assertFalse(reopened["is_complete"])
+        self.assertIsNone(reopened["completed_at"])
+
+    def test_adding_a_step_to_a_finished_task_reopens_it(self):
+        parent = self.make("Move house")
+        one = self.make("Book the van", parent=parent["id"])
+        self.tick(one["id"])
+        self.assertTrue(self.fetch(parent["id"])["is_complete"])
+
+        self.make("Pack the kitchen", parent=parent["id"])
+        self.assertFalse(self.fetch(parent["id"])["is_complete"])
+
+    def test_deleting_the_last_outstanding_step_finishes_the_parent(self):
+        parent = self.make("Move house")
+        one = self.make("Book the van", parent=parent["id"])
+        two = self.make("Pack the kitchen", parent=parent["id"])
+        self.tick(one["id"])
+
+        self.assertEqual(self.remove(two["id"]).status_code, 204)
+        self.assertTrue(self.fetch(parent["id"])["is_complete"])
+
+    def test_a_task_with_steps_cannot_be_ticked_by_hand(self):
+        parent = self.make("Move house")
+        self.make("Book the van", parent=parent["id"])
+
+        refused = self.tick(parent["id"])
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("is_complete", refused.data)
+        self.assertFalse(self.fetch(parent["id"])["is_complete"])
+
+    def test_a_task_with_no_steps_still_owns_its_checkbox(self):
+        """The rule is about headings. An ordinary task is untouched."""
+        plain = self.make("Water the plants")
+        self.assertEqual(self.tick(plain["id"]).status_code, 200)
+        self.assertTrue(self.fetch(plain["id"])["is_complete"])
+
+    def test_deleting_every_step_hands_the_checkbox_back(self):
+        parent = self.make("Move house")
+        one = self.make("Book the van", parent=parent["id"])
+        self.remove(one["id"])
+
+        self.assertEqual(self.tick(parent["id"]).status_code, 200)
+        self.assertTrue(self.fetch(parent["id"])["is_complete"])
+
+    # ------------------------------------------------------------- one level
+
+    def test_a_step_cannot_have_steps(self):
+        parent = self.make("Move house")
+        step = self.make("Book the van", parent=parent["id"])
+
+        refused = self.client.post(
+            self.PLANNER,
+            {
+                "kind": "task",
+                "title": "Ring the hire place",
+                "scheduled_date": str(self.today),
+                "category": "other",
+                "parent": step["id"],
+            },
+            format="json",
+        )
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("parent", refused.data)
+
+    def test_a_task_with_steps_cannot_become_one(self):
+        parent = self.make("Move house")
+        self.make("Book the van", parent=parent["id"])
+        other = self.make("Sort the garage")
+
+        refused = self.client.patch(
+            "{}{}/".format(self.PLANNER, parent["id"]),
+            {"parent": other["id"]},
+            format="json",
+        )
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("parent", refused.data)
+
+    def test_an_event_cannot_have_steps(self):
+        event = self.make("Dentist", kind="event", category="appointment")
+        refused = self.client.post(
+            self.PLANNER,
+            {
+                "kind": "task",
+                "title": "Find the card",
+                "scheduled_date": str(self.today),
+                "category": "other",
+                "parent": event["id"],
+            },
+            format="json",
+        )
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("parent", refused.data)
+
+    def test_steps_cannot_be_hung_off_someone_elses_task(self):
+        _, other_profile, _ = self.create_account("stranger")
+        theirs = PlannerEntry.objects.create(
+            owner=other_profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="Their task",
+            scheduled_date=self.today,
+        )
+        refused = self.client.post(
+            self.PLANNER,
+            {
+                "kind": "task",
+                "title": "Mine",
+                "scheduled_date": str(self.today),
+                "category": "other",
+                "parent": theirs.id,
+            },
+            format="json",
+        )
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("parent", refused.data)
+
+    def test_deleting_a_parent_takes_its_steps(self):
+        parent = self.make("Move house")
+        step = self.make("Book the van", parent=parent["id"])
+
+        self.remove(parent["id"])
+        self.assertFalse(PlannerEntry.objects.filter(id=step["id"]).exists())
+
+    def test_the_database_refuses_a_row_that_lies_about_being_a_step(self):
+        """Not through the API: the constraint is what makes the rule true.
+
+        `is_subtask` is derived in `save`, so the only route to a bad row is
+        writing the column directly. If that were allowed, a step could be
+        made to look like a parent and a third level would follow.
+        """
+        parent = PlannerEntry.objects.create(
+            owner=self.profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="Move house",
+            scheduled_date=self.today,
+        )
+        step = PlannerEntry.objects.create(
+            owner=self.profile,
+            kind=PlannerEntry.Kind.TASK,
+            title="Book the van",
+            scheduled_date=self.today,
+            parent=parent,
+        )
+        self.assertTrue(PlannerEntry.objects.get(pk=step.pk).is_subtask)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                PlannerEntry.objects.filter(pk=step.pk).update(is_subtask=False)

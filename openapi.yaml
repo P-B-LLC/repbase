@@ -5603,9 +5603,8 @@ components:
           format: date
         steps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         created_at:
           type: string
           format: date-time
@@ -5847,9 +5846,8 @@ components:
           readOnly: true
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
         created_at:
           type: string
           format: date-time
@@ -5902,9 +5900,8 @@ components:
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
       required:
       - meal
       - name
@@ -5925,9 +5922,8 @@ components:
           maxLength: 100
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
         entries:
           type: array
           items:
@@ -5987,9 +5983,8 @@ components:
           maxLength: 100
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
       required:
       - date
       - name
@@ -6260,19 +6255,16 @@ components:
           type: integer
         order:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_sets:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         target_weight_kg:
           type: string
@@ -6291,19 +6283,16 @@ components:
           type: integer
         order:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_sets:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         target_weight_kg:
           type: string
@@ -7082,9 +7071,8 @@ components:
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
     PatchedFoodMealRequest:
       type: object
       description: |-
@@ -7100,9 +7088,8 @@ components:
           maxLength: 100
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
     PatchedGearRequest:
       type: object
       properties:
@@ -7183,9 +7170,8 @@ components:
             maxLength: 60
         weekly_target:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
         emphasis:
           type: string
           maxLength: 40
@@ -7230,6 +7216,9 @@ components:
         notes:
           type: string
           maxLength: 300
+        parent:
+          type: integer
+          nullable: true
     PatchedPostCommentRequest:
       type: object
       description: |-
@@ -7273,9 +7262,8 @@ components:
           nullable: true
         height_cm:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         weight_kg:
           type: string
@@ -7340,9 +7328,8 @@ components:
           type: integer
         order:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           default: 1
         notes:
           type: string
@@ -7354,9 +7341,8 @@ components:
           type: integer
         set_number:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         weight_kg:
           type: string
           format: decimal
@@ -7364,9 +7350,8 @@ components:
           nullable: true
         reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         distance_km:
           type: string
@@ -7421,20 +7406,17 @@ components:
           type: integer
         order:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           default: 1
         target_sets:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         target_weight_kg:
           type: string
@@ -7480,9 +7462,8 @@ components:
           - $ref: '#/components/schemas/NullEnum'
         cardio_target_minutes:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         description:
           type: string
@@ -7565,9 +7546,8 @@ components:
             maxLength: 60
         weekly_target:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
         emphasis:
           type: string
           maxLength: 40
@@ -7636,6 +7616,20 @@ components:
         notes:
           type: string
           maxLength: 300
+        parent:
+          type: integer
+          nullable: true
+        subtasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlannerSubtask'
+          readOnly: true
+        subtask_count:
+          type: integer
+          readOnly: true
+        completed_subtask_count:
+          type: integer
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7646,10 +7640,13 @@ components:
           readOnly: true
       required:
       - completed_at
+      - completed_subtask_count
       - created_at
       - id
       - owner
       - scheduled_date
+      - subtask_count
+      - subtasks
       - title
       - updated_at
       - workout_name
@@ -7702,8 +7699,44 @@ components:
         notes:
           type: string
           maxLength: 300
+        parent:
+          type: integer
+          nullable: true
       required:
       - scheduled_date
+      - title
+    PlannerSubtask:
+      type: object
+      description: |-
+        One step of a task, as it appears nested under its parent.
+
+        Deliberately not the full serializer. Subtasks are one level deep, so a
+        step has no steps of its own, and nesting the full thing would advertise
+        a `subtasks` array that is always empty and invite a client to recurse
+        into it. The fields here are what a checklist row draws.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        is_complete:
+          type: boolean
+          readOnly: true
+        completed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        notes:
+          type: string
+          readOnly: true
+      required:
+      - completed_at
+      - id
+      - is_complete
+      - notes
       - title
     PlannerSyncRequest:
       type: object
@@ -8849,9 +8882,8 @@ components:
           nullable: true
         height_cm:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         weight_kg:
           type: string
@@ -8952,9 +8984,8 @@ components:
           nullable: true
         height_cm:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         weight_kg:
           type: string
@@ -9107,9 +9138,8 @@ components:
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
       required:
       - id
       - name
@@ -9142,9 +9172,8 @@ components:
           pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 0
-          format: int64
       required:
       - name
     SavedFoodMeal:
@@ -9294,9 +9323,8 @@ components:
           readOnly: true
         order:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           default: 1
         notes:
           type: string
@@ -9315,9 +9343,8 @@ components:
           type: integer
         order:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           default: 1
         notes:
           type: string
@@ -9435,9 +9462,8 @@ components:
           type: integer
         set_number:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         weight_kg:
           type: string
           format: decimal
@@ -9445,9 +9471,8 @@ components:
           nullable: true
         reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         distance_km:
           type: string
@@ -9479,9 +9504,8 @@ components:
           type: integer
         set_number:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         weight_kg:
           type: string
           format: decimal
@@ -9489,9 +9513,8 @@ components:
           nullable: true
         reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         distance_km:
           type: string
@@ -9697,9 +9720,8 @@ components:
           readOnly: true
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 1
-          format: int64
         workout:
           type: integer
           nullable: true
@@ -9719,9 +9741,8 @@ components:
       properties:
         position:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 32767
           minimum: 1
-          format: int64
         workout:
           type: integer
           nullable: true
@@ -9742,20 +9763,17 @@ components:
           readOnly: true
         order:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           default: 1
         target_sets:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         target_weight_kg:
           type: string
@@ -9779,20 +9797,17 @@ components:
           type: integer
         order:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           default: 1
         target_sets:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         target_weight_kg:
           type: string
@@ -9819,14 +9834,12 @@ components:
           minimum: 1
         target_sets:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         target_weight_kg:
           type: string
@@ -9853,14 +9866,12 @@ components:
           minimum: 1
         target_sets:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
         target_reps:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         target_weight_kg:
           type: string
@@ -9898,7 +9909,7 @@ components:
           allOf:
           - $ref: '#/components/schemas/WeekdayEnum'
           minimum: 0
-          maximum: 9223372036854775807
+          maximum: 32767
         effective_from:
           type: string
           format: date
@@ -9942,7 +9953,7 @@ components:
           allOf:
           - $ref: '#/components/schemas/WeekdayEnum'
           minimum: 0
-          maximum: 9223372036854775807
+          maximum: 32767
       required:
       - weekday
       - workout
@@ -10178,9 +10189,8 @@ components:
           - $ref: '#/components/schemas/NullEnum'
         cardio_target_minutes:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         description:
           type: string
@@ -10220,9 +10230,8 @@ components:
           - $ref: '#/components/schemas/NullEnum'
         cardio_target_minutes:
           type: integer
-          maximum: 9223372036854775807
+          maximum: 2147483647
           minimum: 0
-          format: int64
           nullable: true
         description:
           type: string

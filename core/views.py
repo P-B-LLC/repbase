@@ -104,6 +104,7 @@ from .models import (
     today_for,
     normalize_gym_text,
     planner_tasks_for,
+    sync_parent_completion,
     training_day_of,
     plan_recurring_week,
     week_start_for,
@@ -1732,7 +1733,13 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
     endpoint draws a month of calendar marks, a week strip, and one day's list.
     """
 
-    queryset = PlannerEntry.objects.select_related("owner", "workout")
+    # Steps come with their parent. Without the prefetch a day of ten tasks
+    # is eleven queries, and the serializer reads `subtasks` three times per
+    # row -- for the array and for both counts -- so the prefetched cache is
+    # what keeps that one query rather than thirty.
+    queryset = PlannerEntry.objects.select_related("owner", "workout").prefetch_related(
+        "subtasks"
+    )
     serializer_class = PlannerEntrySerializer
     permission_classes = [IsAuthenticated]
 
@@ -1743,6 +1750,15 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         category = self.request.query_params.get("category")
         kind = self.request.query_params.get("kind")
         is_complete = self.request.query_params.get("is_complete")
+        # A step is drawn under its parent, not as a row of the day. Listing
+        # both would show the same work twice and make "3 of 5 done" count
+        # the heading as a sixth thing. `parent` asks for one task's steps;
+        # `all` is the escape hatch for anything that genuinely wants the lot.
+        parent = self.request.query_params.get("parent")
+        if parent:
+            queryset = queryset.filter(parent_id=parent)
+        elif self.request.query_params.get("include_subtasks") != "true":
+            queryset = queryset.filter(parent__isnull=True)
         if start:
             queryset = queryset.filter(scheduled_date__gte=start)
         if end:
@@ -1759,7 +1775,27 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         return queryset
 
     def perform_create(self, serializer):
-        serializer.save(owner=self.owner_profile())
+        entry = serializer.save(owner=self.owner_profile())
+        # A new step lands unfinished, so a parent that had been ticked off
+        # is no longer done. Asked rather than assumed, because the parent may
+        # have had no steps at all until this one.
+        sync_parent_completion(entry.parent)
+
+    def perform_update(self, serializer):
+        entry = serializer.save()
+        sync_parent_completion(entry.parent)
+
+    def perform_destroy(self, instance):
+        # Held before the row goes: afterwards `instance.parent` still answers
+        # from the in-memory object, but reading it after the delete is the
+        # kind of thing that quietly stops working.
+        parent = instance.parent
+        super().perform_destroy(instance)
+        # Deleting the last outstanding step can finish the parent, and
+        # deleting every step hands the checkbox back to the parent itself --
+        # `sync_parent_completion` leaves a childless task alone, so what it
+        # was before the steps existed is what it keeps.
+        sync_parent_completion(parent)
 
 
 class WorkoutRecurrenceViewSet(
