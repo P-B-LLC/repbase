@@ -2352,6 +2352,11 @@ paths:
           format: date
         description: Return only entries on or before this date.
       - in: query
+        name: include_subtasks
+        schema:
+          type: boolean
+        description: Include steps as rows of the list in their own right.
+      - in: query
         name: is_complete
         schema:
           type: boolean
@@ -2371,6 +2376,13 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: parent
+        schema:
+          type: integer
+        description: 'Return the steps of this task. Omitted, the list carries headings
+          only: a step is drawn under its parent, and one listed beside it would be
+          counted twice.'
       - in: query
         name: start
         schema:
@@ -2546,6 +2558,17 @@ paths:
           type: integer
         description: A unique integer value identifying this planner entry.
         required: true
+      - in: query
+        name: scope
+        schema:
+          type: string
+          enum:
+          - following
+        description: '`following` ends a repeating task from this day on, clearing
+          the unfinished days after it. Omitted, only this day is removed -- a delete
+          that quietly took a year of tasks with it is the worst kind of surprise,
+          so the wider act has to be asked for. Days already ticked off are kept either
+          way: ending a habit is not saying it never happened.'
       tags:
       - planner
       security:
