@@ -1751,14 +1751,20 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         kind = self.request.query_params.get("kind")
         is_complete = self.request.query_params.get("is_complete")
         # A step is drawn under its parent, not as a row of the day. Listing
-        # both would show the same work twice and make "3 of 5 done" count
-        # the heading as a sixth thing. `parent` asks for one task's steps;
-        # `all` is the escape hatch for anything that genuinely wants the lot.
-        parent = self.request.query_params.get("parent")
-        if parent:
-            queryset = queryset.filter(parent_id=parent)
-        elif self.request.query_params.get("include_subtasks") != "true":
-            queryset = queryset.filter(parent__isnull=True)
+        # both would show the same work twice and make "3 of 5 done" count the
+        # heading as a sixth thing. `parent` asks for one task's steps;
+        # `include_subtasks` is the escape hatch for anything wanting the lot.
+        #
+        # On the list only. `get_queryset` is what detail routes look a row up
+        # in, so hiding steps here hid them from retrieve, patch and delete
+        # too -- a step could be created and then never ticked off, because
+        # every request naming it answered 404.
+        if self.action == "list":
+            parent = self.request.query_params.get("parent")
+            if parent:
+                queryset = queryset.filter(parent_id=parent)
+            elif self.request.query_params.get("include_subtasks") != "true":
+                queryset = queryset.filter(parent__isnull=True)
         if start:
             queryset = queryset.filter(scheduled_date__gte=start)
         if end:
