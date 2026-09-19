@@ -4455,3 +4455,195 @@ class PlannerSubtaskTests(RepbaseAPITestMixin, APITestCase):
         with self.assertRaises(IntegrityError):
             with transaction.atomic():
                 PlannerEntry.objects.filter(pk=step.pk).update(is_subtask=False)
+
+
+class PlannerRepeatTests(RepbaseAPITestMixin, APITestCase):
+    """Tasks that come back every so many days.
+
+    The rule is what repeats; the rows it writes are ordinary tasks, tickable
+    and deletable on their own day. That is the property most of these tests
+    are really about.
+    """
+
+    PLANNER = "/api/v1/planner/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("repeater")
+        self.authenticate(self.token)
+        self.today = timezone.now().date()
+
+    def make(self, title="Stretch", **extra):
+        body = {
+            "kind": "task",
+            "title": title,
+            "scheduled_date": str(self.today),
+            "category": "habit",
+        }
+        body.update(extra)
+        response = self.client.post(self.PLANNER, body, format="json")
+        return response
+
+    def days(self, start, end):
+        listed = self.client.get(self.PLANNER, {"start": str(start), "end": str(end)})
+        self.assertEqual(listed.status_code, 200, listed.data)
+        return [row["scheduled_date"] for row in listed.data["results"]]
+
+    # -------------------------------------------------------------- writing
+
+    def test_a_daily_task_appears_on_every_day_asked_for(self):
+        created = self.make(repeat_every_days=1)
+        self.assertEqual(created.status_code, 201, created.data)
+
+        window = self.today + timedelta(days=6)
+        self.assertEqual(
+            self.days(self.today, window),
+            [str(self.today + timedelta(days=n)) for n in range(7)],
+        )
+
+    def test_every_other_day_skips_a_day(self):
+        self.make(repeat_every_days=2)
+        window = self.today + timedelta(days=6)
+        self.assertEqual(
+            self.days(self.today, window),
+            [str(self.today + timedelta(days=n)) for n in (0, 2, 4, 6)],
+        )
+
+    def test_the_repeat_reports_how_often_it_comes_back(self):
+        created = self.make(repeat_every_days=3)
+        self.assertEqual(created.data["repeat_interval_days"], 3)
+
+    def test_a_task_without_a_repeat_says_so(self):
+        created = self.make()
+        self.assertIsNone(created.data["repeat_interval_days"])
+        self.assertEqual(self.days(self.today, self.today + timedelta(days=6)),
+                         [str(self.today)])
+
+    def test_an_end_date_stops_it(self):
+        self.make(repeat_every_days=1, repeat_ends_on=str(self.today + timedelta(days=3)))
+        # Half-open: the end day itself is the first it no longer applies to.
+        self.assertEqual(
+            self.days(self.today, self.today + timedelta(days=10)),
+            [str(self.today + timedelta(days=n)) for n in range(3)],
+        )
+
+    def test_no_end_date_runs_on(self):
+        self.make(repeat_every_days=1)
+        far = self.today + timedelta(days=45)
+        self.assertIn(str(far), self.days(self.today, far))
+
+    # -------------------------------------------------------------- refusing
+
+    def test_an_event_cannot_repeat(self):
+        refused = self.make("Dentist", kind="event", category="appointment",
+                            repeat_every_days=1)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("repeat_every_days", refused.data)
+
+    def test_a_step_cannot_repeat_on_its_own(self):
+        parent = self.make("Move house", category="errand")
+        refused = self.client.post(
+            self.PLANNER,
+            {
+                "kind": "task",
+                "title": "Book the van",
+                "scheduled_date": str(self.today),
+                "category": "other",
+                "parent": parent.data["id"],
+                "repeat_every_days": 1,
+            },
+            format="json",
+        )
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("repeat_every_days", refused.data)
+
+    def test_an_end_before_the_start_is_refused(self):
+        refused = self.make(
+            repeat_every_days=1, repeat_ends_on=str(self.today - timedelta(days=1))
+        )
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("repeat_ends_on", refused.data)
+
+    def test_an_end_date_without_an_interval_is_refused(self):
+        """Otherwise it reads as a repeat that was never actually set up."""
+        refused = self.make(repeat_ends_on=str(self.today + timedelta(days=3)))
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn("repeat_ends_on", refused.data)
+
+    # --------------------------------------------------- one day, or the rest
+
+    def test_deleting_one_day_leaves_the_others(self):
+        self.make(repeat_every_days=1)
+        window = self.today + timedelta(days=5)
+        self.days(self.today, window)
+
+        second = PlannerEntry.objects.get(
+            owner=self.profile, scheduled_date=self.today + timedelta(days=1)
+        )
+        self.assertEqual(
+            self.client.delete(f"{self.PLANNER}{second.id}/").status_code, 204
+        )
+
+        remaining = self.days(self.today, window)
+        self.assertNotIn(str(self.today + timedelta(days=1)), remaining)
+        self.assertIn(str(self.today + timedelta(days=2)), remaining)
+
+    def test_a_deleted_day_stays_deleted(self):
+        """The rule must not rewrite a day somebody removed on purpose."""
+        self.make(repeat_every_days=1)
+        window = self.today + timedelta(days=5)
+        self.days(self.today, window)
+
+        second = PlannerEntry.objects.get(
+            owner=self.profile, scheduled_date=self.today + timedelta(days=1)
+        )
+        self.client.delete(f"{self.PLANNER}{second.id}/")
+
+        # Asking again is what would re-materialise it.
+        self.assertNotIn(str(self.today + timedelta(days=1)), self.days(self.today, window))
+
+    def test_ending_the_repeat_clears_the_days_after_it(self):
+        self.make(repeat_every_days=1)
+        window = self.today + timedelta(days=8)
+        self.days(self.today, window)
+
+        third = PlannerEntry.objects.get(
+            owner=self.profile, scheduled_date=self.today + timedelta(days=2)
+        )
+        self.assertEqual(
+            self.client.delete(f"{self.PLANNER}{third.id}/?scope=following").status_code,
+            204,
+        )
+
+        left = self.days(self.today, window)
+        self.assertEqual(left, [str(self.today), str(self.today + timedelta(days=1))])
+
+    def test_ending_the_repeat_keeps_days_already_ticked_off(self):
+        """Ending a habit is not saying it never happened."""
+        self.make(repeat_every_days=1)
+        window = self.today + timedelta(days=6)
+        self.days(self.today, window)
+
+        done = PlannerEntry.objects.get(
+            owner=self.profile, scheduled_date=self.today + timedelta(days=3)
+        )
+        self.client.patch(f"{self.PLANNER}{done.id}/", {"is_complete": True}, format="json")
+
+        first = PlannerEntry.objects.get(owner=self.profile, scheduled_date=self.today)
+        self.client.delete(f"{self.PLANNER}{first.id}/?scope=following")
+
+        self.assertTrue(PlannerEntry.objects.filter(id=done.id).exists())
+
+    def test_ending_a_repeat_does_not_bring_it_back_later(self):
+        self.make(repeat_every_days=1)
+        self.days(self.today, self.today + timedelta(days=4))
+        first = PlannerEntry.objects.get(owner=self.profile, scheduled_date=self.today)
+        self.client.delete(f"{self.PLANNER}{first.id}/?scope=following")
+
+        far = self.today + timedelta(days=40)
+        self.assertEqual(self.days(self.today, far), [])
+
+    def test_one_persons_repeat_does_not_reach_another(self):
+        self.make(repeat_every_days=1)
+        _, _, other_token = self.create_account("bystander")
+        self.authenticate(other_token)
+        self.assertEqual(self.days(self.today, self.today + timedelta(days=6)), [])

@@ -1,7 +1,7 @@
 import logging
 import secrets
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -105,6 +105,9 @@ from .models import (
     normalize_gym_text,
     planner_tasks_for,
     sync_parent_completion,
+    PlannerRecurrence,
+    PLANNER_REPEAT_HORIZON_DAYS,
+    materialize_planner_repeats,
     training_day_of,
     plan_recurring_week,
     week_start_for,
@@ -1750,6 +1753,19 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         category = self.request.query_params.get("category")
         kind = self.request.query_params.get("kind")
         is_complete = self.request.query_params.get("is_complete")
+
+        # Repeating tasks are written out as the calendar reaches them, rather
+        # than years ahead on the day the rule was made. On the list only:
+        # every screen that draws days asks for a range, and a detail route
+        # naming one row has no range to fill.
+        if self.action == "list" and end:
+            try:
+                horizon = date.fromisoformat(end)
+            except ValueError:
+                horizon = None
+            if horizon is not None:
+                materialize_planner_repeats(self.owner_profile(), horizon)
+
         # A step is drawn under its parent, not as a row of the day. Listing
         # both would show the same work twice and make "3 of 5 done" count the
         # heading as a sixth thing. `parent` asks for one task's steps;
@@ -1781,7 +1797,36 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         return queryset
 
     def perform_create(self, serializer):
-        entry = serializer.save(owner=self.owner_profile())
+        # Write-only, so they are not fields of the row being saved.
+        interval = serializer.validated_data.pop("repeat_every_days", None)
+        ends_on = serializer.validated_data.pop("repeat_ends_on", None)
+        owner = self.owner_profile()
+        entry = serializer.save(owner=owner)
+
+        if interval is not None:
+            rule = PlannerRecurrence.objects.create(
+                owner=owner,
+                interval_days=interval,
+                starts_on=entry.scheduled_date,
+                ends_on=ends_on,
+                title=entry.title,
+                category=entry.category,
+                priority=entry.priority,
+                scheduled_time=entry.scheduled_time,
+                duration_minutes=entry.duration_minutes,
+                notes=entry.notes,
+            )
+            # The day the person actually filled in belongs to the rule too,
+            # and is already written -- so it is claimed rather than written
+            # again, and the rule starts counting from the day after.
+            entry.recurrence = rule
+            entry.save(update_fields=["recurrence", "updated_at"])
+            rule.materialized_through = entry.scheduled_date
+            rule.save(update_fields=["materialized_through", "updated_at"])
+            materialize_planner_repeats(
+                owner, entry.scheduled_date + timedelta(days=PLANNER_REPEAT_HORIZON_DAYS)
+            )
+
         # A new step lands unfinished, so a parent that had been ticked off
         # is no longer done. Asked rather than assumed, because the parent may
         # have had no steps at all until this one.
@@ -1792,11 +1837,34 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         sync_parent_completion(entry.parent)
 
     def perform_destroy(self, instance):
+        # `?scope=following` ends the repeat from this day on; anything else
+        # removes this day alone. Default is the narrow one on purpose: a
+        # delete that quietly took a year of tasks with it would be the worst
+        # kind of surprise, so the wider act has to be asked for.
+        following = self.request.query_params.get("scope") == "following"
+        rule = instance.recurrence if following else None
+
         # Held before the row goes: afterwards `instance.parent` still answers
         # from the in-memory object, but reading it after the delete is the
         # kind of thing that quietly stops working.
         parent = instance.parent
+        day = instance.scheduled_date
         super().perform_destroy(instance)
+
+        if rule is not None:
+            # Closed at this day rather than deleted, so the days it already
+            # wrote and that have since been ticked off stay on the calendar
+            # they happened on. Ending a habit is not the same as saying it
+            # never happened.
+            rule.ends_on = day
+            rule.save(update_fields=["ends_on", "updated_at"])
+            # Everything it wrote from here on was a plan, not a record.
+            PlannerEntry.objects.filter(
+                owner=instance.owner,
+                recurrence=rule,
+                scheduled_date__gte=day,
+                completed_at__isnull=True,
+            ).delete()
         # Deleting the last outstanding step can finish the parent, and
         # deleting every step hands the checkbox back to the parent itself --
         # `sync_parent_completion` leaves a childless task alone, so what it

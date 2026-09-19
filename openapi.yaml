@@ -7233,6 +7233,16 @@ components:
         parent:
           type: integer
           nullable: true
+        repeat_every_days:
+          type: integer
+          maximum: 365
+          minimum: 1
+          writeOnly: true
+        repeat_ends_on:
+          type: string
+          format: date
+          writeOnly: true
+          nullable: true
     PatchedPostCommentRequest:
       type: object
       description: |-
@@ -7653,6 +7663,10 @@ components:
         completed_subtask_count:
           type: integer
           readOnly: true
+        repeat_interval_days:
+          type: integer
+          nullable: true
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7667,6 +7681,7 @@ components:
       - created_at
       - id
       - owner
+      - repeat_interval_days
       - scheduled_date
       - subtask_count
       - subtasks
@@ -7724,6 +7739,16 @@ components:
           maxLength: 300
         parent:
           type: integer
+          nullable: true
+        repeat_every_days:
+          type: integer
+          maximum: 365
+          minimum: 1
+          writeOnly: true
+        repeat_ends_on:
+          type: string
+          format: date
+          writeOnly: true
           nullable: true
       required:
       - scheduled_date
