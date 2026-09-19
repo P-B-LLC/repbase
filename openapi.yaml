@@ -7230,6 +7230,9 @@ components:
         notes:
           type: string
           maxLength: 300
+        parent:
+          type: integer
+          nullable: true
     PatchedPostCommentRequest:
       type: object
       description: |-
@@ -7636,6 +7639,20 @@ components:
         notes:
           type: string
           maxLength: 300
+        parent:
+          type: integer
+          nullable: true
+        subtasks:
+          type: array
+          items:
+            $ref: '#/components/schemas/PlannerSubtask'
+          readOnly: true
+        subtask_count:
+          type: integer
+          readOnly: true
+        completed_subtask_count:
+          type: integer
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7646,10 +7663,13 @@ components:
           readOnly: true
       required:
       - completed_at
+      - completed_subtask_count
       - created_at
       - id
       - owner
       - scheduled_date
+      - subtask_count
+      - subtasks
       - title
       - updated_at
       - workout_name
@@ -7702,8 +7722,44 @@ components:
         notes:
           type: string
           maxLength: 300
+        parent:
+          type: integer
+          nullable: true
       required:
       - scheduled_date
+      - title
+    PlannerSubtask:
+      type: object
+      description: |-
+        One step of a task, as it appears nested under its parent.
+
+        Deliberately not the full serializer. Subtasks are one level deep, so a
+        step has no steps of its own, and nesting the full thing would advertise
+        a `subtasks` array that is always empty and invite a client to recurse
+        into it. The fields here are what a checklist row draws.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        is_complete:
+          type: boolean
+          readOnly: true
+        completed_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        notes:
+          type: string
+          readOnly: true
+      required:
+      - completed_at
+      - id
+      - is_complete
+      - notes
       - title
     PlannerSyncRequest:
       type: object

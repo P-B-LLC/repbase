@@ -1494,8 +1494,41 @@ class PlannerEntry(models.Model):
         blank=True,
     )
     notes = models.CharField(max_length=300, blank=True)
+    #: The task this one is a step of, or null for a task standing on its own.
+    #:
+    #: One level only. A subtask cannot itself have subtasks, which the
+    #: ``subtasks_are_one_level_deep`` constraint below guarantees rather than
+    #: trusting every writer to check. Deleting a parent takes its steps with
+    #: it: a step of nothing is not a task anybody wrote.
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        related_name="subtasks",
+        null=True,
+        blank=True,
+    )
+    #: True on a task that is itself a step of another.
+    #:
+    #: Denormalised from ``parent_id`` so the one-level rule can be a database
+    #: constraint: a check constraint cannot follow a foreign key to ask
+    #: whether the parent has a parent. Kept in step in ``save``, and the
+    #: constraint refuses any row where the two disagree, so a writer that
+    #: sets one without the other fails loudly rather than opening a hole.
+    is_subtask = models.BooleanField(default=False, editable=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    def save(self, *args, **kwargs):
+        # Derived, never supplied. Doing it here rather than in the serializer
+        # keeps it true for the admin, for a data migration, and for a shell
+        # session, which is the point of the constraint that reads it.
+        self.is_subtask = self.parent_id is not None
+        if "update_fields" in kwargs and kwargs["update_fields"] is not None:
+            fields = set(kwargs["update_fields"])
+            if "parent" in fields or "parent_id" in fields:
+                fields.add("is_subtask")
+                kwargs["update_fields"] = tuple(fields)
+        super().save(*args, **kwargs)
 
     class Meta:
         # Within a day: what matters first, then untimed before timed, then by
@@ -1545,6 +1578,23 @@ class PlannerEntry(models.Model):
                 ),
                 name="duration_within_bounds",
             ),
+            # `is_subtask` is derived from `parent_id` and nothing else. The
+            # one-level rule is enforced by reading this flag on the parent,
+            # so a row where the two disagree would quietly allow a third
+            # level. Refused here so it cannot exist however it was written.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(parent__isnull=True, is_subtask=False)
+                    | models.Q(parent__isnull=False, is_subtask=True)
+                ),
+                name="is_subtask_matches_parent",
+            ),
+            # Only a task can be a step of something. An event happens; it is
+            # not work to be broken down, and it carries no checkbox to tick.
+            models.CheckConstraint(
+                condition=models.Q(parent__isnull=True) | models.Q(kind="task"),
+                name="only_tasks_have_parents",
+            ),
         ]
 
     def __str__(self):
@@ -1553,6 +1603,41 @@ class PlannerEntry(models.Model):
     @property
     def is_complete(self):
         return self.completed_at is not None
+
+
+def sync_parent_completion(parent, *, now=None):
+    """Make a parent task agree with its steps, and say whether it moved.
+
+    The steps are the record of the work; the parent is the heading over
+    them. So the heading is derived and never argued with -- the same rule
+    the workout tick follows, where the session is the record and the tick
+    is the plan's account of it.
+
+    Done when every step is done, and dated by the last of them rather than
+    by now, so "when did I finish this" answers with the moment the work
+    actually ended. Not done the instant any step is reopened.
+
+    A task with no steps is left alone: it owns its own checkbox.
+    """
+    if parent is None or parent.pk is None:
+        return False
+
+    steps = list(parent.subtasks.all())
+    if not steps:
+        return False
+
+    finished = [s.completed_at for s in steps if s.completed_at is not None]
+    done = len(finished) == len(steps)
+    became = max(finished) if done else None
+
+    if parent.completed_at == became:
+        return False
+
+    parent.completed_at = became
+    # `updated_at` is auto_now, so a plain save carries it; named here because
+    # the field list has to include it for that to happen.
+    parent.save(update_fields=("completed_at", "updated_at"))
+    return True
 
 
 #: Dropped outright rather than turned into a space, so a possessive matches

@@ -1517,6 +1517,23 @@ class PlannerSyncSerializer(serializers.Serializer):
         return attrs
 
 
+class PlannerSubtaskSerializer(serializers.ModelSerializer):
+    """One step of a task, as it appears nested under its parent.
+
+    Deliberately not the full serializer. Subtasks are one level deep, so a
+    step has no steps of its own, and nesting the full thing would advertise
+    a `subtasks` array that is always empty and invite a client to recurse
+    into it. The fields here are what a checklist row draws.
+    """
+
+    is_complete = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = PlannerEntry
+        fields = ["id", "title", "is_complete", "completed_at", "notes"]
+        read_only_fields = fields
+
+
 class PlannerEntrySerializer(serializers.ModelSerializer):
     """A task or event on the planner.
 
@@ -1542,6 +1559,21 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         min_value=MIN_PLANNER_DURATION_MINUTES,
         max_value=MAX_PLANNER_DURATION_MINUTES,
     )
+    #: The steps of this task, in the day's own order. Empty on a task that
+    #: has none, and always empty on a step, which cannot have its own.
+    subtasks = PlannerSubtaskSerializer(many=True, read_only=True)
+    #: So a client can draw "2 of 5" without counting the array itself, and
+    #: without the array being the only way to know a task is a heading.
+    subtask_count = serializers.SerializerMethodField()
+    completed_subtask_count = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_subtask_count(self, entry):
+        return len(entry.subtasks.all())
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_completed_subtask_count(self, entry):
+        return sum(1 for step in entry.subtasks.all() if step.completed_at is not None)
 
     class Meta:
         model = PlannerEntry
@@ -1560,6 +1592,10 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "workout",
             "workout_name",
             "notes",
+            "parent",
+            "subtasks",
+            "subtask_count",
+            "completed_subtask_count",
             "created_at",
             "updated_at",
         ]
@@ -1568,6 +1604,9 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "owner",
             "completed_at",
             "workout_name",
+            "subtasks",
+            "subtask_count",
+            "completed_subtask_count",
             "created_at",
             "updated_at",
         ]
@@ -1610,6 +1649,30 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Workout does not belong to this user.")
         return value
 
+    def validate_parent(self, value):
+        if value is None:
+            return value
+        if value.owner_id != self.context["request"].user.repbase_profile.id:
+            raise serializers.ValidationError("That task belongs to someone else.")
+        # One level. A step of a step is refused here so the client is told
+        # which field was wrong; the database constraint behind it is what
+        # makes the rule true regardless of who is writing.
+        if value.is_subtask:
+            raise serializers.ValidationError(
+                "That is already a step of another task. Steps do not nest."
+            )
+        if value.kind != PlannerEntry.Kind.TASK:
+            raise serializers.ValidationError("An event cannot have steps.")
+        if self.instance is not None and value.pk == self.instance.pk:
+            raise serializers.ValidationError("A task cannot be a step of itself.")
+        # Re-parenting a task that already has steps would make them three
+        # deep the moment it moved.
+        if self.instance is not None and self.instance.subtasks.exists():
+            raise serializers.ValidationError(
+                "This task has steps of its own, so it cannot become a step."
+            )
+        return value
+
     def validate(self, attrs):
         # A length needs a start. Checked against what the row will end up as
         # rather than only what this request carries, so clearing the time on
@@ -1633,6 +1696,32 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"is_complete": "An event happens rather than being completed."}
             )
+
+        # A task with steps does not own its own checkbox: the steps are the
+        # record of the work and the heading is derived from them. The same
+        # shape as the workout rule above, and for the same reason -- the half
+        # carrying no evidence is the half that gives.
+        if (
+            self.instance is not None
+            and "is_complete" in attrs
+            and self.instance.subtasks.exists()
+        ):
+            raise serializers.ValidationError(
+                {
+                    "is_complete": (
+                        "This task is done when its steps are. Tick the steps "
+                        "off instead."
+                    )
+                }
+            )
+
+        # A step belongs to its parent's day. Left free, a checklist could
+        # scatter itself across the week and the heading would sit on a day
+        # holding none of its own work.
+        parent = attrs.get("parent", getattr(self.instance, "parent", None))
+        if parent is not None:
+            attrs["scheduled_date"] = parent.scheduled_date
+            attrs["kind"] = PlannerEntry.Kind.TASK
 
         # A workout that was trained cannot be un-trained by a checkbox.
         #
