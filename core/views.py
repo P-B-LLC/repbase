@@ -1852,19 +1852,29 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         super().perform_destroy(instance)
 
         if rule is not None:
-            # Closed at this day rather than deleted, so the days it already
-            # wrote and that have since been ticked off stay on the calendar
-            # they happened on. Ending a habit is not the same as saying it
-            # never happened.
-            rule.ends_on = day
-            rule.save(update_fields=["ends_on", "updated_at"])
-            # Everything it wrote from here on was a plan, not a record.
+            # Everything it wrote from here on was a plan, not a record, so it
+            # goes. Days already ticked off are left alone: ending a habit is
+            # not the same as saying it never happened.
             PlannerEntry.objects.filter(
                 owner=instance.owner,
                 recurrence=rule,
                 scheduled_date__gte=day,
                 completed_at__isnull=True,
             ).delete()
+
+            if day <= rule.starts_on:
+                # Ended on the day it began, so it never ran. There is no
+                # earlier stretch to preserve and closing it here would ask for
+                # an empty range, which the rule refuses to be. Anything it did
+                # write and that survived is detached rather than removed --
+                # the foreign key is SET_NULL, so a day already ticked off
+                # stays on the calendar it happened on.
+                rule.delete()
+            else:
+                # Closed rather than deleted, so the days before this one keep
+                # resolving through the rule that planned them.
+                rule.ends_on = day
+                rule.save(update_fields=["ends_on", "updated_at"])
         # Deleting the last outstanding step can finish the parent, and
         # deleting every step hands the checkbox back to the parent itself --
         # `sync_parent_completion` leaves a childless task alone, so what it
