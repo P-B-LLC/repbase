@@ -106,6 +106,7 @@ from .models import (
     planner_tasks_for,
     sync_parent_completion,
     PlannerRecurrence,
+    PlannerRecurrenceStep,
     PLANNER_REPEAT_HORIZON_DAYS,
     materialize_planner_repeats,
     training_day_of,
@@ -1862,10 +1863,68 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
                 owner, entry.scheduled_date + timedelta(days=PLANNER_REPEAT_HORIZON_DAYS)
             )
 
+    def _adopt_steps_into_rule(self, step):
+        """Teach the repeat the steps its first day was given.
+
+        Steps arrive after the task -- each one carries the task's id, which
+        does not exist until the task is saved -- so a rule cannot learn them
+        at the moment it is made. It learns them the first time a step lands on
+        a day it wrote.
+
+        Days still to come are given the steps too. Days already gone are left
+        alone: they are a record of what was planned then, and rewriting them
+        would add work to a day somebody has already finished with.
+        """
+        parent = step.parent
+        if parent is None or parent.recurrence_id is None:
+            return
+        rule = parent.recurrence
+
+        titles = list(parent.subtasks.order_by("id").values_list("title", flat=True))
+        rule.steps.all().delete()
+        PlannerRecurrenceStep.objects.bulk_create(
+            [
+                PlannerRecurrenceStep(recurrence=rule, title=title, position=at)
+                for at, title in enumerate(titles)
+            ]
+        )
+
+        # The rule had already written days ahead before it knew about any of
+        # this, and `materialize_planner_repeats` will not revisit them --
+        # which is what keeps a deleted day deleted. So the ones after this one
+        # are filled in here instead, and only where they are still empty.
+        ahead = PlannerEntry.objects.filter(
+            owner=parent.owner,
+            recurrence=rule,
+            parent__isnull=True,
+            scheduled_date__gt=parent.scheduled_date,
+            completed_at__isnull=True,
+        ).prefetch_related("subtasks")
+        for day_task in ahead:
+            if day_task.subtasks.exists():
+                continue
+            PlannerEntry.objects.bulk_create(
+                [
+                    PlannerEntry(
+                        owner=parent.owner,
+                        kind=PlannerEntry.Kind.TASK,
+                        title=title,
+                        category=day_task.category,
+                        scheduled_date=day_task.scheduled_date,
+                        parent=day_task,
+                        is_subtask=True,
+                    )
+                    for title in titles
+                ]
+            )
+
         # A new step lands unfinished, so a parent that had been ticked off
         # is no longer done. Asked rather than assumed, because the parent may
         # have had no steps at all until this one.
         sync_parent_completion(entry.parent)
+        # A step added to a repeating day teaches the rule, so every later day
+        # starts with it too.
+        self._adopt_steps_into_rule(entry)
 
     def perform_update(self, serializer):
         entry = serializer.save()
