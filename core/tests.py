@@ -32,6 +32,8 @@ from .models import (
     ProfileSocialLink,
     PasswordResetCode,
     PlannerEntry,
+    PlannerRecurrence,
+    PlannerRecurrenceStep,
     Post,
     PostMeal,
     PostMealEntry,
@@ -4647,3 +4649,151 @@ class PlannerRepeatTests(RepbaseAPITestMixin, APITestCase):
         _, _, other_token = self.create_account("bystander")
         self.authenticate(other_token)
         self.assertEqual(self.days(self.today, self.today + timedelta(days=6)), [])
+
+
+class PlannerRepeatStepTests(RepbaseAPITestMixin, APITestCase):
+    """Steps that come back with the task they belong to.
+
+    Each day gets its own copies. Ticking Monday's off has to leave Tuesday's
+    waiting, because a checklist you have to do again is the whole point of a
+    repeating task.
+    """
+
+    PLANNER = "/api/v1/planner/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("habitual")
+        self.authenticate(self.token)
+        self.today = timezone.now().date()
+
+    def repeating(self, title="Morning routine", every=1, **extra):
+        body = {
+            "kind": "task",
+            "title": title,
+            "scheduled_date": str(self.today),
+            "category": "habit",
+            "repeat_every_days": every,
+        }
+        body.update(extra)
+        response = self.client.post(self.PLANNER, body, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data
+
+    def add_step(self, parent_id, title):
+        response = self.client.post(
+            self.PLANNER,
+            {
+                "kind": "task",
+                "title": title,
+                "scheduled_date": str(self.today),
+                "category": "other",
+                "parent": parent_id,
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data
+
+    def day(self, when):
+        listed = self.client.get(self.PLANNER, {"start": str(when), "end": str(when)})
+        self.assertEqual(listed.status_code, 200)
+        return listed.data["results"]
+
+    # ----------------------------------------------------------- carrying on
+
+    def test_steps_added_to_the_first_day_reach_the_days_ahead(self):
+        parent = self.repeating()
+        self.add_step(parent["id"], "Make the bed")
+        self.add_step(parent["id"], "Drink water")
+
+        tomorrow = self.day(self.today + timedelta(days=1))
+        self.assertEqual(len(tomorrow), 1)
+        self.assertEqual(
+            sorted(step["title"] for step in tomorrow[0]["subtasks"]),
+            ["Drink water", "Make the bed"],
+        )
+
+    def test_every_day_gets_its_own_copies(self):
+        """Ticking one day's step must not tick another's."""
+        parent = self.repeating()
+        self.add_step(parent["id"], "Make the bed")
+        self.day(self.today + timedelta(days=3))
+
+        tomorrow = self.day(self.today + timedelta(days=1))[0]
+        later = self.day(self.today + timedelta(days=2))[0]
+        step = tomorrow["subtasks"][0]
+
+        self.assertEqual(
+            self.client.patch(
+                "{}{}/".format(self.PLANNER, step["id"]),
+                {"is_complete": True},
+                format="json",
+            ).status_code,
+            200,
+        )
+
+        untouched = self.day(self.today + timedelta(days=2))[0]
+        self.assertNotEqual(later["subtasks"][0]["id"], step["id"])
+        self.assertFalse(untouched["subtasks"][0]["is_complete"])
+
+    def test_a_day_already_written_keeps_what_it_had(self):
+        """Past days are a record, not a plan still being edited."""
+        parent = self.repeating()
+        # Reach forward so days exist before any step does.
+        self.day(self.today + timedelta(days=4))
+        self.add_step(parent["id"], "Make the bed")
+
+        ahead = self.day(self.today + timedelta(days=2))[0]
+        self.assertEqual([s["title"] for s in ahead["subtasks"]], ["Make the bed"])
+
+    def test_a_finished_day_is_not_given_new_steps(self):
+        parent = self.repeating()
+        self.day(self.today + timedelta(days=3))
+
+        tomorrow = self.day(self.today + timedelta(days=1))[0]
+        self.client.patch(
+            "{}{}/".format(self.PLANNER, tomorrow["id"]),
+            {"is_complete": True},
+            format="json",
+        )
+
+        self.add_step(parent["id"], "Make the bed")
+
+        done = self.day(self.today + timedelta(days=1))[0]
+        self.assertEqual(done["subtasks"], [])
+
+    def test_a_step_deleted_from_one_day_stays_gone_on_that_day(self):
+        parent = self.repeating()
+        self.add_step(parent["id"], "Make the bed")
+
+        tomorrow = self.day(self.today + timedelta(days=1))[0]
+        step = tomorrow["subtasks"][0]
+        self.assertEqual(
+            self.client.delete("{}{}/".format(self.PLANNER, step["id"])).status_code, 204
+        )
+
+        again = self.day(self.today + timedelta(days=1))[0]
+        self.assertEqual(again["subtasks"], [])
+
+    def test_a_task_without_a_repeat_gains_no_rule_steps(self):
+        plain = self.client.post(
+            self.PLANNER,
+            {
+                "kind": "task",
+                "title": "One off",
+                "scheduled_date": str(self.today),
+                "category": "other",
+            },
+            format="json",
+        )
+        self.add_step(plain.data["id"], "A step")
+        self.assertEqual(PlannerRecurrenceStep.objects.count(), 0)
+
+    def test_the_rule_learns_the_steps_in_order(self):
+        parent = self.repeating()
+        self.add_step(parent["id"], "First")
+        self.add_step(parent["id"], "Second")
+        self.add_step(parent["id"], "Third")
+
+        rule = PlannerRecurrence.objects.get(owner=self.profile)
+        self.assertEqual(rule.step_titles(), ["First", "Second", "Third"])

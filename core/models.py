@@ -1692,6 +1692,10 @@ class PlannerRecurrence(models.Model):
     def __str__(self):
         return f"every {self.interval_days}d: {self.title}"
 
+    def step_titles(self):
+        """The steps every day of this repeat starts with, in order."""
+        return list(self.steps.order_by("position", "id").values_list("title", flat=True))
+
     def covers(self, day):
         """Whether this rule writes a task on `day`."""
         if day < self.starts_on:
@@ -1711,6 +1715,32 @@ class PlannerRecurrence(models.Model):
             day += timedelta(days=self.interval_days)
 
 
+class PlannerRecurrenceStep(models.Model):
+    """A step every day of a repeating task starts with.
+
+    Held on the rule rather than copied off the first day's task, for the same
+    reason the rule keeps its own title: that task can be edited or deleted,
+    and the rule still has to know what to write tomorrow.
+
+    Each day gets its own `PlannerEntry` steps, so ticking Monday's off leaves
+    Tuesday's alone. A checklist you have to redo is the point of a habit.
+    """
+
+    recurrence = models.ForeignKey(
+        PlannerRecurrence,
+        on_delete=models.CASCADE,
+        related_name="steps",
+    )
+    title = models.CharField(max_length=150)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ("position", "id")
+
+    def __str__(self):
+        return self.title
+
+
 def materialize_planner_repeats(owner, through):
     """Write out every repeating task due on or before `through`.
 
@@ -1719,10 +1749,11 @@ def materialize_planner_repeats(owner, through):
     again.
     """
     created = []
-    rules = PlannerRecurrence.objects.filter(owner=owner)
+    rules = PlannerRecurrence.objects.filter(owner=owner).prefetch_related("steps")
     for rule in rules:
         if rule.ends_on is not None and rule.ends_on <= rule.starts_on:
             continue
+        step_titles = rule.step_titles()
         written_through = rule.materialized_through
         for day in rule.days_through(through):
             # Already dealt with on a previous pass. Skipping rather than
@@ -1730,10 +1761,11 @@ def materialize_planner_repeats(owner, through):
             # have it stay deleted.
             if written_through is not None and day <= written_through:
                 continue
-            PlannerEntry.objects.get_or_create(
+            entry, was_created = PlannerEntry.objects.get_or_create(
                 owner=owner,
                 recurrence=rule,
                 scheduled_date=day,
+                parent=None,
                 defaults={
                     "kind": PlannerEntry.Kind.TASK,
                     "title": rule.title,
@@ -1744,6 +1776,25 @@ def materialize_planner_repeats(owner, through):
                     "notes": rule.notes,
                 },
             )
+            # Each day gets its own copies, so ticking Monday's steps off
+            # leaves Tuesday's waiting. Only on the day the task itself was
+            # created: a step somebody deleted from one day must not come back
+            # the next time that month is opened.
+            if was_created and step_titles:
+                PlannerEntry.objects.bulk_create(
+                    [
+                        PlannerEntry(
+                            owner=owner,
+                            kind=PlannerEntry.Kind.TASK,
+                            title=title,
+                            category=rule.category,
+                            scheduled_date=day,
+                            parent=entry,
+                            is_subtask=True,
+                        )
+                        for title in step_titles
+                    ]
+                )
             created.append(day)
             written_through = day
         if written_through != rule.materialized_through:
