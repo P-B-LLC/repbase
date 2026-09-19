@@ -1566,6 +1566,24 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
     #: without the array being the only way to know a task is a heading.
     subtask_count = serializers.SerializerMethodField()
     completed_subtask_count = serializers.SerializerMethodField()
+    #: Create-only: make this task repeat. 1 is every day, 2 every other day.
+    #: Absent means it happens once, which is what most tasks are.
+    repeat_every_days = serializers.IntegerField(
+        required=False, write_only=True, min_value=1, max_value=365
+    )
+    #: The first day the repeat no longer applies. Absent or null means it
+    #: runs until it is stopped, which is the ordinary case for a habit.
+    repeat_ends_on = serializers.DateField(
+        required=False, write_only=True, allow_null=True
+    )
+    #: How often this task repeats, or null when it does not. Read from the
+    #: rule rather than stored on the row, so ending a repeat does not have to
+    #: rewrite every day it already wrote.
+    repeat_interval_days = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.IntegerField(allow_null=True))
+    def get_repeat_interval_days(self, entry):
+        return entry.recurrence.interval_days if entry.recurrence_id else None
 
     @extend_schema_field(serializers.IntegerField())
     def get_subtask_count(self, entry):
@@ -1596,6 +1614,9 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "subtasks",
             "subtask_count",
             "completed_subtask_count",
+            "repeat_every_days",
+            "repeat_ends_on",
+            "repeat_interval_days",
             "created_at",
             "updated_at",
         ]
@@ -1607,6 +1628,7 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "subtasks",
             "subtask_count",
             "completed_subtask_count",
+            "repeat_interval_days",
             "created_at",
             "updated_at",
         ]
@@ -1722,6 +1744,30 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         if parent is not None:
             attrs["scheduled_date"] = parent.scheduled_date
             attrs["kind"] = PlannerEntry.Kind.TASK
+
+        # Repeats belong to tasks that stand on their own. An event happens
+        # once by definition, and a step repeating independently of the task
+        # it belongs to describes nothing.
+        interval = attrs.get("repeat_every_days")
+        if interval is not None:
+            if kind == PlannerEntry.Kind.EVENT:
+                raise serializers.ValidationError(
+                    {"repeat_every_days": "An event happens once. Use a task to repeat."}
+                )
+            if parent is not None:
+                raise serializers.ValidationError(
+                    {"repeat_every_days": "A step repeats with its task, not on its own."}
+                )
+            ends = attrs.get("repeat_ends_on")
+            start = attrs.get("scheduled_date", getattr(self.instance, "scheduled_date", None))
+            if ends is not None and start is not None and ends <= start:
+                raise serializers.ValidationError(
+                    {"repeat_ends_on": "The repeat has to end after the day it starts."}
+                )
+        elif attrs.get("repeat_ends_on") is not None:
+            raise serializers.ValidationError(
+                {"repeat_ends_on": "Say how often it repeats before saying when it stops."}
+            )
 
         # A workout that was trained cannot be un-trained by a checkbox.
         #

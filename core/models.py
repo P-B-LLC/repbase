@@ -1507,6 +1507,19 @@ class PlannerEntry(models.Model):
         null=True,
         blank=True,
     )
+    #: The repeat that wrote this day's copy, when one did.
+    #:
+    #: The row stays an ordinary task: it is ticked, edited and deleted on its
+    #: own day like any other, and only "this and the rest" reaches back to the
+    #: rule. Nulled rather than cascaded when a rule ends, so days already
+    #: written stay on the calendar somebody planned them on.
+    recurrence = models.ForeignKey(
+        "PlannerRecurrence",
+        on_delete=models.SET_NULL,
+        related_name="entries",
+        null=True,
+        blank=True,
+    )
     #: True on a task that is itself a step of another.
     #:
     #: Denormalised from ``parent_id`` so the one-level rule can be a database
@@ -1603,6 +1616,140 @@ class PlannerEntry(models.Model):
     @property
     def is_complete(self):
         return self.completed_at is not None
+
+
+#: How far ahead a repeating task is written out. Far enough that a month of
+#: calendar is always filled, short enough that ending a repeat does not leave
+#: a year of rows to clear. Rows past this appear as the calendar reaches them.
+PLANNER_REPEAT_HORIZON_DAYS = 60
+
+
+class PlannerRecurrence(models.Model):
+    """A task that comes back every so many days.
+
+    The rule is the thing that repeats; the rows it writes are ordinary tasks.
+    That is deliberate — a repeating task has to be tickable, editable and
+    deletable on its own day like any other, and a row that was really a view
+    onto a rule could not be.
+
+    A rule covers the half-open range ``[starts_on, ends_on)``. `ends_on` is
+    null while it runs indefinitely, which is the ordinary case: most habits
+    have no known last day, and forcing one would be inventing a fact.
+
+    Changing a repeat never rewrites the past. "This and the rest" closes the
+    rule at the day being changed and opens a new one, so days already gone
+    keep whatever was planned then — the same shape `WorkoutRecurrence` uses,
+    and for the same reason.
+    """
+
+    owner = models.ForeignKey(
+        RepbaseUser,
+        on_delete=models.CASCADE,
+        related_name="planner_recurrences",
+    )
+    #: Every day is 1, every other day 2, and so on.
+    interval_days = models.PositiveSmallIntegerField(default=1)
+    starts_on = models.DateField(db_index=True)
+    #: The first day it no longer applies. Null while it runs indefinitely.
+    ends_on = models.DateField(null=True, blank=True, db_index=True)
+    #: The latest day already written out. Without it, a day the user deleted
+    #: would reappear the next time the calendar reached it.
+    materialized_through = models.DateField(null=True, blank=True)
+
+    # What each day's task looks like. Held here rather than read off the
+    # first row, because that row can be edited or deleted and the rule still
+    # has to know what to write tomorrow.
+    title = models.CharField(max_length=150)
+    category = models.CharField(
+        max_length=20,
+        choices=PlannerCategory.choices,
+        default=PlannerCategory.OTHER,
+    )
+    priority = models.CharField(max_length=10, default="normal")
+    scheduled_time = models.TimeField(null=True, blank=True)
+    duration_minutes = models.PositiveSmallIntegerField(null=True, blank=True)
+    notes = models.CharField(max_length=300, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("starts_on", "id")
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(interval_days__gte=1, interval_days__lte=365),
+                name="planner_repeat_interval_within_bounds",
+            ),
+            # An empty range describes nothing, and would write no rows while
+            # looking like a live repeat on screen.
+            models.CheckConstraint(
+                condition=models.Q(ends_on__isnull=True)
+                | models.Q(ends_on__gt=models.F("starts_on")),
+                name="planner_repeat_ends_after_it_starts",
+            ),
+        ]
+
+    def __str__(self):
+        return f"every {self.interval_days}d: {self.title}"
+
+    def covers(self, day):
+        """Whether this rule writes a task on `day`."""
+        if day < self.starts_on:
+            return False
+        if self.ends_on is not None and day >= self.ends_on:
+            return False
+        return (day - self.starts_on).days % self.interval_days == 0
+
+    def days_through(self, horizon):
+        """Every day this rule writes, up to and including `horizon`."""
+        if horizon < self.starts_on:
+            return
+        last = horizon if self.ends_on is None else min(horizon, self.ends_on - timedelta(days=1))
+        day = self.starts_on
+        while day <= last:
+            yield day
+            day += timedelta(days=self.interval_days)
+
+
+def materialize_planner_repeats(owner, through):
+    """Write out every repeating task due on or before `through`.
+
+    Returns the entries created. Idempotent: a day already written, or one the
+    user deleted and that `materialized_through` has passed, is not written
+    again.
+    """
+    created = []
+    rules = PlannerRecurrence.objects.filter(owner=owner)
+    for rule in rules:
+        if rule.ends_on is not None and rule.ends_on <= rule.starts_on:
+            continue
+        written_through = rule.materialized_through
+        for day in rule.days_through(through):
+            # Already dealt with on a previous pass. Skipping rather than
+            # re-creating is what lets somebody delete one day of a repeat and
+            # have it stay deleted.
+            if written_through is not None and day <= written_through:
+                continue
+            PlannerEntry.objects.get_or_create(
+                owner=owner,
+                recurrence=rule,
+                scheduled_date=day,
+                defaults={
+                    "kind": PlannerEntry.Kind.TASK,
+                    "title": rule.title,
+                    "category": rule.category,
+                    "priority": rule.priority,
+                    "scheduled_time": rule.scheduled_time,
+                    "duration_minutes": rule.duration_minutes,
+                    "notes": rule.notes,
+                },
+            )
+            created.append(day)
+            written_through = day
+        if written_through != rule.materialized_through:
+            rule.materialized_through = written_through
+            rule.save(update_fields=["materialized_through", "updated_at"])
+    return created
 
 
 def sync_parent_completion(parent, *, now=None):
