@@ -1726,8 +1726,43 @@ class GymViewSet(viewsets.ModelViewSet):
                     "true."
                 ),
             ),
+            OpenApiParameter(
+                name="parent",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return the steps of this task. Omitted, the list carries "
+                    "headings only: a step is drawn under its parent, and one "
+                    "listed beside it would be counted twice."
+                ),
+            ),
+            OpenApiParameter(
+                name="include_subtasks",
+                type=bool,
+                location=OpenApiParameter.QUERY,
+                description="Include steps as rows of the list in their own right.",
+            ),
         ]
-    )
+    ),
+    destroy=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="scope",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                enum=["following"],
+                description=(
+                    "`following` ends a repeating task from this day on, "
+                    "clearing the unfinished days after it. Omitted, only this "
+                    "day is removed -- a delete that quietly took a year of "
+                    "tasks with it is the worst kind of surprise, so the wider "
+                    "act has to be asked for. Days already ticked off are kept "
+                    "either way: ending a habit is not saying it never "
+                    "happened."
+                ),
+            ),
+        ]
+    ),
 )
 class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Tasks and events on the planner.
