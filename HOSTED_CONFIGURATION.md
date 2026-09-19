@@ -43,6 +43,19 @@ or certify beta readiness. The current SQLite file and media are unchanged.
   is the real fix for blocking I/O and the larger change. Measure first — this
   is a documented interaction, not a measured one.
 
+  <!-- CHANGED (perf): the paragraph above described this as open and
+       unaddressed. The recommended fix -- threaded workers -- is now applied:
+       gunicorn.conf.py sets worker_class = 'gthread' with a new WEB_THREADS
+       setting (default 4, see .env.example), so a worker blocked on the
+       OpenAI call can still serve other requests on its other threads. This
+       does not replace measuring: WEB_THREADS raises the database-connection
+       budget by roughly workers * threads (see the comment in
+       gunicorn.conf.py), and nothing here has been load-tested against a
+       real deployment. The paragraph above is left in place because its
+       description of the failure mode and its other two mitigations
+       (WEB_CONCURRENCY, MODERATION_TIMEOUT_SECONDS) both remain accurate and
+       may still be worth combining with threaded workers under real load. -->
+
 ## Reproducible deployment (Linux host, Python matching CI)
 
 1. Install `pip install -r requirements-production.txt`.
