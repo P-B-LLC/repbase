@@ -1910,7 +1910,14 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
             completed_at__isnull=True,
         ).prefetch_related("subtasks")
         for day_task in ahead:
-            if day_task.subtasks.exists():
+            # Only what the day is missing. Skipping any day that already had
+            # a step meant the second step added never travelled: the first one
+            # had made every day ahead non-empty. Adding rather than replacing
+            # also leaves a step somebody deleted from one day deleted, which
+            # is the behaviour that day's own edit asked for.
+            present = {step.title for step in day_task.subtasks.all()}
+            missing = [title for title in titles if title not in present]
+            if not missing:
                 continue
             PlannerEntry.objects.bulk_create(
                 [
@@ -1923,7 +1930,7 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
                         parent=day_task,
                         is_subtask=True,
                     )
-                    for title in titles
+                    for title in missing
                 ]
             )
 
