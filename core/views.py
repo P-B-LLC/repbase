@@ -1863,6 +1863,15 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
                 owner, entry.scheduled_date + timedelta(days=PLANNER_REPEAT_HORIZON_DAYS)
             )
 
+
+        # A new step lands unfinished, so a parent that had been ticked off
+        # is no longer done. Asked rather than assumed, because the parent may
+        # have had no steps at all until this one.
+        sync_parent_completion(entry.parent)
+        # A step added to a repeating day teaches the rule, so every later day
+        # starts with it too.
+        self._adopt_steps_into_rule(entry)
+
     def _adopt_steps_into_rule(self, step):
         """Teach the repeat the steps its first day was given.
 
@@ -1917,14 +1926,6 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
                     for title in titles
                 ]
             )
-
-        # A new step lands unfinished, so a parent that had been ticked off
-        # is no longer done. Asked rather than assumed, because the parent may
-        # have had no steps at all until this one.
-        sync_parent_completion(entry.parent)
-        # A step added to a repeating day teaches the rule, so every later day
-        # starts with it too.
-        self._adopt_steps_into_rule(entry)
 
     def perform_update(self, serializer):
         entry = serializer.save()
