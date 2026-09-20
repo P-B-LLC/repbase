@@ -1,5 +1,6 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
+from .push_views import PushDeviceRegistrationView
 
 from .views import (
     BlockViewSet,
@@ -82,6 +83,7 @@ router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
 urlpatterns = [
+    path("push/devices/", PushDeviceRegistrationView.as_view(), name="push-device-registration"),
     path(
         "sessions/previous-sets/",
         PreviousSetsView.as_view(),

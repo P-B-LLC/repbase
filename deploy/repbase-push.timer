@@ -1,0 +1,10 @@
+[Unit]
+Description=Check Rytivo push outbox every minute
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=60
+Unit=repbase-push.service
+
+[Install]
+WantedBy=timers.target

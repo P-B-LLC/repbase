@@ -36,6 +36,21 @@ UNCONFIGURED_HOSTS = ('', 'localhost', '127.0.0.1', '::1')
 
 
 @register(deploy=True)
+def push_configuration_ready(app_configs, **kwargs):
+    if not settings.APNS_ENABLED:
+        return []
+    from .push import APNsClient
+    from django.core.exceptions import ImproperlyConfigured
+    try:
+        provider = APNsClient()
+        provider.close()  # Validates signing locally; sends no request.
+    except ImproperlyConfigured:
+        return [Error('Enabled APNs requires a readable signing key and complete environment configuration.',
+                      hint='Validate APNS_TEAM_ID, KEY_ID, KEY_PATH, TOPIC and ENVIRONMENT.', id='core.E008')]
+    return []
+
+
+@register(deploy=True)
 def publication_storage_preserves_names(app_configs, **kwargs):
     from django.core.files.storage import default_storage
     if callable(getattr(default_storage, 'save_reserved', None)):

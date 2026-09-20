@@ -2607,6 +2607,28 @@ paths:
                 items:
                   $ref: '#/components/schemas/ExerciseProgressPoint'
           description: ''
+  /api/v1/push/devices/:
+    post:
+      operationId: registerPushDevice
+      tags:
+      - push
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PushDeviceRegistrationRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PushDeviceRegistrationRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PushDeviceRegistrationRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/recurrences/:
     get:
       operationId: recurrences_list
@@ -5709,6 +5731,14 @@ components:
           format: date
       required:
       - date
+    EnvironmentEnum:
+      enum:
+      - sandbox
+      - production
+      type: string
+      description: |-
+        * `sandbox` - sandbox
+        * `production` - production
     Exercise:
       type: object
       properties:
@@ -8795,6 +8825,23 @@ components:
           type: boolean
         is_profile_public:
           type: boolean
+    PushDeviceRegistrationRequest:
+      type: object
+      properties:
+        token:
+          type: string
+          writeOnly: true
+          minLength: 32
+          maxLength: 512
+          pattern: ^[0-9a-fA-F]{32,512}$
+        environment:
+          $ref: '#/components/schemas/EnvironmentEnum'
+        community_enabled:
+          type: boolean
+      required:
+      - community_enabled
+      - environment
+      - token
     QuestionEnum:
       enum:
       - why_i_train

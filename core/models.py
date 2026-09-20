@@ -12,7 +12,7 @@ from functools import cached_property
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
-from django.db import models
+from django.db import models, transaction
 from zoneinfo import ZoneInfo, available_timezones
 
 from django.utils import timezone
@@ -2168,12 +2168,9 @@ class Follow(models.Model):
 class Notification(models.Model):
     """Something one person did that another should hear about.
 
-    Recorded rather than delivered. These builds carry no APNs entitlement --
-    there is no Apple Developer membership behind them and they are signed
-    with nothing -- so there is no push to send. The app reads this list when
-    it opens instead. A transport can be added later without these rows
-    changing shape, which is the reason they are rows at all rather than a
-    message assembled at send time.
+    The in-app inbox is authoritative. When APNs is enabled, creation also
+    writes a transactional delivery outbox; delivery failures never remove
+    inbox activity and provider calls never run inside the web request.
 
     `actor` is who did it and `recipient` is who cares. Both are kept even
     when the object is gone: a comment deleted afterwards takes its
@@ -2233,6 +2230,7 @@ class Notification(models.Model):
         return f"{self.actor} {self.kind} -> {self.recipient}"
 
 
+@transaction.atomic
 def notify(recipient, actor, kind, post=None, comment=None):
     """Records a notification, and returns it, or None if there is none to make.
 
@@ -2249,14 +2247,49 @@ def notify(recipient, actor, kind, post=None, comment=None):
         return None
 
     if kind == Notification.Kind.COMMENT:
-        return Notification.objects.create(
+        row = Notification.objects.create(
             recipient=recipient, actor=actor, kind=kind, post=post, comment=comment
         )
-
-    row, _ = Notification.objects.get_or_create(
-        recipient=recipient, actor=actor, kind=kind, post=post
-    )
+        created = True
+    else:
+        row, created = Notification.objects.get_or_create(
+            recipient=recipient, actor=actor, kind=kind, post=post
+        )
+    if created:
+        from .push import enqueue_notification
+        enqueue_notification(row)
     return row
+
+
+class PushDevice(models.Model):
+    recipient = models.ForeignKey(RepbaseUser, on_delete=models.CASCADE)
+    # Revoking the login token also removes its registrations and queued pushes.
+    auth_token = models.ForeignKey("authtoken.Token", on_delete=models.CASCADE)
+    token = models.CharField(max_length=512)
+    environment = models.CharField(max_length=10, choices=[("sandbox", "Sandbox"), ("production", "Production")])
+    community_enabled = models.BooleanField(default=False)
+    generation = models.UUIDField(default=uuid.uuid4)
+    registered_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["token", "environment"], name="unique_apns_device")]
+
+
+class PushDelivery(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    notification = models.ForeignKey(Notification, on_delete=models.CASCADE)
+    device = models.ForeignKey(PushDevice, on_delete=models.CASCADE)
+    device_generation = models.UUIDField()
+    status = models.CharField(max_length=10, default="queued")
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt = models.DateTimeField(default=timezone.now)
+    lease = models.UUIDField(null=True)
+    last_error = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["notification", "device"], name="unique_notification_device_push")]
+        indexes = [models.Index(fields=["status", "next_attempt"], name="push_dispatch_due")]
 
 
 def recipient_id_of(profile):

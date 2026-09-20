@@ -120,6 +120,14 @@ USE_I18N = True
 
 USE_TZ = True
 
+# Off until the matching client, provider key, and dispatcher are verified.
+APNS_ENABLED = os.getenv("APNS_ENABLED", "false").lower() == "true"
+APNS_TEAM_ID = os.getenv("APNS_TEAM_ID", "")
+APNS_KEY_ID = os.getenv("APNS_KEY_ID", "")
+APNS_KEY_PATH = os.getenv("APNS_KEY_PATH", "")
+APNS_TOPIC = os.getenv("APNS_TOPIC", "com.pbllc.rytivo")
+APNS_ENVIRONMENT = os.getenv("APNS_ENVIRONMENT", "production")
+
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.1/howto/static-files/
