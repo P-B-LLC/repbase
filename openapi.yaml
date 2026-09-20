@@ -9034,6 +9034,9 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DisciplinesEnum'
+        can_view_insights:
+          type: boolean
+          readOnly: true
         gym:
           type: integer
           nullable: true
@@ -9067,6 +9070,7 @@ components:
           format: date-time
           readOnly: true
       required:
+      - can_view_insights
       - created_at
       - email
       - first_name
