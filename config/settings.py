@@ -54,6 +54,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'core.analytics.AnalyticsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -63,6 +64,8 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'config.urls'
+ANALYTICS_ENABLED = os.getenv('ANALYTICS_ENABLED', 'false').lower() == 'true'
+ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED = os.getenv('ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED', 'false').lower() == 'true'
 
 TEMPLATES = [
     {

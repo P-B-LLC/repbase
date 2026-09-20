@@ -1,0 +1,7 @@
+{% extends "insights/base.html" %}
+{% block content %}<section class="login panel">
+<div class="eyebrow">Restricted workspace</div><h1>A clearer view.</h1>
+<p>Sign in with the account approved for private Rytivo insights. Registration alone does not grant access.</p>
+<form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Open insights</button></form>
+<p class="note">Access requires verified ownership of admin@rytivo.app and an explicit server-side grant.</p>
+</section>{% endblock %}

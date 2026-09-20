@@ -13,6 +13,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
+from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
 from zoneinfo import ZoneInfo, available_timezones
 
 from django.utils import timezone

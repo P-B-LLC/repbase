@@ -20,10 +20,14 @@ from django.urls import include, path, re_path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from core.media import serve_media
+from core.analytics import dashboard, InsightsLoginView, InsightsLogoutView
 from config.health import live, ready
 from core.views import health, home, repbase_users
 
 urlpatterns = [
+    path('insights/', dashboard, name='insights'),
+    path('insights/login/', InsightsLoginView.as_view(), name='insights-login'),
+    path('insights/logout/', InsightsLogoutView.as_view(), name='insights-logout'),
     path('health/live/', live, name='health-live'),
     path('health/ready/', ready, name='health-ready'),
     path('', home, name='home'),
