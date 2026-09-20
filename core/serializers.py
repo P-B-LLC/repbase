@@ -1104,6 +1104,18 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         source="gym.city", read_only=True, allow_null=True, default=None
     )
     profile_photo_url = serializers.SerializerMethodField()
+    #: Whether this account may open the private insights dashboard.
+    #:
+    #: Answered by the same function the dashboard itself guards with, rather
+    #: than by a second copy of the rule. The client had been checking the
+    #: admin address by hand, which is one of four conditions -- staff, active,
+    #: that address, and an explicit AnalyticsAccess grant -- so it both
+    #: offered the link to accounts the server would refuse and hid it from a
+    #: future admin on a different address.
+    #:
+    #: Discoverability only. Django checks `allowed` again on every request to
+    #: /insights/, and this field grants nothing.
+    can_view_insights = serializers.SerializerMethodField()
     disciplines = DisciplineListField(
         child=serializers.ChoiceField(choices=RepbaseUser.TrainingStyle.choices),
         required=False,
@@ -1141,6 +1153,7 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "bio",
             "profile_photo_url",
             "disciplines",
+            "can_view_insights",
             "gym",
             "gym_name",
             "gym_city",
@@ -1162,6 +1175,7 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "id",
             "profile_photo_url",
             "gym_name",
+            "can_view_insights",
             "gym_city",
             "social_links",
             "created_at",
@@ -1171,6 +1185,22 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_profile_photo_url(self, profile):
         return profile_photo_url_for(profile, self.context.get("request"))
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_can_view_insights(self, profile):
+        # Imported here rather than at module scope: analytics reads models,
+        # and a top-level import would have serializers and analytics waiting
+        # on each other the first time either is loaded.
+        from .analytics import allowed
+
+        request = self.context.get("request")
+        if request is None or not hasattr(request, "user"):
+            return False
+        # Only ever about the person asking. A serializer rendering somebody
+        # else's profile must not report what that person may open.
+        if profile.user_id != getattr(request.user, "id", None):
+            return False
+        return allowed(request.user)
 
 
 
