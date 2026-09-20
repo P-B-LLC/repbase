@@ -78,3 +78,26 @@ remain required; Python tests cannot validate signing, entitlements or iOS UI.
   made platform-neutral without relaxing production path validation.
 - PostgreSQL race execution, native compilation and live APNs delivery are not
   verified. Keep this branch out of production until those gates pass.
+
+## Follow-up verification
+
+- Verified frontend generated-client commit `59ab18a` on GitHub. The user
+  completed the Mac validation script and reported simulator build/launch success.
+- Ran backend commit `3ddf4914b86c57c9bef8360580687c74547ab004` against an
+  isolated PostgreSQL 16 cluster on loopback port 55439: **56 tests passed,
+  zero skips**, including registration/logout and competing-worker concurrency.
+  The run also covered account cleanup, inbox notifications and password resets.
+- `deploy/verify-push-postgres.sh` reproduces this test setup without sourcing
+  production environment values or connecting to the managed database. Its
+  temporary database stops on exit. Verification artifacts were retained at
+  `/tmp/rytivo-push-verification.eqYH6E`; no live records were used.
+- Live server remains at `d37b457`, clean checkout, service active, health HTTP200.
+  No production migration, configuration change, worker activation or APNs send
+  was performed.
+- Deployment is blocked by `core.E006`: moderation is disabled and no provider
+  API key is configured. The user confirmed that they have not obtained a
+  moderation provider key yet. Disclosure confirmation is also false; review it
+  before activation. The existing Apple `.p8` key is unrelated to these gates.
+- Next: securely configure moderation and verify disclosures, rerun deployment
+  checks, deploy with push disabled, then perform controlled TestFlight delivery
+  testing before enabling community alerts. Do not acknowledge/bypass E006/E007.
