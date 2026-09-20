@@ -98,6 +98,26 @@ class AnalyticsTests(RepbaseAPITestMixin, APITestCase):
         client = APIClient(enforce_csrf_checks=True)
         self.assertEqual(client.post('/insights/login/', {'username': 'anything'}).status_code, 403)
 
+    def test_https_login_without_origin_accepts_same_origin_referer(self):
+        self.approve()
+        client = APIClient(enforce_csrf_checks=True)
+        page = client.get('/insights/login/', secure=True)
+        self.assertEqual(page['Referrer-Policy'], 'same-origin')
+        response = client.post('/insights/login/', {
+            'username': self.admin.username, 'password': 'StrongPass!234',
+            'csrfmiddlewaretoken': client.cookies['csrftoken'].value,
+        }, secure=True, HTTP_REFERER='https://testserver/insights/login/')
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, '/insights/')
+
+    def test_https_login_rejects_external_referer_even_with_valid_token(self):
+        client = APIClient(enforce_csrf_checks=True)
+        client.get('/insights/login/', secure=True)
+        response = client.post('/insights/login/', {
+            'csrfmiddlewaretoken': client.cookies['csrftoken'].value,
+        }, secure=True, HTTP_REFERER='https://untrusted.example/')
+        self.assertEqual(response.status_code, 403)
+
     def test_login_rate_limit(self):
         for _ in range(5):
             self.client.post('/insights/login/', {'username': 'unknown', 'password': 'wrong'})

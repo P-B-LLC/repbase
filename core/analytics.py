@@ -86,7 +86,9 @@ class AnalyticsMiddleware:
         if request.path.startswith('/insights/'):
             response['Cache-Control'] = 'no-store, private'
             response['X-Robots-Tag'] = 'noindex, nofollow'
-            response['Referrer-Policy'] = 'no-referrer'
+            # HTTPS forms without an Origin header need a same-origin Referer
+            # for Django's CSRF fallback. Still omit it for external sites.
+            response['Referrer-Policy'] = 'same-origin'
             response['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
             return response
         if not settings.ANALYTICS_ENABLED or not request.path.startswith('/api/v1/'):
