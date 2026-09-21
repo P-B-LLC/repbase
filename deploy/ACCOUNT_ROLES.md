@@ -103,3 +103,20 @@ revocation ordering, and simultaneous Superowner bootstraps. Run with
 `deploy/verify-access-postgres.sh` from a disposable `/tmp` checkout; the script
 clears inherited environment, never sources production secrets, starts its own
 loopback database on port 55447, and stops only that test database afterwards.
+
+## Verification record (2026-09-21)
+
+- 60 local backend tests passed: Superowner, access/portal, and existing analytics.
+- 3 PostgreSQL concurrency tests passed against disposable PostgreSQL 16,
+  source commit `3be59d5`, under `/tmp/rytivo-access-check.xPzLWX/repo`.
+  The test database was dropped and its PostgreSQL server stopped normally.
+  No production environment file, database, service restart, or checkout was used.
+- The web contract was regenerated; 13 web tests and the production build passed.
+  Lint has only the two pre-existing AuthContext warnings, none in the new code.
+- Django checks, schema validation and migration-drift checks passed.
+- iOS compilation/simulator verification is still pending Mac access.
+
+All changes are saved in local `feature/account-roles` branches in the backend,
+web and iOS repositories. They have not been pushed. The first Superowner has
+not been assigned live; lack of operator access to the live database and the
+undeployed migrations are real prerequisites, not something a frontend can bypass.
