@@ -4,6 +4,151 @@ info:
   version: 1.0.0
   description: Versioned API for the Repbase iOS application.
 paths:
+  /api/v1/administration/reports/:
+    get:
+      operationId: moderation_reports_list
+      parameters:
+      - in: query
+        name: kind
+        schema:
+          type: string
+          enum:
+          - comment
+          - post
+        required: true
+      - in: query
+        name: page
+        schema:
+          type: integer
+      tags:
+      - administration
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReportPage'
+          description: ''
+  /api/v1/administration/reports/{kind}/{report_id}/decision/:
+    post:
+      operationId: moderation_decision_create
+      parameters:
+      - in: path
+        name: kind
+        schema:
+          type: string
+        required: true
+      - in: path
+        name: report_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - administration
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ModerationDecisionRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ModerationDecisionRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ModerationDecisionRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionResult'
+          description: ''
+  /api/v1/administration/users/:
+    get:
+      operationId: access_users_list
+      parameters:
+      - in: query
+        name: page
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Username or name, at least 2 characters.
+        required: true
+      tags:
+      - administration
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessUserPage'
+          description: ''
+  /api/v1/administration/users/{profile_id}/access/:
+    get:
+      operationId: user_access_retrieve
+      parameters:
+      - in: path
+        name: profile_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - administration
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessUser'
+          description: ''
+    put:
+      operationId: user_access_update
+      parameters:
+      - in: path
+        name: profile_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - administration
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeAccessRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ChangeAccessRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ChangeAccessRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessUser'
+          description: ''
   /api/v1/auth/login/:
     post:
       operationId: auth_login_create
@@ -2039,6 +2184,21 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/me/access/:
+    get:
+      operationId: my_access_retrieve
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MyAccess'
+          description: ''
   /api/v1/me/highlights/:
     get:
       operationId: me_highlights_list
@@ -5303,6 +5463,54 @@ paths:
           description: No response body
 components:
   schemas:
+    AccessUser:
+      type: object
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RolesEnum'
+        version:
+          type: integer
+          minimum: 0
+        id:
+          type: integer
+          description: Public profile ID, as used by /users/.
+        username:
+          type: string
+        display_name:
+          type: string
+        editable:
+          type: boolean
+      required:
+      - display_name
+      - editable
+      - id
+      - roles
+      - username
+      - version
+    AccessUserPage:
+      type: object
+      properties:
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/AccessUser'
+      required:
+      - count
+      - next
+      - previous
+      - results
     ApplySavedMealRequest:
       type: object
       description: |-
@@ -5438,6 +5646,19 @@ components:
           maxLength: 300
       required:
       - weight_kg
+    Capabilities:
+      type: object
+      properties:
+        manage_roles:
+          type: boolean
+        view_analytics:
+          type: boolean
+        moderate:
+          type: boolean
+      required:
+      - manage_roles
+      - moderate
+      - view_analytics
     CardioMachineEnum:
       enum:
       - treadmill
@@ -5492,6 +5713,23 @@ components:
         * `travel` - Travel
         * `social` - Social
         * `other` - Other
+    ChangeAccessRequest:
+      type: object
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RolesEnum'
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          default: ''
+          maxLength: 500
+      required:
+      - roles
+      - version
     ClearScheduleResult:
       type: object
       description: How many planned days were cleared.
@@ -5694,6 +5932,21 @@ components:
             $ref: '#/components/schemas/DailyStepCountEntryRequest'
       required:
       - days
+    DecisionEnum:
+      enum:
+      - hide
+      - no_action
+      type: string
+      description: |-
+        * `hide` - hide
+        * `no_action` - no_action
+    DecisionResult:
+      type: object
+      properties:
+        resolved:
+          type: boolean
+      required:
+      - resolved
     DisciplinesEnum:
       enum:
       - powerlifting
@@ -6391,6 +6644,72 @@ components:
       required:
       - password
       - username
+    ModerationDecisionRequest:
+      type: object
+      properties:
+        decision:
+          $ref: '#/components/schemas/DecisionEnum'
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+      required:
+      - decision
+      - reason
+    ModerationReport:
+      type: object
+      properties:
+        id:
+          type: integer
+        kind:
+          $ref: '#/components/schemas/ModerationReportKindEnum'
+        author:
+          type: string
+        content:
+          type: string
+        image_url:
+          type: string
+          nullable: true
+        reason:
+          type: string
+        detail:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+      required:
+      - author
+      - content
+      - created_at
+      - detail
+      - id
+      - image_url
+      - kind
+      - reason
+    ModerationReportKindEnum:
+      enum:
+      - post
+      - comment
+      type: string
+      description: |-
+        * `post` - post
+        * `comment` - comment
+    MyAccess:
+      type: object
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/RolesEnum'
+        version:
+          type: integer
+          minimum: 0
+        capabilities:
+          $ref: '#/components/schemas/Capabilities'
+      required:
+      - capabilities
+      - roles
+      - version
     Notification:
       type: object
       description: |-
@@ -9153,6 +9472,28 @@ components:
       - first_name
       - last_name
       - username
+    ReportPage:
+      type: object
+      properties:
+        count:
+          type: integer
+        next:
+          type: string
+          format: uri
+          nullable: true
+        previous:
+          type: string
+          format: uri
+          nullable: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ModerationReport'
+      required:
+      - count
+      - next
+      - previous
+      - results
     ReportPostRequest:
       type: object
       description: |-
@@ -9231,6 +9572,16 @@ components:
       - meal
       - planner
       - workout
+    RolesEnum:
+      enum:
+      - owner
+      - analytics
+      - moderator
+      type: string
+      description: |-
+        * `owner` - owner
+        * `analytics` - analytics
+        * `moderator` - moderator
     SavedFoodIngredient:
       type: object
       properties:

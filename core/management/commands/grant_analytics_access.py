@@ -5,6 +5,8 @@ from django.utils import timezone
 
 from core.analytics import ADMIN_EMAIL
 from core.analytics_models import AnalyticsAccess
+from core.access_models import AccountAccess, AccessAudit, AccessPolicyLock
+from core.access import role_state
 
 
 class Command(BaseCommand):
@@ -17,11 +19,20 @@ class Command(BaseCommand):
 
     @transaction.atomic
     def handle(self, *args, **options):
+        AccessPolicyLock.objects.select_for_update().get(pk=1)
         user = get_user_model().objects.select_for_update().filter(pk=options['user_id']).first()
         if not user:
             raise CommandError('Account not found. This command never creates accounts.')
         if options['revoke']:
+            before = role_state(user)
             AnalyticsAccess.objects.filter(user=user).update(enabled=False)
+            row = AccountAccess.objects.filter(user=user).first()
+            if row and row.analytics:
+                row.analytics = False
+                row.version += 1
+                row.save()
+            AccessAudit.objects.create(target=user, action='analytics_operator_revoke', subject=f'user:{user.pk}',
+                                       before=before, after=role_state(user))
             self.stdout.write('Analytics access revoked.')
             return
         if not options['confirm_email_ownership']:
@@ -34,4 +45,12 @@ class Command(BaseCommand):
         user.save(update_fields=['is_staff'])
         AnalyticsAccess.objects.update_or_create(user=user, defaults={
             'verified_email': ADMIN_EMAIL, 'verified_at': timezone.now(), 'enabled': True})
+        row = AccountAccess.objects.filter(user=user).first()
+        if row and not row.analytics:
+            before = role_state(user)
+            row.analytics = True
+            row.version += 1
+            row.save()
+            AccessAudit.objects.create(target=user, action='analytics_operator_grant', subject=f'user:{user.pk}',
+                                       before=before, after=role_state(user))
         self.stdout.write('Analytics access granted. No superuser or model permissions were granted.')

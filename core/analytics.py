@@ -26,10 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 def allowed(user):
-    return bool(user.is_authenticated and user.is_active and user.is_staff
-        and user.email.casefold() == ADMIN_EMAIL
-        and AnalyticsAccess.objects.filter(user=user, enabled=True,
-            verified_email=ADMIN_EMAIL, verified_at__lte=timezone.now()).exists())
+    from .access import capabilities
+    return capabilities(user)['view_analytics']
 
 
 class InsightsLoginForm(AuthenticationForm):
@@ -71,11 +69,12 @@ class AnalyticsMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        if request.path.startswith('/insights/') and not settings.DEBUG and not settings.ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED:
+        private_workspace = request.path.startswith(('/insights/', '/access/'))
+        if private_workspace and not settings.DEBUG and not settings.ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED:
             response = HttpResponse('Private insights requires a configured shared login rate limit.', status=503)
             response['Cache-Control'] = 'no-store'
             return response
-        if request.path.startswith('/insights/') and not settings.DEBUG and not (
+        if private_workspace and not settings.DEBUG and not (
             settings.SESSION_COOKIE_SECURE and settings.CSRF_COOKIE_SECURE
         ):
             response = HttpResponse('Private insights requires secure session and CSRF cookies.', status=503)
@@ -83,13 +82,13 @@ class AnalyticsMiddleware:
             return response
         start = time.perf_counter()
         response = self.get_response(request)
-        if request.path.startswith('/insights/'):
+        if private_workspace:
             response['Cache-Control'] = 'no-store, private'
             response['X-Robots-Tag'] = 'noindex, nofollow'
             # HTTPS forms without an Origin header need a same-origin Referer
             # for Django's CSRF fallback. Still omit it for external sites.
             response['Referrer-Policy'] = 'same-origin'
-            response['Content-Security-Policy'] = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+            response['Content-Security-Policy'] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
             return response
         if not settings.ANALYTICS_ENABLED or not request.path.startswith('/api/v1/'):
             return response

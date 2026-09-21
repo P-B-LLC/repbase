@@ -2,6 +2,26 @@ from django.contrib import admin
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
+from .access_models import AccessAudit
+
+
+@admin.register(AccessAudit)
+class AccessAuditAdmin(admin.ModelAdmin):
+    list_display = ('created_at', 'actor', 'target', 'action', 'subject')
+    list_filter = ('action',)
+    readonly_fields = ('actor', 'target', 'action', 'subject', 'before', 'after', 'reason', 'created_at')
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    def has_view_permission(self, request, obj=None):
+        return request.user.is_active and request.user.is_superuser
 
 from .models import (
     BodyWeightEntry,

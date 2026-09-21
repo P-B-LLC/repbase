@@ -47,13 +47,13 @@ class AnalyticsTests(RepbaseAPITestMixin, APITestCase):
         self.client.force_login(self.admin)
         self.assertEqual(self.client.get('/insights/').status_code, 403)
 
-    def test_other_email_even_superuser_is_denied(self):
+    def test_server_superuser_can_access_without_email_matching(self):
         self.approve()
         self.admin.email = 'other@example.com'
         self.admin.is_superuser = True
         self.admin.save()
         self.client.force_login(self.admin)
-        self.assertEqual(self.client.get('/insights/').status_code, 403)
+        self.assertEqual(self.client.get('/insights/').status_code, 200)
 
     def test_approved_dashboard_renders_and_has_security_headers(self):
         self.approve()

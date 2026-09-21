@@ -1,5 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
+from .access_views import (MyAccessView, AccessUsersView, UserAccessView,
+                           ModerationReportsView, ModerationDecisionView)
 from .push_views import PushDeviceRegistrationView
 
 from .views import (
@@ -83,6 +85,11 @@ router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
 urlpatterns = [
+    path('me/access/', MyAccessView.as_view(), name='my-access'),
+    path('administration/users/', AccessUsersView.as_view(), name='access-users'),
+    path('administration/users/<int:profile_id>/access/', UserAccessView.as_view(), name='user-access'),
+    path('administration/reports/', ModerationReportsView.as_view(), name='moderation-reports'),
+    path('administration/reports/<str:kind>/<int:report_id>/decision/', ModerationDecisionView.as_view(), name='moderation-decision'),
     path("push/devices/", PushDeviceRegistrationView.as_view(), name="push-device-registration"),
     path(
         "sessions/previous-sets/",
