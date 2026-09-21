@@ -17,6 +17,8 @@ class Command(BaseCommand):
         if not options['confirm_account_ownership']:
             raise CommandError('Verify the account independently before supplying --confirm-account-ownership.')
         AccessPolicyLock.objects.select_for_update().get(pk=1)
+        if AccountAccess.objects.filter(superowner=True).exists():
+            raise CommandError('A Superowner is configured. Ask that account to appoint Owners in the app.')
         user = get_user_model().objects.filter(username=options['username'], is_active=True).first()
         if not user:
             raise CommandError('Active account not found; no account was created.')

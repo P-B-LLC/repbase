@@ -37,7 +37,7 @@ class AccessTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(AccessAudit.objects.get().actor, self.admin)
         self.as_member()
         self.assertEqual(self.client.get('/api/v1/me/access/').data['capabilities'],
-                         dict(manage_roles=False, view_analytics=True, moderate=True))
+                         dict(manage_roles=False, manage_owners=False, view_analytics=True, moderate=True))
 
     def test_regular_staff_and_moderator_cannot_assign_roles(self):
         for staff, role in [(False, None), (True, None), (False, 'moderator'), (False, 'analytics')]:

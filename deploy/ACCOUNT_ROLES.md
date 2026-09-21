@@ -2,7 +2,7 @@
 
 Implementation branch: `feature/account-roles`, based on `insights-cache`
 (`464dc61`). The existing analytics/push migrations on that branch are prerequisites;
-do not cherry-pick migration 0061 onto a database missing 0059/0060.
+do not cherry-pick migrations 0061/0062 onto a database missing 0059/0060.
 
 ## Authority
 
@@ -11,18 +11,26 @@ do not cherry-pick migration 0061 onto a database missing 0059/0060.
 | Standard account | No | No | No |
 | Analytics | No | Yes | No |
 | Moderator | No | No | Yes |
-| Owner | Yes | Yes | Yes |
-| Active Django superuser | Yes | Yes | Yes |
+| Owner | Analytics/Moderator on lower-level accounts | Yes | Yes |
+| Superowner (one protected account) | All lower-level roles, including Owner | Yes | Yes |
+| Active Django superuser | Owner bootstrap only before a Superowner exists; lower-level roles afterwards | Yes | Yes |
 
 Multiple roles may be selected. These app roles never set `is_staff`,
 `is_superuser`, Django groups, or model permissions. Ordinary staff status alone
 does not grant any app role. No role grants access to another person's private
 workout, food, weight, route, or calendar records.
 
-Owner can change another active, non-superuser account, not their own access.
-Removing all roles restores standard access. Server superusers are changed only
-by the operator. Because an Owner cannot demote themself, removing another Owner
-cannot remove the last active Owner through this workflow.
+Owner can change another active lower-level account, not an Owner, Superowner,
+server superuser, or themself. Superowner can appoint and demote Owners but cannot
+change its own protected role. Removing all assignable roles restores standard
+access. No API, profile edit, or portal form can assign Superowner; even a Django
+superuser cannot alter it through these endpoints. The database permits only one
+Superowner, including inactive accounts. Recovery/transfer requires deliberate
+server-operator work, not automatic fallback to a lower role.
+
+The Superowner is app-level authority, not priority scheduling, unrestricted
+access to private health records, or exemption from content-safety rules. A
+server/database operator remains technically capable of out-of-band recovery.
 
 The existing explicitly verified admin analytics grant remains valid until its
 account first receives a versioned role record. From then on that role record is
@@ -61,16 +69,22 @@ external storage; a database operator can still change it.
    updated `rytivo-web/deploy/rytivo.app.nginx.conf`: `/access/` must proxy to
    Django rather than the React SPA; `/access/login/` must be rate limited.
    Check `nginx -t` before reloading.
-3. Existing active server superusers can assign the first Owner. Alternatively,
-   after independently verifying the exact account, the operator can run:
+3. The requested initial Superowner is `Rytivo_Official`, with email
+   `admin@rytivo.app`. This is a deployment instruction, **not a default grant**
+   based on a username/email. Confirm its auth-user ID against the live database
+   and verify ownership independently. Then dry-run and execute:
 
    ```sh
-   python manage.py grant_app_owner --username EXACT_USERNAME --confirm-account-ownership
+   python manage.py grant_app_superowner --username Rytivo_Official --email admin@rytivo.app --user-id VERIFIED_ID --dry-run
+   python manage.py grant_app_superowner --username Rytivo_Official --email admin@rytivo.app --user-id VERIFIED_ID --confirm-account-ownership
    ```
 
-   This command never creates a user or grants Django staff/superuser rights.
-   It records the bootstrap in the audit. Do not promote someone just because
-   they registered an admin-looking email address.
+   Both require migrations 0061/0062 first. The command checks exact username,
+   email, immutable ID, active status, app profile, and ambiguous identity
+   matches. It never creates an account, changes credentials, sets Django
+   staff/superuser flags, or replaces an existing different Superowner. Repeat
+   runs for the same account are no-ops. The grant is audited.
+   The legacy `grant_app_owner` command refuses to run once a Superowner exists.
 4. Deploy the web production build, then verify Owner grant/revoke, Analytics
    dashboard access, Moderator queue, standard-account denials, and CSRF on the
    hosted HTTPS origin. Revocation must work in an already-open session.
@@ -78,6 +92,14 @@ external storage; a database operator can still change it.
    light/dark appearance, and Done dismissal. Mac SSH was unavailable during
    implementation, so the iOS build/simulator check remains outstanding.
 
-No production migrations, deployments, account promotions, or pushes were run
-as part of this implementation. Backend tests use isolated SQLite test databases;
-PostgreSQL concurrent-write/row-lock verification is still required before beta.
+No production migrations, deployments, account promotions, or pushes were run.
+The live server was inspected read-only: deployed commit `464dc61`, with no role
+models yet. SSH as `django` works, but `/etc/repbase.env` is root-only and sudo
+requires operator authorization. The live account ID/email match has therefore
+**not** been verified and Superowner has **not** been assigned.
+
+`core.test_access_concurrency` verifies PostgreSQL write/version conflicts,
+revocation ordering, and simultaneous Superowner bootstraps. Run with
+`deploy/verify-access-postgres.sh` from a disposable `/tmp` checkout; the script
+clears inherited environment, never sources production secrets, starts its own
+loopback database on port 55447, and stops only that test database afterwards.

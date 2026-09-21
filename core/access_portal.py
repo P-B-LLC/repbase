@@ -41,7 +41,7 @@ class AccessLogoutView(LogoutView):
 
 class RoleForm(forms.Form):
     roles = forms.MultipleChoiceField(required=False, widget=forms.CheckboxSelectMultiple,
-        choices=[('owner', 'Owner — assign roles, analytics, and moderation'),
+        choices=[('owner', 'Owner — manage lower-level roles, analytics, and moderation'),
                  ('analytics', 'Analytics — private aggregate dashboard only'),
                  ('moderator', 'Moderator — review and hide reported content')])
     version = forms.IntegerField(min_value=0, widget=forms.HiddenInput)
@@ -80,6 +80,8 @@ def edit_access(request, profile_id):
     profile = get_object_or_404(RepbaseUser.objects.select_related('user'), pk=profile_id)
     account = user_data(profile, request.user)
     form = RoleForm(request.POST if request.method == 'POST' else None, initial=role_state(profile.user))
+    if not capabilities(request.user)['manage_owners']:
+        form.fields['roles'].choices = [(key, title) for key, title in form.fields['roles'].choices if key != 'owner']
     status = 200
     if request.method == 'POST' and form.is_valid():
         try:

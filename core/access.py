@@ -11,6 +11,7 @@ from rest_framework.exceptions import PermissionDenied, ValidationError, APIExce
 from .access_models import AccountAccess, AccessAudit, AccessPolicyLock
 
 ROLES = ('owner', 'analytics', 'moderator')
+ALL_ROLES = ('superowner',) + ROLES
 
 
 def roles_for(user):
@@ -26,15 +27,28 @@ def roles_for(user):
                 and AnalyticsAccess.objects.filter(user_id=user.pk, enabled=True,
                     verified_email='admin@rytivo.app', verified_at__lte=timezone.now()).exists()):
             return ['analytics']
-    return [role for role in ROLES if row and getattr(row, role)]
+    return [role for role in ALL_ROLES if row and getattr(row, role)]
 
 
 def capabilities(user):
     roles = roles_for(user)
     active = user.is_authenticated and user.is_active
-    owner = bool(active and (user.is_superuser or 'owner' in roles))
-    return dict(manage_roles=owner, view_analytics=owner or 'analytics' in roles,
+    superowner = 'superowner' in roles
+    owner = bool(active and (user.is_superuser or 'owner' in roles or superowner))
+    # Server-admin fallback bootstraps an installation with no Superowner.
+    # Once one exists, no other account can appoint or change Owners via the app.
+    manage_owners = bool(active and (superowner or (
+        user.is_superuser and not AccountAccess.objects.filter(superowner=True).exists())))
+    return dict(manage_roles=owner, manage_owners=manage_owners, view_analytics=owner or 'analytics' in roles,
                 moderate=owner or 'moderator' in roles)
+
+
+def can_edit_access(actor, target):
+    grants = capabilities(actor)
+    target_roles = roles_for(target)
+    return bool(grants['manage_roles'] and target.is_active and not target.is_superuser
+                and actor.pk != target.pk and 'superowner' not in target_roles
+                and ('owner' not in target_roles or grants['manage_owners']))
 
 
 def require(user, capability):
@@ -63,12 +77,16 @@ def assign_roles(actor, target, roles, version, reason):
     require(actor, 'manage_roles')
     target = get_user_model().objects.select_for_update().get(pk=target.pk)
     if actor.pk == target.pk:
-        raise ValidationError('Ask another Owner to change your access.')
+        raise ValidationError('You cannot change your own access.')
     if target.is_superuser:
         raise ValidationError('Server administrator access is managed by the server operator.')
     if not target.is_active:
         raise ValidationError('Inactive accounts cannot receive role changes.')
     before = role_state(target)
+    if 'superowner' in before['roles']:
+        raise PermissionDenied('Superowner access is protected and cannot be changed in the app.')
+    if ('owner' in before['roles'] or 'owner' in roles) and not capabilities(actor)['manage_owners']:
+        raise PermissionDenied('Only the Superowner can appoint or change Owners.')
     if before['version'] != version:
         raise AccessConflict()
     if set(before['roles']) == set(roles):

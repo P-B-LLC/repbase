@@ -7,19 +7,20 @@ from rest_framework.pagination import PageNumberPagination
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .access import ROLES, assign_roles, capabilities, require, role_state
+from .access import ROLES, ALL_ROLES, assign_roles, capabilities, require, role_state, can_edit_access
 from .access_moderation import decide_report, open_reports, report_data
 from .models import RepbaseUser
 
 
 class CapabilitiesSerializer(serializers.Serializer):
     manage_roles = serializers.BooleanField()
+    manage_owners = serializers.BooleanField()
     view_analytics = serializers.BooleanField()
     moderate = serializers.BooleanField()
 
 
 class AccountAccessSerializer(serializers.Serializer):
-    roles = serializers.ListField(child=serializers.ChoiceField(choices=ROLES))
+    roles = serializers.ListField(child=serializers.ChoiceField(choices=ALL_ROLES))
     version = serializers.IntegerField(min_value=0)
 
 
@@ -28,6 +29,8 @@ class MyAccessSerializer(AccountAccessSerializer):
 
 
 class ChangeAccessSerializer(AccountAccessSerializer):
+    # The protected top-level role is never assignable over an HTTP endpoint.
+    roles = serializers.ListField(child=serializers.ChoiceField(choices=ROLES))
     reason = serializers.CharField(max_length=500, allow_blank=True, required=False, default='')
 
     def validate_roles(self, value):
@@ -54,7 +57,7 @@ def user_data(profile, actor):
     user = profile.user
     return dict(id=profile.pk, username=user.username,
                 display_name=user.get_full_name() or user.username,
-                editable=user.is_active and not user.is_superuser and user.pk != actor.pk,
+                editable=can_edit_access(actor, user),
                 **role_state(user))
 
 

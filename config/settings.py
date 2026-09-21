@@ -267,6 +267,8 @@ SPECTACULAR_SETTINGS = {
     # The names kept are the ones that say what the value is. "Machine" alone
     # does not, and "Activity" reads like something other than a workout type.
     'ENUM_NAME_OVERRIDES': {
+        'AppRoleEnum': 'core.access.ALL_ROLES',
+        'AssignableAppRoleEnum': 'core.access.ROLES',
         'WorkoutTypeEnum': 'core.models.WorkoutTypeChoices.choices',
         'CardioMachineEnum': 'core.models.CardioMachine.choices',
     },

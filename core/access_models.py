@@ -5,10 +5,15 @@ from django.db import models
 
 class AccountAccess(models.Model):
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    superowner = models.BooleanField(default=False)
     owner = models.BooleanField(default=False)
     analytics = models.BooleanField(default=False)
     moderator = models.BooleanField(default=False)
     version = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['superowner'], condition=models.Q(superowner=True),
+                                               name='one_app_superowner')]
 
 
 class AccessPolicyLock(models.Model):
