@@ -212,3 +212,106 @@ class AnalyticsTests(RepbaseAPITestMixin, APITestCase):
         call_command('prune_analytics', stdout=StringIO())
         self.assertEqual(DailyActiveAccount.objects.count(), 1)
         self.assertEqual(DailyApiMetric.objects.get().endpoint, 'current')
+
+
+@override_settings(DEBUG=True, ANALYTICS_ENABLED=True)
+class DashboardAnswersSoWhatTests(RepbaseAPITestMixin, APITestCase):
+    """Every figure has to survive the question a total cannot answer.
+
+    The page used to report "14,820 requests" and stop, which is a report
+    rather than an instrument: the number is neither good nor bad on its own
+    and nobody can act on it. These pin the parts that make it actionable --
+    the comparison, the two ratios, and the list of what to open first.
+    """
+
+    def setUp(self):
+        self.admin, self.profile, self.token = self.create_account('so-what-owner')
+        self.admin.email = 'admin@rytivo.app'
+        self.admin.is_staff = True
+        self.admin.save()
+        AnalyticsAccess.objects.create(user=self.admin, verified_email='admin@rytivo.app',
+                                       verified_at=timezone.now(), enabled=True)
+        self.client.force_login(self.admin)
+        self.today = timezone.now().date()
+
+    def metric(self, day, requests=1, server_errors=0, total_ms=100, max_ms=100, endpoint='planner-detail'):
+        return DailyApiMetric.objects.create(day=day, endpoint=endpoint, method='GET',
+            requests=requests, server_errors=server_errors, total_ms=total_ms, max_ms=max_ms)
+
+    def dashboard(self, days=7):
+        return self.client.get(reverse('insights-dashboard'), {'days': days})
+
+    def test_a_total_is_compared_with_the_period_before_it(self):
+        self.metric(self.today, requests=100, total_ms=100)
+        self.metric(self.today - timedelta(days=8), requests=50, total_ms=50)
+
+        deltas = self.dashboard().context['deltas']
+        self.assertEqual(deltas['requests']['text'], '+100% vs previous 7 days')
+        self.assertEqual(deltas['requests']['tone'], 'good')
+
+    def test_a_rise_in_errors_is_not_good_news(self):
+        # Direction alone is not the signal. More requests is a rise worth
+        # having; more failures is the same arithmetic meaning the opposite.
+        self.metric(self.today, requests=100, server_errors=10, total_ms=100)
+        self.metric(self.today - timedelta(days=8), requests=100, server_errors=1, total_ms=100)
+
+        self.assertEqual(self.dashboard().context['deltas']['error_rate']['tone'], 'bad')
+
+    def test_an_empty_previous_period_says_so_rather_than_inventing_a_rise(self):
+        self.metric(self.today, requests=100, total_ms=100)
+
+        delta = self.dashboard().context['deltas']['requests']
+        self.assertEqual(delta['text'], 'no baseline')
+        self.assertEqual(delta['tone'], 'flat')
+
+    def test_a_failing_route_is_listed_first_with_something_to_do(self):
+        self.metric(self.today, requests=200, total_ms=2000, max_ms=20, endpoint='quiet-route')
+        self.metric(self.today, requests=10, server_errors=3, total_ms=100, max_ms=50, endpoint='breaking-route')
+
+        attention = self.dashboard().context['attention']
+        self.assertEqual(attention[0]['endpoint'], 'breaking-route')
+        self.assertEqual(attention[0]['severity'], 'error')
+        self.assertTrue(attention[0]['action'])
+
+    def test_a_slow_route_is_caught_by_its_worst_case_not_its_average(self):
+        # The whole point of keeping max_ms. A route averaging 60ms with one
+        # 9-second request is a real problem that the average hides, and the
+        # average was all this page had ever shown.
+        self.metric(self.today, requests=300, total_ms=18000, max_ms=9000, endpoint='occasionally-awful')
+
+        attention = self.dashboard().context['attention']
+        self.assertEqual(attention[0]['severity'], 'slow')
+        self.assertIn('9000', attention[0]['headline'])
+
+    def test_a_healthy_route_is_not_listed(self):
+        self.metric(self.today, requests=500, total_ms=25000, max_ms=90, endpoint='fine-route')
+        self.assertEqual(self.dashboard().context['attention'], [])
+
+    def test_returning_and_lapsed_accounts_are_counted_separately(self):
+        stayed, _, _ = self.create_account('stayed')
+        left, _, _ = self.create_account('left')
+        arrived, _, _ = self.create_account('arrived')
+        for user in (stayed, left):
+            DailyActiveAccount.objects.create(day=self.today - timedelta(days=8), user=user)
+        for user in (stayed, arrived):
+            DailyActiveAccount.objects.create(day=self.today, user=user)
+
+        context = self.dashboard().context
+        self.assertEqual(context['returning'], 1)
+        self.assertEqual(context['lapsed'], 1)
+        self.assertEqual(context['new_to_api'], 1)
+        self.assertEqual(context['return_rate'], 50)
+
+    def test_a_new_account_that_did_nothing_counts_against_activation(self):
+        from .models import WorkoutSession
+        started, started_profile, _ = self.create_account('started')
+        self.create_account('never-started')
+        WorkoutSession.objects.create(repbase_user=started_profile, status='completed',
+                                      started_at=timezone.now(), ended_at=timezone.now())
+
+        context = self.dashboard().context
+        # Three accounts were created today: the two here and setUp's owner,
+        # which is staff and so excluded.
+        self.assertEqual(context['signups'], 2)
+        self.assertEqual(context['activated'], 1)
+        self.assertEqual(context['activation_rate'], 50)
