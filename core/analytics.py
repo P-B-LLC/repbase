@@ -10,7 +10,7 @@ from django.contrib.auth.decorators import login_required
 from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, transaction
-from django.db.models import Count, F, Max, Sum
+from django.db.models import Count, F, Max, Q, Sum
 from django.db.models.functions import Greatest
 from django.http import HttpResponseForbidden, HttpResponse
 from django.shortcuts import render
@@ -18,11 +18,27 @@ from django.utils import timezone
 from django.utils.crypto import salted_hmac
 from django.views.decorators.cache import never_cache
 
-from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric
+from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric, RecentApiMetric
 from .models import RepbaseUser, WorkoutSession, PlannerEntry, FoodMeal
 
 ADMIN_EMAIL = 'admin@rytivo.app'
 logger = logging.getLogger(__name__)
+
+#: How finely the live counters are kept. Small enough that a failure shows
+#: up while somebody is still looking at the page, large enough that a busy
+#: route is one row per bucket rather than one per request.
+BUCKET_MINUTES = 5
+
+#: How far back "now" reaches on the page. Long enough that a quiet app is
+#: not a blank panel, short enough that nothing here is yesterday's news --
+#: and every item says when it last happened, so age is never hidden.
+LIVE_WINDOW_MINUTES = 360
+
+
+def bucket_for(moment):
+    """The five-minute bucket a moment belongs to, in UTC."""
+    stamp = moment.astimezone(datetime_timezone.utc).replace(second=0, microsecond=0)
+    return stamp - timedelta(minutes=stamp.minute % BUCKET_MINUTES)
 
 
 def allowed(user):
@@ -101,12 +117,19 @@ class AnalyticsMiddleware:
         try:
             # Savepoint prevents a metrics failure poisoning an outer transaction.
             with transaction.atomic():
-                row, _ = DailyApiMetric.objects.get_or_create(day=day, endpoint=endpoint, method=method)
-                DailyApiMetric.objects.filter(pk=row.pk).update(
+                counters = dict(
                     requests=F('requests') + 1,
                     client_errors=F('client_errors') + int(400 <= response.status_code < 500),
                     server_errors=F('server_errors') + int(response.status_code >= 500),
                     total_ms=F('total_ms') + elapsed, max_ms=Greatest(F('max_ms'), elapsed))
+                row, _ = DailyApiMetric.objects.get_or_create(day=day, endpoint=endpoint, method=method)
+                DailyApiMetric.objects.filter(pk=row.pk).update(**counters)
+                # The same counters again at a granularity worth alerting on.
+                # Written here rather than rolled up later, because a roll-up
+                # is only as live as its schedule, which is the problem.
+                recent, _ = RecentApiMetric.objects.get_or_create(
+                    bucket=bucket_for(timezone.now()), endpoint=endpoint, method=method)
+                RecentApiMetric.objects.filter(pk=recent.pk).update(**counters)
                 user = getattr(request, 'user', None)
                 if user and user.is_authenticated and not user.is_staff and response.status_code < 400:
                     DailyActiveAccount.objects.get_or_create(day=day, user=user)
@@ -184,11 +207,16 @@ def _chart(trend, height=170, width=760):
 
 
 def _attention(rows, slow_ms):
-    """Routes worth opening, each with the reason and the next move stated.
+    """Routes worth opening, each with the reason, the time and the next move.
 
     Ordered the way somebody would actually work: anything returning 5xx
     first, then anything slow enough to be felt. A route appears once, under
     its worse problem, so the list stays short enough to finish.
+
+    `last_error` and `last_slow` come from the five-minute buckets, so each
+    line says when it last happened rather than only that it did. A panel
+    that cannot distinguish "two minutes ago" from "this morning" is not
+    something to run an incident from.
     """
     items = []
     for row in rows:
@@ -199,6 +227,7 @@ def _attention(rows, slow_ms):
                 'headline': '%d server error%s' % (row['errors'], '' if row['errors'] == 1 else 's'),
                 'detail': '%s%% of %s requests failed outright.' % (share, row['count']),
                 'action': 'Read this route’s traceback before anything else here.',
+                'at': row.get('last_error'),
             })
         elif row['max_ms'] >= slow_ms:
             items.append({
@@ -206,8 +235,27 @@ def _attention(rows, slow_ms):
                 'headline': '%s ms worst case' % row['max_ms'],
                 'detail': 'Averages %s ms, so the slow path is rare rather than usual.' % row['average_ms'],
                 'action': 'Look for an unbounded query or a call made without a timeout.',
+                'at': row.get('last_slow'),
             })
     return items[:8]
+
+
+def _live_rows(slow_ms, now):
+    """Route counters over the live window, from the five-minute buckets."""
+    since = bucket_for(now) - timedelta(minutes=LIVE_WINDOW_MINUTES)
+    # `worst_ms` rather than `max_ms`: an annotation named after the column it
+    # aggregates shadows that column, so the filter below would have asked
+    # SQL to compare against MAX() inside its own aggregate.
+    rows = list(RecentApiMetric.objects.filter(bucket__gte=since).values('endpoint', 'method').annotate(
+        count=Sum('requests'), errors=Sum('server_errors'), rejected=Sum('client_errors'),
+        total_ms=Sum('total_ms'), worst_ms=Max('max_ms'),
+        last_error=Max('bucket', filter=Q(server_errors__gt=0)),
+        last_slow=Max('bucket', filter=Q(max_ms__gte=slow_ms)),
+    ).order_by('-errors', '-worst_ms', 'endpoint', 'method')[:25])
+    for row in rows:
+        row['max_ms'] = row.pop('worst_ms')
+        row['average_ms'] = round(row['total_ms'] / row['count']) if row['count'] else 0
+    return rows
 
 
 @never_cache
@@ -219,7 +267,8 @@ def dashboard(request):
     if period not in ('7', '30'):
         return HttpResponse('Choose a 7- or 30-day period.', status=400)
     days = int(period)
-    today = timezone.now().astimezone(datetime_timezone.utc).date()
+    now = timezone.now()
+    today = now.astimezone(datetime_timezone.utc).date()
     since = today - timedelta(days=days - 1)
     # The same length again, immediately before, so a comparison is like for
     # like rather than this week against an arbitrary stretch of history.
@@ -313,7 +362,8 @@ def dashboard(request):
         'return_rate': round(len(returning) / len(was_active) * 100) if was_active else None,
         'activated': len(activated),
         'activation_rate': round(len(activated) / signups * 100) if signups else None,
-        'attention': _attention(rows, slow_ms),
+        'attention': _attention(_live_rows(slow_ms, now), slow_ms),
+        'live_minutes': LIVE_WINDOW_MINUTES, 'live_as_of': now,
         'chart': _chart(trend),
         'tasks': PlannerEntry.objects.filter(kind='task', completed_at__date__gte=since,
             completed_at__date__lte=today, owner__user__is_staff=False).count(),

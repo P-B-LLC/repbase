@@ -1,4 +1,10 @@
 {% extends "insights/base.html" %}
+{# Reloads itself, because a page somebody has to remember to refresh is not #}
+{# live. `meta refresh` rather than a timer, since the CSP forbids script -- #}
+{# and on the dashboard only: the login page must never reload under someone #}
+{# mid-password. The session expiry is absolute from sign-in, so this cannot #}
+{# hold a session open indefinitely. #}
+{% block head %}<meta http-equiv="refresh" content="60">{% endblock %}
 {% block header %}<form method="post" action="{% url 'insights-logout' %}">{% csrf_token %}<button type="submit">Sign out</button></form>{% endblock %}
 {% block content %}
 {% if preview %}<div class="notice">DESIGN PREVIEW · All figures below are synthetic sample data, not production analytics.</div>{% endif %}
@@ -16,22 +22,30 @@
 
 {# What to do, before what happened. A dashboard that opens with totals asks #}
 {# to be read; one that opens with the exceptions asks to be worked through. #}
+{# Live, and on its own clock. Everything else on this page is the 7- or #}
+{# 30-day window; this reads five-minute buckets over the last few hours, #}
+{# because "is it broken now" is a different question from "how was the #}
+{# week" and a daily total cannot answer it. #}
 <section class="attention-block" aria-label="Needs attention">
-  <h2>Needs attention</h2>
+  <div class="live-head">
+    <h2>Needs attention</h2>
+    <span class="live"><span class="dot" aria-hidden="true"></span>Live · last {{ live_minutes }} minutes · {{ live_as_of|date:"H:i" }} UTC</span>
+  </div>
   {% if attention %}
-  <p class="note">Routes returning server errors, then routes slow enough to be felt (worst case over {{ slow_ms }} ms). Route names contain no customer IDs.</p>
+  <p class="note">Routes returning server errors, then routes slow enough to be felt (worst case over {{ slow_ms }} ms). Each says when it last happened. Route names contain no customer IDs.</p>
   <ul class="attention">
     {% for item in attention %}
     <li class="item {{ item.severity }}">
       <div class="item-head"><span class="sev">{% if item.severity == 'error' %}Failing{% else %}Slow{% endif %}</span><code>{{ item.method }} {{ item.endpoint }}</code></div>
       <div class="item-value">{{ item.headline }}</div>
+      {% if item.at %}<div class="when">last at {{ item.at|date:"H:i" }} UTC</div>{% endif %}
       <p class="note">{{ item.detail }}</p>
       <p class="do">{{ item.action }}</p>
     </li>
     {% endfor %}
   </ul>
   {% else %}
-  <div class="all-clear"><strong>Nothing is failing or slow.</strong><p class="note">No route returned a server error or exceeded {{ slow_ms }} ms in this window. With collection off, or on a quiet period, this is also what no data looks like.</p></div>
+  <div class="all-clear"><strong>Nothing failing or slow in the last {{ live_minutes }} minutes.</strong><p class="note">No route returned a server error or exceeded {{ slow_ms }} ms. With collection off, or on a genuinely quiet period, this is also what no data looks like—a clear panel is not by itself proof that everything is healthy.</p></div>
   {% endif %}
 </section>
 

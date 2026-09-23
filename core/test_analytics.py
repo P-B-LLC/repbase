@@ -15,7 +15,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase, APIClient
 
 from .analytics import AnalyticsMiddleware
-from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric
+from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric, RecentApiMetric
 from .tests import RepbaseAPITestMixin
 
 
@@ -239,7 +239,7 @@ class DashboardAnswersSoWhatTests(RepbaseAPITestMixin, APITestCase):
             requests=requests, server_errors=server_errors, total_ms=total_ms, max_ms=max_ms)
 
     def dashboard(self, days=7):
-        return self.client.get(reverse('insights-dashboard'), {'days': days})
+        return self.client.get('/insights/', {'days': days})
 
     def test_a_total_is_compared_with_the_period_before_it(self):
         self.metric(self.today, requests=100, total_ms=100)
@@ -263,29 +263,6 @@ class DashboardAnswersSoWhatTests(RepbaseAPITestMixin, APITestCase):
         delta = self.dashboard().context['deltas']['requests']
         self.assertEqual(delta['text'], 'no baseline')
         self.assertEqual(delta['tone'], 'flat')
-
-    def test_a_failing_route_is_listed_first_with_something_to_do(self):
-        self.metric(self.today, requests=200, total_ms=2000, max_ms=20, endpoint='quiet-route')
-        self.metric(self.today, requests=10, server_errors=3, total_ms=100, max_ms=50, endpoint='breaking-route')
-
-        attention = self.dashboard().context['attention']
-        self.assertEqual(attention[0]['endpoint'], 'breaking-route')
-        self.assertEqual(attention[0]['severity'], 'error')
-        self.assertTrue(attention[0]['action'])
-
-    def test_a_slow_route_is_caught_by_its_worst_case_not_its_average(self):
-        # The whole point of keeping max_ms. A route averaging 60ms with one
-        # 9-second request is a real problem that the average hides, and the
-        # average was all this page had ever shown.
-        self.metric(self.today, requests=300, total_ms=18000, max_ms=9000, endpoint='occasionally-awful')
-
-        attention = self.dashboard().context['attention']
-        self.assertEqual(attention[0]['severity'], 'slow')
-        self.assertIn('9000', attention[0]['headline'])
-
-    def test_a_healthy_route_is_not_listed(self):
-        self.metric(self.today, requests=500, total_ms=25000, max_ms=90, endpoint='fine-route')
-        self.assertEqual(self.dashboard().context['attention'], [])
 
     def test_returning_and_lapsed_accounts_are_counted_separately(self):
         stayed, _, _ = self.create_account('stayed')
@@ -315,3 +292,86 @@ class DashboardAnswersSoWhatTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(context['signups'], 2)
         self.assertEqual(context['activated'], 1)
         self.assertEqual(context['activation_rate'], 50)
+
+
+@override_settings(DEBUG=True, ANALYTICS_ENABLED=True)
+class NeedsAttentionIsLiveTests(RepbaseAPITestMixin, APITestCase):
+    """"Is it broken now" is not a question a daily total can answer.
+
+    The counters were kept one row per route per day, so two 500s might have
+    been this minute or twenty hours ago, and `max_ms` was a running maximum
+    for the whole day -- one bad request at 03:00 left a route looking slow
+    until midnight. Attention now reads five-minute buckets over a few hours
+    and says when each thing last happened.
+    """
+
+    def setUp(self):
+        self.admin, self.profile, self.token = self.create_account('live-owner')
+        self.admin.email = 'admin@rytivo.app'
+        self.admin.is_staff = True
+        self.admin.save()
+        AnalyticsAccess.objects.create(user=self.admin, verified_email='admin@rytivo.app',
+                                       verified_at=timezone.now(), enabled=True)
+        self.client.force_login(self.admin)
+        self.now = timezone.now()
+
+    def bucket(self, minutes_ago, server_errors=0, max_ms=50, requests=10, endpoint='planner-detail'):
+        from .analytics import bucket_for
+        return RecentApiMetric.objects.create(
+            bucket=bucket_for(self.now - timedelta(minutes=minutes_ago)),
+            endpoint=endpoint, method='GET', requests=requests,
+            server_errors=server_errors, total_ms=requests * 50, max_ms=max_ms)
+
+    def attention(self):
+        return self.client.get('/insights/').context['attention']
+
+    def test_a_failure_minutes_ago_is_listed(self):
+        self.bucket(minutes_ago=5, server_errors=2)
+        items = self.attention()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['severity'], 'error')
+        self.assertIsNotNone(items[0]['at'], 'the page has to say when')
+
+    def test_yesterdays_failure_is_not_presented_as_now(self):
+        # The old behaviour: a 500 from twenty hours ago was indistinguishable
+        # from one a minute old, because both were the same daily row.
+        self.bucket(minutes_ago=20 * 60, server_errors=9)
+        self.assertEqual(self.attention(), [])
+
+    def test_a_slow_route_carries_the_time_it_was_slow(self):
+        self.bucket(minutes_ago=90, max_ms=9000)
+        items = self.attention()
+        self.assertEqual(items[0]['severity'], 'slow')
+        self.assertEqual(items[0]['at'], self.bucket_of(90))
+
+    def bucket_of(self, minutes_ago):
+        from .analytics import bucket_for
+        return bucket_for(self.now - timedelta(minutes=minutes_ago))
+
+    def test_the_time_shown_is_when_it_broke_not_when_it_was_last_seen(self):
+        # A route that failed an hour ago and has been healthy since must not
+        # claim to have failed a minute ago.
+        self.bucket(minutes_ago=60, server_errors=3)
+        self.bucket(minutes_ago=1, server_errors=0)
+        self.assertEqual(self.attention()[0]['at'], self.bucket_of(60))
+
+    def test_a_healthy_live_window_lists_nothing(self):
+        self.bucket(minutes_ago=2, requests=400, max_ms=80)
+        self.assertEqual(self.attention(), [])
+
+    def test_the_middleware_writes_a_bucket_as_well_as_the_day(self):
+        request = RequestFactory().generic('GET', '/api/v1/planner/1/')
+        request.resolver_match = SimpleNamespace(view_name='planner-detail')
+        request.user = self.admin
+        AnalyticsMiddleware(lambda r: HttpResponse(status=500))(request)
+
+        self.assertEqual(DailyApiMetric.objects.count(), 1)
+        live = RecentApiMetric.objects.get()
+        self.assertEqual(live.server_errors, 1)
+        self.assertEqual(live.bucket.minute % 5, 0, 'buckets are aligned to five minutes')
+
+    def test_pruning_keeps_the_live_window_and_drops_stale_buckets(self):
+        self.bucket(minutes_ago=30, server_errors=1)
+        self.bucket(minutes_ago=5 * 24 * 60, server_errors=1, endpoint='old-route')
+        call_command('prune_analytics')
+        self.assertEqual([row.endpoint for row in RecentApiMetric.objects.all()], ['planner-detail'])

@@ -2,6 +2,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from django.core.management.base import BaseCommand, CommandError
 from django.template.loader import render_to_string
+from django.utils import timezone
 
 from core.analytics import _attention, _chart
 
@@ -32,9 +33,15 @@ class Command(BaseCommand):
         peak = max(row['count'] for row in trend)
         for row in trend:
             row['width'] = round(row['count'] / peak * 100)
+        # `last_error`/`last_slow` are what the live panel prints beside each
+        # item, so the preview carries them too -- a sample that omits them
+        # would show a layout the real page never produces.
+        recent = timezone.now()
         rows = [
             dict(endpoint=name, method=method, count=count, errors=errors,
-                 rejected=rejects, average_ms=ms, max_ms=worst)
+                 rejected=rejects, average_ms=ms, max_ms=worst,
+                 last_error=recent - timedelta(minutes=17) if errors else None,
+                 last_slow=recent - timedelta(minutes=41) if worst >= slow_ms else None)
             for name, method, count, errors, rejects, ms, worst in [
                 ('planner-detail', 'PATCH', 480, 9, 14, 162, 4120),
                 ('foodmeal-list', 'POST', 860, 7, 22, 201, 2980),
@@ -47,6 +54,7 @@ class Command(BaseCommand):
             preview=True, days=days, since=since, today=today,
             prior_start=since - timedelta(days=days), prior_end=since - timedelta(days=1),
             enabled=True, slow_ms=slow_ms,
+            live_minutes=360, live_as_of=timezone.now(),
             requests=14820, errors=21, rejected=144, error_rate=0.14, average_ms=128,
             active=248, signups=42, workouts=186, tasks=412, meals=629,
             deltas={
