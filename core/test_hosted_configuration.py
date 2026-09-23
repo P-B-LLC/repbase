@@ -2,6 +2,7 @@ from pathlib import Path
 import os
 import subprocess
 import sys
+import tempfile
 from unittest.mock import patch
 
 from django.core.exceptions import ImproperlyConfigured
@@ -53,13 +54,14 @@ class DatabaseConfigurationTests(SimpleTestCase):
 class ProductionConfigurationTests(SimpleTestCase):
     def valid(self):
         return {'DJANGO_DEBUG': 'false', 'DJANGO_SECRET_KEY': 'unit-test-only-not-a-real-secret-' * 3,
-                'DJANGO_ALLOWED_HOSTS': 'api.example.com', 'DJANGO_MEDIA_ROOT': '/persistent/media',
+                'DJANGO_ALLOWED_HOSTS': 'api.example.com',
+                'DJANGO_MEDIA_ROOT': str(Path(tempfile.gettempdir()) / 'rytivo-config-test-media'),
                 'REDIS_URL': 'rediss://:test-password@cache.example.com:6379/0'}
 
     def test_shared_tls_cache_and_explicit_storage(self):
         config = production_values(self.valid())
         self.assertEqual(config['CACHES']['default']['BACKEND'], 'django.core.cache.backends.redis.RedisCache')
-        self.assertEqual(config['MEDIA_ROOT'], Path('/persistent/media'))
+        self.assertEqual(config['MEDIA_ROOT'], Path(self.valid()['DJANGO_MEDIA_ROOT']))
 
     def test_production_rejects_development_and_insecure_settings(self):
         for key, value in [('DJANGO_DEBUG', 'true'), ('DJANGO_SECRET_KEY', ''),

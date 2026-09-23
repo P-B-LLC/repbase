@@ -8,6 +8,7 @@ to run twice, safe to run on an empty database, and safe to interrupt.
 """
 
 from django.core.management.base import BaseCommand
+from django.core.management import call_command
 
 from core.models import FoodSearchCache, SaveReceipt
 
@@ -24,6 +25,8 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         from django.utils import timezone
+
+        call_command('prune_analytics', dry_run=options['dry_run'], stdout=self.stdout)
 
         if options["dry_run"]:
             now = timezone.now()
