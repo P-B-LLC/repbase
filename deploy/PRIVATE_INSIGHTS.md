@@ -82,8 +82,15 @@ Revocation intentionally does not remove staff status or unrelated permissions.
    happens to be looking at it, which at 3am is nobody.
 
    ```cron
-   */5 * * * * cd /home/django/app && .venv/bin/python manage.py check_api_health
+   */5 * * * * cd /home/django/app && set -a && . /etc/repbase.env && set +a && PYTHONDONTWRITEBYTECODE=1 .venv/bin/python manage.py check_api_health >> /var/log/repbase-alerts.log 2>&1
    ```
+
+   Sourcing the environment is not optional. cron runs with almost none of
+   it, and without `DATABASE_URL` the settings fall back to a local SQLite
+   file -- so the check would run, find an empty database, report everything
+   healthy, and never mention that it was looking at the wrong one.
+   `PYTHONDONTWRITEBYTECODE=1` keeps a root-run job from leaving `.pyc` files
+   the application user cannot rewrite.
 
    It looks at the last 15 minutes, wider than its own schedule so a blip
    between two runs is still caught by one of them. It is edge-triggered: one
