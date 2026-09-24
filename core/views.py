@@ -34,6 +34,7 @@ from drf_spectacular.utils import (
 from rest_framework import mixins, pagination, status, viewsets
 from rest_framework.exceptions import (
     APIException,
+    AuthenticationFailed,
     NotFound,
     PermissionDenied,
     ValidationError,
@@ -575,6 +576,8 @@ class PasswordResetConfirmView(APIView):
                 user.set_password(payload.validated_data["new_password"])
                 user.save(update_fields=["password"])
 
+                # Lock before Django collects cascading device registrations.
+                list(Token.objects.select_for_update().filter(user=user))
                 Token.objects.filter(user=user).delete()
                 token = Token.objects.create(user=user)
 
@@ -598,8 +601,12 @@ class RotateTokenView(APIView):
     @transaction.atomic
     def post(self, request):
         if isinstance(request.auth, Token):
-            request.auth.delete()
+            current = Token.objects.select_for_update().filter(pk=request.auth.pk).first()
+            if current is None:
+                raise AuthenticationFailed()
+            current.delete()
         else:
+            list(Token.objects.select_for_update().filter(user=request.user))
             Token.objects.filter(user=request.user).delete()
         token = Token.objects.create(user=request.user)
         profile = profile_for(request.user)
@@ -611,8 +618,13 @@ class LogoutView(APIView):
     permission_classes = [IsAuthenticated]
 
     @extend_schema(request=None, responses={204: None})
+    @transaction.atomic
     def post(self, request):
-        Token.objects.filter(user=request.user).delete()
+        tokens = Token.objects.filter(user=request.user)
+        if isinstance(request.auth, Token):
+            tokens = tokens.filter(pk=request.auth.pk)
+        list(tokens.select_for_update())
+        tokens.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -648,9 +660,11 @@ class MeView(RetrieveUpdateDestroyAPIView):
             )
             pending.delete()
 
+    @transaction.atomic
     def perform_destroy(self, instance):
         # Deleting the auth user cascades through the Repbase profile and every
         # account-owned resource. It also invalidates all authentication tokens.
+        list(Token.objects.select_for_update().filter(user=self.request.user))
         self.request.user.delete()
 
 

@@ -1,0 +1,2 @@
+# Shell helpers must remain runnable when archived from a Windows checkout.
+*.sh text eol=lf

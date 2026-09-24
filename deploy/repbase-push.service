@@ -1,0 +1,20 @@
+[Unit]
+Description=Rytivo bounded APNs delivery batch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=django
+Group=django
+WorkingDirectory=/home/django/app
+EnvironmentFile=/etc/repbase.env
+ExecStart=/home/django/app/.venv/bin/python manage.py dispatch_push --limit 100
+TimeoutStartSec=1200
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+# Required for SQLite development only; production must use hosted PostgreSQL.
+StandardOutput=journal
+StandardError=journal

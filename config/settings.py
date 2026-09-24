@@ -54,6 +54,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'core.analytics.AnalyticsMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -63,6 +64,37 @@ MIDDLEWARE = [
 ]
 
 ROOT_URLCONF = 'config.urls'
+ANALYTICS_ENABLED = os.getenv('ANALYTICS_ENABLED', 'false').lower() == 'true'
+ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED = os.getenv('ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED', 'false').lower() == 'true'
+# Where API health alerts go. Empty means the approved insights accounts,
+# which are the people already trusted with this data; set it to a pager or
+# shared address when that is not the same thing.
+ANALYTICS_ALERT_EMAILS = os.getenv('ANALYTICS_ALERT_EMAILS', '')
+
+# The cache is where the insights login's rate limit is counted, so what backs
+# it decides whether that limit means anything.
+#
+# Django's default is LocMemCache: memory inside one process. With a second
+# worker each gets its own counter, so five attempts becomes ten, and every
+# restart sets the count back to zero. Redis is a process both workers talk to,
+# which is what `ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED` is asserting.
+#
+# `config.production` validates its own REDIS_URL far more strictly -- it
+# insists on authenticated TLS, because there it is a managed service across a
+# network. Here the URL is expected to be loopback, where there is no network
+# for anyone to be on.
+REDIS_URL = os.getenv('REDIS_URL', '')
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_URL,
+            'KEY_PREFIX': os.getenv('CACHE_KEY_PREFIX', 'rytivo'),
+            # Short: a cache that hangs should fail the request quickly rather
+            # than holding a worker open waiting for it.
+            'OPTIONS': {'socket_connect_timeout': 3, 'socket_timeout': 3},
+        }
+    }
 
 TEMPLATES = [
     {
@@ -119,6 +151,14 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 
 USE_TZ = True
+
+# Off until the matching client, provider key, and dispatcher are verified.
+APNS_ENABLED = os.getenv("APNS_ENABLED", "false").lower() == "true"
+APNS_TEAM_ID = os.getenv("APNS_TEAM_ID", "")
+APNS_KEY_ID = os.getenv("APNS_KEY_ID", "")
+APNS_KEY_PATH = os.getenv("APNS_KEY_PATH", "")
+APNS_TOPIC = os.getenv("APNS_TOPIC", "com.pbllc.rytivo")
+APNS_ENVIRONMENT = os.getenv("APNS_ENVIRONMENT", "production")
 
 
 # Static files (CSS, JavaScript, Images)
@@ -231,6 +271,8 @@ SPECTACULAR_SETTINGS = {
     # The names kept are the ones that say what the value is. "Machine" alone
     # does not, and "Activity" reads like something other than a workout type.
     'ENUM_NAME_OVERRIDES': {
+        'AppRoleEnum': 'core.access.ALL_ROLES',
+        'AssignableAppRoleEnum': 'core.access.ROLES',
         'WorkoutTypeEnum': 'core.models.WorkoutTypeChoices.choices',
         'CardioMachineEnum': 'core.models.CardioMachine.choices',
     },
