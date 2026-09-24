@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -15,7 +16,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase, APIClient
 
 from .analytics import AnalyticsMiddleware
-from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric, RecentApiMetric
+from .analytics_models import AnalyticsAccess, ApiAlert, DailyActiveAccount, DailyApiMetric, RecentApiMetric
 from .tests import RepbaseAPITestMixin
 
 
@@ -375,3 +376,121 @@ class NeedsAttentionIsLiveTests(RepbaseAPITestMixin, APITestCase):
         self.bucket(minutes_ago=5 * 24 * 60, server_errors=1, endpoint='old-route')
         call_command('prune_analytics')
         self.assertEqual([row.endpoint for row in RecentApiMetric.objects.all()], ['planner-detail'])
+
+
+@override_settings(DEBUG=True, ANALYTICS_ENABLED=True, ANALYTICS_ALERT_EMAILS='ops@rytivo.app')
+class AlertingTellsSomebodyTests(RepbaseAPITestMixin, APITestCase):
+    """The dashboard only works if somebody is looking at it.
+
+    Nothing was looking at 3am, which is the hour this matters. These pin the
+    two properties that decide whether an alert is worth having: it fires
+    once rather than every run, and it says when it is over. An alert that
+    repeats every five minutes gets filtered, and the filtered alert is the
+    one that matters.
+    """
+
+    def bucket(self, minutes_ago=2, server_errors=0, max_ms=50, requests=10, endpoint='planner-detail'):
+        # Adds to the bucket rather than creating one, exactly as the
+        # middleware does. Two calls a minute apart land in the same
+        # five-minute bucket, and creating blindly would break its
+        # uniqueness rather than test anything.
+        from .analytics import bucket_for
+        row, _ = RecentApiMetric.objects.get_or_create(
+            bucket=bucket_for(timezone.now() - timedelta(minutes=minutes_ago)),
+            endpoint=endpoint, method='GET')
+        row.requests += requests
+        row.server_errors += server_errors
+        row.total_ms += requests * 50
+        row.max_ms = max(row.max_ms, max_ms)
+        row.save()
+        return row
+
+    def run_check(self, **options):
+        out = StringIO()
+        call_command('check_api_health', stdout=out, stderr=StringIO(), **options)
+        return out.getvalue()
+
+    def test_a_failing_route_opens_an_alert_and_sends_one_email(self):
+        self.bucket(server_errors=3)
+        self.run_check()
+
+        alert = ApiAlert.objects.get()
+        self.assertEqual(alert.kind, 'failing')
+        self.assertIsNone(alert.resolved_at)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('planner-detail', mail.outbox[0].subject)
+        self.assertEqual(mail.outbox[0].to, ['ops@rytivo.app'])
+
+    def test_a_continuing_failure_does_not_send_again(self):
+        # The property that decides whether anybody still reads these.
+        self.bucket(server_errors=3)
+        self.run_check()
+        self.bucket(minutes_ago=1, server_errors=2)
+        self.run_check()
+
+        self.assertEqual(ApiAlert.objects.count(), 1)
+        self.assertEqual(len(mail.outbox), 1, 'one incident, one email')
+
+    def test_recovery_closes_the_alert_and_says_so(self):
+        self.bucket(server_errors=3)
+        self.run_check()
+        RecentApiMetric.objects.all().delete()
+        self.bucket(minutes_ago=1, server_errors=0)
+        self.run_check()
+
+        self.assertIsNotNone(ApiAlert.objects.get().resolved_at)
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertIn('recovered', mail.outbox[1].subject)
+
+    def test_the_same_route_can_break_again_after_recovering(self):
+        self.bucket(server_errors=3)
+        self.run_check()
+        RecentApiMetric.objects.all().delete()
+        self.run_check()
+        self.bucket(minutes_ago=0, server_errors=1)
+        self.run_check()
+
+        self.assertEqual(ApiAlert.objects.filter(resolved_at__isnull=True).count(), 1)
+        self.assertEqual(ApiAlert.objects.count(), 2, 'a new incident, not a reopened one')
+
+    def test_a_slow_route_alerts_without_any_errors(self):
+        self.bucket(max_ms=9000)
+        self.run_check()
+        self.assertEqual(ApiAlert.objects.get().kind, 'slow')
+
+    def test_a_healthy_window_says_and_sends_nothing(self):
+        self.bucket(requests=500, max_ms=90)
+        self.run_check()
+        self.assertEqual(ApiAlert.objects.count(), 0)
+        self.assertEqual(mail.outbox, [])
+
+    def test_a_dry_run_changes_nothing(self):
+        self.bucket(server_errors=3)
+        output = self.run_check(dry_run=True)
+
+        self.assertIn('Would open', output)
+        self.assertEqual(ApiAlert.objects.count(), 0)
+        self.assertEqual(mail.outbox, [])
+
+    @override_settings(ANALYTICS_ENABLED=False)
+    def test_collection_off_is_not_reported_as_healthy(self):
+        # Nothing is being recorded, so silence here would be a claim about a
+        # system nobody is watching.
+        self.bucket(server_errors=3)
+        self.assertIn('collection is off', self.run_check())
+        self.assertEqual(ApiAlert.objects.count(), 0)
+
+    @override_settings(ANALYTICS_ALERT_EMAILS='')
+    def test_without_recipients_the_alert_is_still_recorded(self):
+        # Losing the row as well as the email would leave no trace at all.
+        self.bucket(server_errors=3)
+        self.run_check()
+        self.assertEqual(ApiAlert.objects.count(), 1)
+        self.assertEqual(mail.outbox, [])
+
+    def test_a_mail_failure_does_not_lose_the_alert(self):
+        self.bucket(server_errors=3)
+        with patch('core.management.commands.check_api_health.send_mail',
+                   side_effect=OSError('smtp down')):
+            self.run_check()
+        self.assertEqual(ApiAlert.objects.count(), 1)

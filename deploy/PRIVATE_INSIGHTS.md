@@ -73,9 +73,32 @@ Revocation intentionally does not remove staff status or unrelated permissions.
 6. Schedule `python manage.py prune_expired_rows` daily in the established job
    runner (it now invokes analytics cleanup), or run `prune_analytics` separately.
    Both support `--dry-run`. Alert on cleanup failures. Retention is 30 UTC days
-   for account presence and 90 for route aggregates; backups need their own
-   retention policy. No operational meals/tasks/workouts are deleted.
-7. Smoke-test known successful/rejected requests in staging and compare counters.
+   for account presence, 90 for route aggregates, and 3 for the five-minute
+   live buckets; backups need their own retention policy. No operational
+   meals/tasks/workouts are deleted.
+7. Schedule `python manage.py check_api_health` every five minutes to get an
+   email when a route starts failing or turns slow, and another when it
+   recovers. Without it the dashboard only reports a problem while somebody
+   happens to be looking at it, which at 3am is nobody.
+
+   ```cron
+   */5 * * * * cd /home/django/app && .venv/bin/python manage.py check_api_health
+   ```
+
+   It looks at the last 15 minutes, wider than its own schedule so a blip
+   between two runs is still caught by one of them. It is edge-triggered: one
+   email when an alert opens and one when it closes, never a repeat every run,
+   because a repeating alert is one people filter. `--dry-run` reports what it
+   would do and writes nothing.
+
+   Recipients default to the approved insights accounts. Set
+   `ANALYTICS_ALERT_EMAILS` to a comma-separated list for a pager or shared
+   address instead. With no recipients the alert is still recorded, so a
+   missing address loses the email and not the incident.
+
+   It reports nothing while `ANALYTICS_ENABLED` is false: silence from a
+   system recording nothing would read as an all-clear.
+8. Smoke-test known successful/rejected requests in staging and compare counters.
    Measure API latency under expected concurrency before enabling production
    collection: recording currently performs synchronous, atomic database writes
    and popular routes share a daily counter row. Database recording failures
