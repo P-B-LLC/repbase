@@ -66,6 +66,10 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'config.urls'
 ANALYTICS_ENABLED = os.getenv('ANALYTICS_ENABLED', 'false').lower() == 'true'
 ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED = os.getenv('ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED', 'false').lower() == 'true'
+# Where API health alerts go. Empty means the approved insights accounts,
+# which are the people already trusted with this data; set it to a pager or
+# shared address when that is not the same thing.
+ANALYTICS_ALERT_EMAILS = os.getenv('ANALYTICS_ALERT_EMAILS', '')
 
 # The cache is where the insights login's rate limit is counted, so what backs
 # it decides whether that limit means anything.

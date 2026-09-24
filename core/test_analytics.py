@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core import mail
 from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -15,7 +16,7 @@ from django.utils import timezone
 from rest_framework.test import APITestCase, APIClient
 
 from .analytics import AnalyticsMiddleware
-from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric
+from .analytics_models import AnalyticsAccess, ApiAlert, DailyActiveAccount, DailyApiMetric, RecentApiMetric
 from .tests import RepbaseAPITestMixin
 
 
@@ -212,3 +213,284 @@ class AnalyticsTests(RepbaseAPITestMixin, APITestCase):
         call_command('prune_analytics', stdout=StringIO())
         self.assertEqual(DailyActiveAccount.objects.count(), 1)
         self.assertEqual(DailyApiMetric.objects.get().endpoint, 'current')
+
+
+@override_settings(DEBUG=True, ANALYTICS_ENABLED=True)
+class DashboardAnswersSoWhatTests(RepbaseAPITestMixin, APITestCase):
+    """Every figure has to survive the question a total cannot answer.
+
+    The page used to report "14,820 requests" and stop, which is a report
+    rather than an instrument: the number is neither good nor bad on its own
+    and nobody can act on it. These pin the parts that make it actionable --
+    the comparison, the two ratios, and the list of what to open first.
+    """
+
+    def setUp(self):
+        self.admin, self.profile, self.token = self.create_account('so-what-owner')
+        self.admin.email = 'admin@rytivo.app'
+        self.admin.is_staff = True
+        self.admin.save()
+        AnalyticsAccess.objects.create(user=self.admin, verified_email='admin@rytivo.app',
+                                       verified_at=timezone.now(), enabled=True)
+        self.client.force_login(self.admin)
+        self.today = timezone.now().date()
+
+    def metric(self, day, requests=1, server_errors=0, total_ms=100, max_ms=100, endpoint='planner-detail'):
+        return DailyApiMetric.objects.create(day=day, endpoint=endpoint, method='GET',
+            requests=requests, server_errors=server_errors, total_ms=total_ms, max_ms=max_ms)
+
+    def dashboard(self, days=7):
+        return self.client.get('/insights/', {'days': days})
+
+    def test_a_total_is_compared_with_the_period_before_it(self):
+        self.metric(self.today, requests=100, total_ms=100)
+        self.metric(self.today - timedelta(days=8), requests=50, total_ms=50)
+
+        deltas = self.dashboard().context['deltas']
+        self.assertEqual(deltas['requests']['text'], '+100% vs previous 7 days')
+        self.assertEqual(deltas['requests']['tone'], 'good')
+
+    def test_a_rise_in_errors_is_not_good_news(self):
+        # Direction alone is not the signal. More requests is a rise worth
+        # having; more failures is the same arithmetic meaning the opposite.
+        self.metric(self.today, requests=100, server_errors=10, total_ms=100)
+        self.metric(self.today - timedelta(days=8), requests=100, server_errors=1, total_ms=100)
+
+        self.assertEqual(self.dashboard().context['deltas']['error_rate']['tone'], 'bad')
+
+    def test_an_empty_previous_period_says_so_rather_than_inventing_a_rise(self):
+        self.metric(self.today, requests=100, total_ms=100)
+
+        delta = self.dashboard().context['deltas']['requests']
+        self.assertEqual(delta['text'], 'no baseline')
+        self.assertEqual(delta['tone'], 'flat')
+
+    def test_returning_and_lapsed_accounts_are_counted_separately(self):
+        stayed, _, _ = self.create_account('stayed')
+        left, _, _ = self.create_account('left')
+        arrived, _, _ = self.create_account('arrived')
+        for user in (stayed, left):
+            DailyActiveAccount.objects.create(day=self.today - timedelta(days=8), user=user)
+        for user in (stayed, arrived):
+            DailyActiveAccount.objects.create(day=self.today, user=user)
+
+        context = self.dashboard().context
+        self.assertEqual(context['returning'], 1)
+        self.assertEqual(context['lapsed'], 1)
+        self.assertEqual(context['new_to_api'], 1)
+        self.assertEqual(context['return_rate'], 50)
+
+    def test_a_new_account_that_did_nothing_counts_against_activation(self):
+        from .models import WorkoutSession
+        started, started_profile, _ = self.create_account('started')
+        self.create_account('never-started')
+        WorkoutSession.objects.create(repbase_user=started_profile, status='completed',
+                                      started_at=timezone.now(), ended_at=timezone.now())
+
+        context = self.dashboard().context
+        # Three accounts were created today: the two here and setUp's owner,
+        # which is staff and so excluded.
+        self.assertEqual(context['signups'], 2)
+        self.assertEqual(context['activated'], 1)
+        self.assertEqual(context['activation_rate'], 50)
+
+
+@override_settings(DEBUG=True, ANALYTICS_ENABLED=True)
+class NeedsAttentionIsLiveTests(RepbaseAPITestMixin, APITestCase):
+    """"Is it broken now" is not a question a daily total can answer.
+
+    The counters were kept one row per route per day, so two 500s might have
+    been this minute or twenty hours ago, and `max_ms` was a running maximum
+    for the whole day -- one bad request at 03:00 left a route looking slow
+    until midnight. Attention now reads five-minute buckets over a few hours
+    and says when each thing last happened.
+    """
+
+    def setUp(self):
+        self.admin, self.profile, self.token = self.create_account('live-owner')
+        self.admin.email = 'admin@rytivo.app'
+        self.admin.is_staff = True
+        self.admin.save()
+        AnalyticsAccess.objects.create(user=self.admin, verified_email='admin@rytivo.app',
+                                       verified_at=timezone.now(), enabled=True)
+        self.client.force_login(self.admin)
+        self.now = timezone.now()
+
+    def bucket(self, minutes_ago, server_errors=0, max_ms=50, requests=10, endpoint='planner-detail'):
+        from .analytics import bucket_for
+        return RecentApiMetric.objects.create(
+            bucket=bucket_for(self.now - timedelta(minutes=minutes_ago)),
+            endpoint=endpoint, method='GET', requests=requests,
+            server_errors=server_errors, total_ms=requests * 50, max_ms=max_ms)
+
+    def attention(self):
+        return self.client.get('/insights/').context['attention']
+
+    def test_a_failure_minutes_ago_is_listed(self):
+        self.bucket(minutes_ago=5, server_errors=2)
+        items = self.attention()
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['severity'], 'error')
+        self.assertIsNotNone(items[0]['at'], 'the page has to say when')
+
+    def test_yesterdays_failure_is_not_presented_as_now(self):
+        # The old behaviour: a 500 from twenty hours ago was indistinguishable
+        # from one a minute old, because both were the same daily row.
+        self.bucket(minutes_ago=20 * 60, server_errors=9)
+        self.assertEqual(self.attention(), [])
+
+    def test_a_slow_route_carries_the_time_it_was_slow(self):
+        self.bucket(minutes_ago=90, max_ms=9000)
+        items = self.attention()
+        self.assertEqual(items[0]['severity'], 'slow')
+        self.assertEqual(items[0]['at'], self.bucket_of(90))
+
+    def bucket_of(self, minutes_ago):
+        from .analytics import bucket_for
+        return bucket_for(self.now - timedelta(minutes=minutes_ago))
+
+    def test_the_time_shown_is_when_it_broke_not_when_it_was_last_seen(self):
+        # A route that failed an hour ago and has been healthy since must not
+        # claim to have failed a minute ago.
+        self.bucket(minutes_ago=60, server_errors=3)
+        self.bucket(minutes_ago=1, server_errors=0)
+        self.assertEqual(self.attention()[0]['at'], self.bucket_of(60))
+
+    def test_a_healthy_live_window_lists_nothing(self):
+        self.bucket(minutes_ago=2, requests=400, max_ms=80)
+        self.assertEqual(self.attention(), [])
+
+    def test_the_middleware_writes_a_bucket_as_well_as_the_day(self):
+        request = RequestFactory().generic('GET', '/api/v1/planner/1/')
+        request.resolver_match = SimpleNamespace(view_name='planner-detail')
+        request.user = self.admin
+        AnalyticsMiddleware(lambda r: HttpResponse(status=500))(request)
+
+        self.assertEqual(DailyApiMetric.objects.count(), 1)
+        live = RecentApiMetric.objects.get()
+        self.assertEqual(live.server_errors, 1)
+        self.assertEqual(live.bucket.minute % 5, 0, 'buckets are aligned to five minutes')
+
+    def test_pruning_keeps_the_live_window_and_drops_stale_buckets(self):
+        self.bucket(minutes_ago=30, server_errors=1)
+        self.bucket(minutes_ago=5 * 24 * 60, server_errors=1, endpoint='old-route')
+        call_command('prune_analytics')
+        self.assertEqual([row.endpoint for row in RecentApiMetric.objects.all()], ['planner-detail'])
+
+
+@override_settings(DEBUG=True, ANALYTICS_ENABLED=True, ANALYTICS_ALERT_EMAILS='ops@rytivo.app')
+class AlertingTellsSomebodyTests(RepbaseAPITestMixin, APITestCase):
+    """The dashboard only works if somebody is looking at it.
+
+    Nothing was looking at 3am, which is the hour this matters. These pin the
+    two properties that decide whether an alert is worth having: it fires
+    once rather than every run, and it says when it is over. An alert that
+    repeats every five minutes gets filtered, and the filtered alert is the
+    one that matters.
+    """
+
+    def bucket(self, minutes_ago=2, server_errors=0, max_ms=50, requests=10, endpoint='planner-detail'):
+        # Adds to the bucket rather than creating one, exactly as the
+        # middleware does. Two calls a minute apart land in the same
+        # five-minute bucket, and creating blindly would break its
+        # uniqueness rather than test anything.
+        from .analytics import bucket_for
+        row, _ = RecentApiMetric.objects.get_or_create(
+            bucket=bucket_for(timezone.now() - timedelta(minutes=minutes_ago)),
+            endpoint=endpoint, method='GET')
+        row.requests += requests
+        row.server_errors += server_errors
+        row.total_ms += requests * 50
+        row.max_ms = max(row.max_ms, max_ms)
+        row.save()
+        return row
+
+    def run_check(self, **options):
+        out = StringIO()
+        call_command('check_api_health', stdout=out, stderr=StringIO(), **options)
+        return out.getvalue()
+
+    def test_a_failing_route_opens_an_alert_and_sends_one_email(self):
+        self.bucket(server_errors=3)
+        self.run_check()
+
+        alert = ApiAlert.objects.get()
+        self.assertEqual(alert.kind, 'failing')
+        self.assertIsNone(alert.resolved_at)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('planner-detail', mail.outbox[0].subject)
+        self.assertEqual(mail.outbox[0].to, ['ops@rytivo.app'])
+
+    def test_a_continuing_failure_does_not_send_again(self):
+        # The property that decides whether anybody still reads these.
+        self.bucket(server_errors=3)
+        self.run_check()
+        self.bucket(minutes_ago=1, server_errors=2)
+        self.run_check()
+
+        self.assertEqual(ApiAlert.objects.count(), 1)
+        self.assertEqual(len(mail.outbox), 1, 'one incident, one email')
+
+    def test_recovery_closes_the_alert_and_says_so(self):
+        self.bucket(server_errors=3)
+        self.run_check()
+        RecentApiMetric.objects.all().delete()
+        self.bucket(minutes_ago=1, server_errors=0)
+        self.run_check()
+
+        self.assertIsNotNone(ApiAlert.objects.get().resolved_at)
+        self.assertEqual(len(mail.outbox), 2)
+        self.assertIn('recovered', mail.outbox[1].subject)
+
+    def test_the_same_route_can_break_again_after_recovering(self):
+        self.bucket(server_errors=3)
+        self.run_check()
+        RecentApiMetric.objects.all().delete()
+        self.run_check()
+        self.bucket(minutes_ago=0, server_errors=1)
+        self.run_check()
+
+        self.assertEqual(ApiAlert.objects.filter(resolved_at__isnull=True).count(), 1)
+        self.assertEqual(ApiAlert.objects.count(), 2, 'a new incident, not a reopened one')
+
+    def test_a_slow_route_alerts_without_any_errors(self):
+        self.bucket(max_ms=9000)
+        self.run_check()
+        self.assertEqual(ApiAlert.objects.get().kind, 'slow')
+
+    def test_a_healthy_window_says_and_sends_nothing(self):
+        self.bucket(requests=500, max_ms=90)
+        self.run_check()
+        self.assertEqual(ApiAlert.objects.count(), 0)
+        self.assertEqual(mail.outbox, [])
+
+    def test_a_dry_run_changes_nothing(self):
+        self.bucket(server_errors=3)
+        output = self.run_check(dry_run=True)
+
+        self.assertIn('Would open', output)
+        self.assertEqual(ApiAlert.objects.count(), 0)
+        self.assertEqual(mail.outbox, [])
+
+    @override_settings(ANALYTICS_ENABLED=False)
+    def test_collection_off_is_not_reported_as_healthy(self):
+        # Nothing is being recorded, so silence here would be a claim about a
+        # system nobody is watching.
+        self.bucket(server_errors=3)
+        self.assertIn('collection is off', self.run_check())
+        self.assertEqual(ApiAlert.objects.count(), 0)
+
+    @override_settings(ANALYTICS_ALERT_EMAILS='')
+    def test_without_recipients_the_alert_is_still_recorded(self):
+        # Losing the row as well as the email would leave no trace at all.
+        self.bucket(server_errors=3)
+        self.run_check()
+        self.assertEqual(ApiAlert.objects.count(), 1)
+        self.assertEqual(mail.outbox, [])
+
+    def test_a_mail_failure_does_not_lose_the_alert(self):
+        self.bucket(server_errors=3)
+        with patch('core.management.commands.check_api_health.send_mail',
+                   side_effect=OSError('smtp down')):
+            self.run_check()
+        self.assertEqual(ApiAlert.objects.count(), 1)
