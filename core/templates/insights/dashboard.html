@@ -1,25 +1,151 @@
 {% extends "insights/base.html" %}
+{# Reloads itself, because a page somebody has to remember to refresh is not #}
+{# live. `meta refresh` rather than a timer, since the CSP forbids script -- #}
+{# and on the dashboard only: the login page must never reload under someone #}
+{# mid-password. The session expiry is absolute from sign-in, so this cannot #}
+{# hold a session open indefinitely. #}
+{% block head %}<meta http-equiv="refresh" content="60">{% endblock %}
 {% block header %}<form method="post" action="{% url 'insights-logout' %}">{% csrf_token %}<button type="submit">Sign out</button></form>{% endblock %}
 {% block content %}
 {% if preview %}<div class="notice">DESIGN PREVIEW · All figures below are synthetic sample data, not production analytics.</div>{% endif %}
-<section class="hero"><div><div class="eyebrow">Your product, in focus</div><h1>See what's moving.</h1><p>{{ since|date:"M j" }} – {{ today|date:"M j, Y" }} · UTC reporting window</p></div>
-<nav class="range" aria-label="Reporting period"><a href="?days=7" {% if days == 7 %}class="selected" aria-current="page"{% endif %}>7 days</a><a href="?days=30" {% if days == 30 %}class="selected" aria-current="page"{% endif %}>30 days</a></nav></section>
-{% if not enabled %}<div class="notice">API collection is off. Usage and latency counters will populate only after collection is enabled. Product totals below come from existing records.</div>{% else %}<p><span class="pill">API collection enabled</span> <span class="note">Only observed requests are counted; no historical traffic is reconstructed.</span></p>{% endif %}
-<section class="grid" aria-label="Overview">
-<article class="card"><div class="label">API-active accounts</div><div class="value">{{ active }}</div><div class="note">Distinct non-staff accounts with a successful API request. Includes background sync—not a screen-open count.</div></article>
-<article class="card"><div class="label">API requests</div><div class="value">{{ requests }}</div><div class="note">Observed requests across app API routes, including anonymous requests.</div></article>
-<article class="card"><div class="label">Server error rate</div><div class="value">{% if error_rate != None %}{{ error_rate }}%{% else %}—{% endif %}</div><div class="note">{{ errors }} server errors · {{ rejected }} client rejections (4xx). Client rejections are not necessarily bugs.</div></article>
-<article class="card"><div class="label">Average server response</div><div class="value">{% if average_ms != None %}{{ average_ms }} <small>ms</small>{% else %}—{% endif %}</div><div class="note">Application processing time before analytics writes; excludes network transit. Not a percentile.</div></article>
-<article class="card"><div class="label">New accounts</div><div class="value">{{ signups }}</div><div class="note">Accounts created in this window, excluding staff accounts.</div></article>
-<article class="card"><div class="label">Workouts completed</div><div class="value">{{ workouts }}</div><div class="note">Sessions ended in this window. Excludes HealthKit imports and staff activity.</div></article>
+
+<section class="hero">
+  <div>
+    <div class="eyebrow">Your product, in focus</div>
+    <h1>See what's moving.</h1>
+    <p>{{ since|date:"M j" }} – {{ today|date:"M j, Y" }} · UTC · compared with {{ prior_start|date:"M j" }} – {{ prior_end|date:"M j" }}</p>
+  </div>
+  <nav class="range" aria-label="Reporting period"><a href="?days=7" {% if days == 7 %}class="selected" aria-current="page"{% endif %}>7 days</a><a href="?days=30" {% if days == 30 %}class="selected" aria-current="page"{% endif %}>30 days</a></nav>
 </section>
-<section class="panels"><article class="panel"><h2>Request rhythm</h2><p class="note">Daily API volume · only days with observations appear</p>
-{% for item in trend %}<div class="bar-row"><span>{{ item.day|date:"M j" }}</span><div class="track" aria-hidden="true"><div class="bar" style="width:{{ item.width }}%"></div></div><span>{{ item.count }}</span></div>{% empty %}<div class="empty">No request observations yet. A zero-data period is not evidence of zero usage.</div>{% endfor %}
-</article><article class="panel"><h2>Where to look closer</h2><p class="note">Top 25 routes, sorted by server errors then traffic. Route names contain no customer IDs.</p><div class="table-wrap"><table><thead><tr><th scope="col">Route / method</th><th scope="col">Requests</th><th scope="col">5xx</th><th scope="col">4xx</th><th scope="col">Avg ms</th></tr></thead><tbody>
-{% for row in rows %}<tr><td>{{ row.endpoint }}<br><span class="note">{{ row.method }}</span></td><td>{{ row.count }}</td><td>{{ row.errors }}</td><td>{{ row.rejected }}</td><td>{{ row.average_ms }}</td></tr>{% empty %}<tr><td colspan="5">No recorded API requests in this period.</td></tr>{% endfor %}
-</tbody></table></div></article></section>
-<section class="grid" aria-label="Product progress"><article class="card"><div class="label">Tasks currently completed</div><div class="value">{{ tasks }}</div><div class="note">Tasks whose current completion timestamp falls in this window. Undoing or deleting a task changes this total.</div></article>
-<article class="card"><div class="label">Meals with food entries</div><div class="value">{{ meals }}</div><div class="note">Meals assigned to dates in this window that contain entries. Empty planned slots are excluded; this is not a logging-event count.</div></article>
-<article class="card"><div class="eyebrow">Measurement roadmap</div><h2>Know the limits.</h2><p class="note">Screen funnels, crashes, client-side save retries, and cohort retention are not instrumented here yet. These require dedicated app events and privacy review.</p></article></section>
+
+{% if not enabled %}<div class="notice">API collection is off. Usage and latency counters will populate only after collection is enabled. Product totals below come from existing records.</div>{% else %}<p><span class="pill">API collection enabled</span> <span class="note">Only observed requests are counted; no historical traffic is reconstructed.</span></p>{% endif %}
+
+{# What to do, before what happened. A dashboard that opens with totals asks #}
+{# to be read; one that opens with the exceptions asks to be worked through. #}
+{# Live, and on its own clock. Everything else on this page is the 7- or #}
+{# 30-day window; this reads five-minute buckets over the last few hours, #}
+{# because "is it broken now" is a different question from "how was the #}
+{# week" and a daily total cannot answer it. #}
+<section class="attention-block" aria-label="Needs attention">
+  <div class="live-head">
+    <h2>Needs attention</h2>
+    <span class="live"><span class="dot" aria-hidden="true"></span>Live · last {{ live_minutes }} minutes · {{ live_as_of|date:"H:i" }} UTC</span>
+  </div>
+  {% if attention %}
+  <p class="note">Routes returning server errors, then routes slow enough to be felt (worst case over {{ slow_ms }} ms). Each says when it last happened. Route names contain no customer IDs.</p>
+  <ul class="attention">
+    {% for item in attention %}
+    <li class="item {{ item.severity }}">
+      <div class="item-head"><span class="sev">{% if item.severity == 'error' %}Failing{% else %}Slow{% endif %}</span><code>{{ item.method }} {{ item.endpoint }}</code></div>
+      <div class="item-value">{{ item.headline }}</div>
+      {% if item.at %}<div class="when">last at {{ item.at|date:"H:i" }} UTC</div>{% endif %}
+      <p class="note">{{ item.detail }}</p>
+      <p class="do">{{ item.action }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <div class="all-clear"><strong>Nothing failing or slow in the last {{ live_minutes }} minutes.</strong><p class="note">No route returned a server error or exceeded {{ slow_ms }} ms. With collection off, or on a genuinely quiet period, this is also what no data looks like—a clear panel is not by itself proof that everything is healthy.</p></div>
+  {% endif %}
+</section>
+
+<section class="grid" aria-label="Overview">
+  <article class="card">
+    <div class="label">API-active accounts</div>
+    <div class="value">{{ active }}</div>
+    <div class="delta {{ deltas.active.tone }}">{{ deltas.active.text }}</div>
+    <div class="note">Distinct non-staff accounts with a successful API request. Includes background sync—not a screen-open count.</div>
+  </article>
+  <article class="card">
+    <div class="label">API requests</div>
+    <div class="value">{{ requests }}</div>
+    <div class="delta {{ deltas.requests.tone }}">{{ deltas.requests.text }}</div>
+    <div class="note">Observed requests across app API routes, including anonymous requests.</div>
+  </article>
+  <article class="card">
+    <div class="label">Server error rate</div>
+    <div class="value">{% if error_rate != None %}{{ error_rate }}%{% else %}—{% endif %}</div>
+    <div class="delta {{ deltas.error_rate.tone }}">{{ deltas.error_rate.text }}</div>
+    <div class="note">{{ errors }} server errors · {{ rejected }} client rejections (4xx). Client rejections are not necessarily bugs.</div>
+  </article>
+  <article class="card">
+    <div class="label">Average server response</div>
+    <div class="value">{% if average_ms != None %}{{ average_ms }} <small>ms</small>{% else %}—{% endif %}</div>
+    <div class="delta {{ deltas.average_ms.tone }}">{{ deltas.average_ms.text }}</div>
+    <div class="note">Application processing time before analytics writes; excludes network transit. An average, not a percentile—the worst cases are in Needs attention.</div>
+  </article>
+  <article class="card">
+    <div class="label">New accounts</div>
+    <div class="value">{{ signups }}</div>
+    <div class="note">Accounts created in this window, excluding staff accounts.</div>
+  </article>
+  <article class="card">
+    <div class="label">Workouts completed</div>
+    <div class="value">{{ workouts }}</div>
+    <div class="delta {{ deltas.workouts.tone }}">{{ deltas.workouts.text }}</div>
+    <div class="note">Sessions ended in this window. Excludes HealthKit imports and staff activity.</div>
+  </article>
+</section>
+
+{# The two questions a bare total cannot answer: did the new people start, #}
+{# and did the existing people come back. #}
+<section class="panels two" aria-label="Starting and staying">
+  <article class="panel">
+    <h2>Did new accounts start?</h2>
+    {% if signups %}
+    <div class="ratio"><span class="big">{{ activation_rate }}%</span><span class="note">{{ activated }} of {{ signups }} new accounts finished a workout, logged a meal, or ticked a task.</span></div>
+    <div class="meter" aria-hidden="true"><div class="fill" style="width:{{ activation_rate }}%"></div></div>
+    <p class="do">{% if activation_rate < 50 %}More than half signed up and did nothing. Onboarding is where to look, not the API numbers above.{% else %}Most new accounts reached a first action. Watch this when you change sign-up or the first screen.{% endif %}</p>
+    <p class="note">Counted over each account's whole history, not only this window, so somebody who started the day after signing up still counts.</p>
+    {% else %}
+    <div class="empty">No new accounts in this window.</div>
+    {% endif %}
+  </article>
+  <article class="panel">
+    <h2>Did accounts come back?</h2>
+    {% if return_rate != None %}
+    <div class="ratio"><span class="big">{{ return_rate }}%</span><span class="note">{{ returning }} of the accounts active in the previous {{ days }} days were active again.</span></div>
+    <div class="split" aria-hidden="true"><div class="kept" style="flex:{{ returning }}"></div><div class="lost" style="flex:{{ lapsed }}"></div></div>
+    <ul class="legend"><li><span class="key kept"></span>{{ returning }} returned</li><li><span class="key lost"></span>{{ lapsed }} did not</li><li><span class="key fresh"></span>{{ new_to_api }} newly seen</li></ul>
+    <p class="do">{% if lapsed > returning %}More accounts stopped than came back. That is the number to move before spending anything on acquisition.{% else %}More came back than dropped out.{% endif %}</p>
+    {% else %}
+    <div class="empty">No previous period to compare against yet.</div>
+    {% endif %}
+    <p class="note">API presence, so a device syncing in the background counts as active. This is not a measure of people opening the app.</p>
+  </article>
+</section>
+
+<section class="panel wide" aria-label="Request rhythm">
+  <h2>Request rhythm</h2>
+  <p class="note">Daily API volume · peak {{ chart.peak }} · only days with observations appear</p>
+  {% if chart %}
+  <svg class="chart" viewBox="0 0 {{ chart.width }} {{ chart.height }}" preserveAspectRatio="none" role="img" aria-label="Daily API request volume">
+    <polygon class="chart-area" points="{{ chart.area }}"></polygon>
+    <polyline class="chart-line" points="{{ chart.line }}"></polyline>
+    {% for point in chart.points %}<circle class="chart-dot" cx="{{ point.x }}" cy="{{ point.y }}" r="4"></circle>{% endfor %}
+  </svg>
+  <ol class="chart-days">{% for point in chart.points %}<li><span class="d">{{ point.day|date:"M j" }}</span><span class="n">{{ point.count }}</span><span class="note">{{ point.people }} accounts{% if point.errors %} · {{ point.errors }} 5xx{% endif %}</span></li>{% endfor %}</ol>
+  {% else %}
+  <div class="empty">No request observations yet. A zero-data period is not evidence of zero usage.</div>
+  {% endif %}
+</section>
+
+<section class="panel wide" aria-label="Routes">
+  <h2>Every route</h2>
+  <p class="note">Top 25, sorted by server errors then traffic. Worst case is the slowest single request observed for that route.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Route / method</th><th scope="col">Requests</th><th scope="col">5xx</th><th scope="col">4xx</th><th scope="col">Avg ms</th><th scope="col">Worst ms</th></tr></thead>
+    <tbody>
+    {% for row in rows %}<tr{% if row.errors %} class="row-error"{% elif row.max_ms >= slow_ms %} class="row-slow"{% endif %}><td>{{ row.endpoint }}<br><span class="note">{{ row.method }}</span></td><td>{{ row.count }}</td><td>{{ row.errors }}</td><td>{{ row.rejected }}</td><td>{{ row.average_ms }}</td><td>{{ row.max_ms }}</td></tr>{% empty %}<tr><td colspan="6">No recorded API requests in this period.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<section class="grid" aria-label="Product progress">
+  <article class="card"><div class="label">Tasks currently completed</div><div class="value">{{ tasks }}</div><div class="note">Tasks whose current completion timestamp falls in this window. Undoing or deleting a task changes this total.</div></article>
+  <article class="card"><div class="label">Meals with food entries</div><div class="value">{{ meals }}</div><div class="note">Meals assigned to dates in this window that contain entries. Empty planned slots are excluded; this is not a logging-event count.</div></article>
+  <article class="card"><div class="eyebrow">Measurement roadmap</div><h2>Know the limits.</h2><p class="note">Screen funnels, crashes, client-side save retries, and true cohort retention are not instrumented here yet. These require dedicated app events and privacy review.</p></article>
+</section>
+
 <p class="foot">Account-level API presence is retained for 30 days; route aggregates for 90 days when scheduled cleanup runs. The dashboard never displays names, email addresses, meal contents, health measurements, posts, or request payloads. Product totals reflect current records, not immutable historical events.</p>
 {% endblock %}
