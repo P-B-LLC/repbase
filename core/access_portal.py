@@ -17,6 +17,7 @@ from .access_views import user_data
 from .access_moderation import decide_report, open_reports, report_data
 from .analytics import InsightsLoginView, allowed
 from .models import RepbaseUser
+from .account_controls import change_account_status
 
 
 def portal_allowed(user):
@@ -48,6 +49,35 @@ class RoleForm(forms.Form):
     reason = forms.CharField(required=False, max_length=500, label='Reason (optional)')
 
 
+class AccountStatusForm(forms.Form):
+    active = forms.TypedChoiceField(choices=[('false', 'Disable account'), ('true', 'Restore account')], coerce=lambda value: value == 'true')
+    version = forms.IntegerField(min_value=0, widget=forms.HiddenInput)
+    confirm_username = forms.CharField(max_length=150, label='Type the exact username to confirm')
+    reason = forms.CharField(max_length=500, widget=forms.Textarea)
+
+
+@never_cache
+@login_required(login_url='/access/login/')
+@require_http_methods(['GET', 'POST'])
+def account_control(request, profile_id):
+    if not capabilities(request.user)['moderate']:
+        return HttpResponseForbidden('Access denied.')
+    profile = get_object_or_404(RepbaseUser.objects.select_related('user'), pk=profile_id)
+    account = user_data(profile, request.user)
+    form = AccountStatusForm(request.POST if request.method == 'POST' else None,
+        initial=dict(version=account['version'], active='false' if account['active'] else 'true'))
+    status = 200
+    if request.method == 'POST' and form.is_valid():
+        try:
+            change_account_status(request.user, profile.user, **form.cleaned_data)
+        except APIException as error:
+            form.add_error(None, str(error.detail))
+            status = error.status_code
+        else:
+            return redirect('access-account-control', profile_id=profile_id)
+    return render(request, 'access/account_control.html', dict(account=account, form=form), status=status)
+
+
 @never_cache
 @login_required(login_url='/access/login/')
 @require_http_methods(['GET'])
@@ -59,11 +89,11 @@ def workspace(request):
     search = request.GET.get('search', '').strip()
     page = None
     error = None
-    if grants['manage_roles'] and search:
+    if grants['moderate'] and search:
         if not 2 <= len(search) <= 100:
             error = 'Enter between 2 and 100 characters.'
         else:
-            users = RepbaseUser.objects.select_related('user').filter(user__is_active=True).filter(
+            users = RepbaseUser.objects.select_related('user').filter(
                 Q(user__username__icontains=search) | Q(user__first_name__icontains=search)
                 | Q(user__last_name__icontains=search)).order_by('user__username', 'pk')
             page = Paginator(users, 20).get_page(request.GET.get('page'))

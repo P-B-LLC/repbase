@@ -867,6 +867,9 @@ NUTRITION_DECIMAL = serializers.DecimalField(max_digits=10, decimal_places=2)
 
 
 class PublicRepbaseUserSerializer(serializers.ModelSerializer):
+    community_label = serializers.CharField(source='user.accountaccess.public_label', read_only=True, default='')
+    community_badge = serializers.CharField(source='user.accountaccess.public_badge', read_only=True, default='')
+    community_color = serializers.CharField(source='user.accountaccess.label_color', read_only=True, default='#F65A18')
     username = serializers.CharField(source="user.username", read_only=True)
     first_name = serializers.CharField(source="user.first_name", read_only=True)
     last_name = serializers.CharField(source="user.last_name", read_only=True)
@@ -890,6 +893,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = RepbaseUser
         fields = [
+            'community_label', 'community_badge', 'community_color',
             "id",
             "username",
             "first_name",

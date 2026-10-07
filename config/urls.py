@@ -21,16 +21,20 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 
 from core.media import serve_media
 from core.analytics import dashboard, InsightsLoginView, InsightsLogoutView
-from core.access_portal import workspace, edit_access, reports, AccessLoginView, AccessLogoutView
+from core.access_portal import workspace, edit_access, reports, account_control, AccessLoginView, AccessLogoutView
+from core.community_portal import community_studio
 from config.health import live, ready
 from core.views import health, home, repbase_users
 
 urlpatterns = [
     path('access/', workspace, name='access-workspace'),
+    path('access/community/', community_studio, name='access-community'),
+    path('access/users/<int:profile_id>/flair/', community_studio, name='access-flair'),
     path('access/reports/', reports, name='access-reports'),
     path('access/login/', AccessLoginView.as_view(), name='access-login'),
     path('access/logout/', AccessLogoutView.as_view(), name='access-logout'),
     path('access/users/<int:profile_id>/', edit_access, name='access-edit'),
+    path('access/users/<int:profile_id>/status/', account_control, name='access-account-control'),
     path('insights/', dashboard, name='insights'),
     path('insights/login/', InsightsLoginView.as_view(), name='insights-login'),
     path('insights/logout/', InsightsLogoutView.as_view(), name='insights-logout'),

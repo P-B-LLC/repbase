@@ -149,6 +149,39 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccessUser'
           description: ''
+  /api/v1/administration/users/{profile_id}/status/:
+    put:
+      operationId: user_status_update
+      parameters:
+      - in: path
+        name: profile_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - administration
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeAccountStatusRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ChangeAccountStatusRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ChangeAccountStatusRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessUser'
+          description: ''
   /api/v1/auth/login/:
     post:
       operationId: auth_login_create
@@ -4887,6 +4920,21 @@ paths:
               schema:
                 $ref: '#/components/schemas/SavedWorkoutResult'
           description: ''
+  /api/v1/social/spotlight/:
+    get:
+      operationId: community_spotlight_retrieve
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunitySpotlight'
+          description: ''
   /api/v1/step-counts/:
     get:
       operationId: step_counts_list
@@ -5146,6 +5194,90 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ProfileHighlight'
+          description: ''
+  /api/v1/web/login/:
+    post:
+      operationId: web_login_create
+      tags:
+      - web
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSession'
+          description: ''
+  /api/v1/web/logout/:
+    post:
+      operationId: web_logout_create
+      tags:
+      - web
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSession'
+          description: ''
+  /api/v1/web/register/:
+    post:
+      operationId: web_register_create
+      tags:
+      - web
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSession'
+          description: ''
+  /api/v1/web/session/:
+    get:
+      operationId: web_session_retrieve
+      tags:
+      - web
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSession'
           description: ''
   /api/v1/workout-exercises/:
     get:
@@ -5482,7 +5614,16 @@ components:
           type: string
         editable:
           type: boolean
+        controllable:
+          type: boolean
+        active:
+          type: boolean
+        disabled_by_admin:
+          type: boolean
       required:
+      - active
+      - controllable
+      - disabled_by_admin
       - display_name
       - editable
       - id
@@ -5668,6 +5809,18 @@ components:
           maxLength: 300
       required:
       - weight_kg
+    BrowserSession:
+      type: object
+      properties:
+        user:
+          allOf:
+          - $ref: '#/components/schemas/RepbaseUser'
+          nullable: true
+        csrf_token:
+          type: string
+      required:
+      - csrf_token
+      - user
     Capabilities:
       type: object
       properties:
@@ -5755,6 +5908,27 @@ components:
       required:
       - roles
       - version
+    ChangeAccountStatusRequest:
+      type: object
+      properties:
+        active:
+          type: boolean
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+        confirm_username:
+          type: string
+          minLength: 1
+          maxLength: 150
+      required:
+      - active
+      - confirm_username
+      - reason
+      - version
     ClearScheduleResult:
       type: object
       description: How many planned days were cleared.
@@ -5764,6 +5938,18 @@ components:
           readOnly: true
       required:
       - cleared
+    CommunitySpotlight:
+      type: object
+      properties:
+        announcement:
+          type: string
+        featured_post:
+          allOf:
+          - $ref: '#/components/schemas/Post'
+          nullable: true
+      required:
+      - announcement
+      - featured_post
     ContentTypeEnum:
       enum:
       - image/heic
@@ -9052,6 +9238,18 @@ components:
     PublicRepbaseUser:
       type: object
       properties:
+        community_label:
+          type: string
+          readOnly: true
+          default: ''
+        community_badge:
+          type: string
+          readOnly: true
+          default: ''
+        community_color:
+          type: string
+          readOnly: true
+          default: '#F65A18'
         id:
           type: integer
           readOnly: true
@@ -9135,6 +9333,9 @@ components:
           format: date-time
           readOnly: true
       required:
+      - community_badge
+      - community_color
+      - community_label
       - created_at
       - disciplines
       - first_name

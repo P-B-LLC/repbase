@@ -1,0 +1,6 @@
+{% extends 'access/base.html' %}{% block content %}
+<a href="{% url 'access-workspace' %}">← Administration</a>
+<h1>Account status</h1><p>@{{ account.username }} — {% if account.active %}Active{% else %}Disabled{% endif %}</p>
+<p>Disabling prevents sign-in and revokes existing sessions. It preserves account data and lasts until an authorized administrator restores access. Every action is audited.</p>
+{% if account.controllable %}<form method="post">{% csrf_token %}{{ form.as_p }}<button>Confirm account change</button></form>{% else %}<p>Your role cannot change this account.</p>{% endif %}
+{% endblock %}

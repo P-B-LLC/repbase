@@ -10,6 +10,7 @@ from rest_framework.views import APIView
 from .access import ROLES, ALL_ROLES, assign_roles, capabilities, require, role_state, can_edit_access
 from .access_moderation import decide_report, open_reports, report_data
 from .models import RepbaseUser
+from .account_controls import can_control_account, account_status, change_account_status
 
 
 class CapabilitiesSerializer(serializers.Serializer):
@@ -44,6 +45,9 @@ class AccessUserSerializer(AccountAccessSerializer):
     username = serializers.CharField()
     display_name = serializers.CharField()
     editable = serializers.BooleanField()
+    controllable = serializers.BooleanField()
+    active = serializers.BooleanField()
+    disabled_by_admin = serializers.BooleanField()
 
 
 class AccessUserPageSerializer(serializers.Serializer):
@@ -58,6 +62,7 @@ def user_data(profile, actor):
     return dict(id=profile.pk, username=user.username,
                 display_name=user.get_full_name() or user.username,
                 editable=can_edit_access(actor, user),
+                controllable=can_control_account(actor, user), **account_status(user),
                 **role_state(user))
 
 
@@ -84,11 +89,11 @@ class AccessUsersView(PrivateAccessView):
                                                 description='Username or name, at least 2 characters.'),
                                OpenApiParameter('page', int)])
     def get(self, request):
-        require(request.user, 'manage_roles')
+        require(request.user, 'moderate')
         search = request.query_params.get('search', '').strip()
         if not 2 <= len(search) <= 100:
             raise ValidationError('Enter between 2 and 100 characters to find an account.')
-        users = RepbaseUser.objects.select_related('user').filter(user__is_active=True).filter(
+        users = RepbaseUser.objects.select_related('user').filter(
             Q(user__username__icontains=search) | Q(user__first_name__icontains=search)
             | Q(user__last_name__icontains=search)).order_by('user__username', 'pk')
         paginator = PageNumberPagination()
@@ -100,7 +105,7 @@ class AccessUsersView(PrivateAccessView):
 class UserAccessView(PrivateAccessView):
     @extend_schema(operation_id='user_access_retrieve', responses=AccessUserSerializer)
     def get(self, request, profile_id: int):
-        require(request.user, 'manage_roles')
+        require(request.user, 'moderate')
         return Response(user_data(get_object_or_404(RepbaseUser, pk=profile_id), request.user))
 
     @extend_schema(operation_id='user_access_update', request=ChangeAccessSerializer,
@@ -111,6 +116,26 @@ class UserAccessView(PrivateAccessView):
         body.is_valid(raise_exception=True)
         profile = get_object_or_404(RepbaseUser.objects.select_related('user'), pk=profile_id)
         assign_roles(request.user, profile.user, **body.validated_data)
+        return Response(user_data(profile, request.user))
+
+
+class ChangeAccountStatusSerializer(serializers.Serializer):
+    active = serializers.BooleanField()
+    version = serializers.IntegerField(min_value=0)
+    reason = serializers.CharField(max_length=500, allow_blank=False)
+    confirm_username = serializers.CharField(max_length=150)
+
+
+class UserStatusView(PrivateAccessView):
+    @extend_schema(operation_id='user_status_update', request=ChangeAccountStatusSerializer,
+                   responses=AccessUserSerializer)
+    def put(self, request, profile_id: int):
+        require(request.user, 'moderate')
+        body = ChangeAccountStatusSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        profile = get_object_or_404(RepbaseUser.objects.select_related('user'), pk=profile_id)
+        change_account_status(request.user, profile.user, **body.validated_data)
+        profile.user.refresh_from_db()
         return Response(user_data(profile, request.user))
 
 
