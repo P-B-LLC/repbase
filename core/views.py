@@ -2697,6 +2697,22 @@ def posts_for_cards():
 
     The source links are not selected. They are shown to the author as bare ids,
     which are already columns on the post row.
+
+    A repost draws the same card a second time, nested: `RepostedPostSerializer`
+    walks `repost_of`'s own author (user, gym, disciplines, prompts, social
+    links) and its own workout/meal/planner snapshot, so that chain is loaded
+    one level deep alongside the top-level one. Not two: a repost cannot itself
+    be reposted, so `repost_of__repost_of` is never read and is never fetched.
+
+    `author__prompts` and `author__social_links` are here for the same reason
+    `author__disciplines` already was: `PublicRepbaseUserSerializer` reads them
+    off whichever author it is given, top-level or reposted. Leaving either off
+    is not a half fix, it is no fix: measured directly, a prefetch queued only
+    as `repost_of__author__prompts`, with no `author__prompts` alongside it,
+    does not batch at all -- every author on the page, reposted or not, costs
+    its own query for that relation, which is the per-row cost this function
+    exists to remove. The two have to be prefetched together or neither one
+    is. Measured in `RepostFeedQueryCostTests`.
     """
     return Post.objects.select_related(
         "author__user",
@@ -2704,10 +2720,22 @@ def posts_for_cards():
         "workout",
         "meal",
         "planner",
+        "repost_of__author__user",
+        "repost_of__author__gym",
+        "repost_of__workout",
+        "repost_of__meal",
+        "repost_of__planner",
     ).prefetch_related(
         "author__disciplines",
+        "author__prompts",
+        "author__social_links",
         "workout__exercises",
         "meal__entries",
+        "repost_of__author__disciplines",
+        "repost_of__author__prompts",
+        "repost_of__author__social_links",
+        "repost_of__workout__exercises",
+        "repost_of__meal__entries",
     )
 
 
