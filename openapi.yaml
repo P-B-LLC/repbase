@@ -2919,13 +2919,36 @@ paths:
   /api/v1/schedules/:
     get:
       operationId: schedules_list
+      description: |-
+        Workouts placed on days.
+
+        `start` and `end` let a client draw one week without downloading every
+        day it has ever scheduled, the way the planner and meals already do.
       parameters:
+      - in: query
+        name: end
+        schema:
+          type: string
+          format: date
+        description: Return only workouts scheduled on or before this date.
       - name: page
         required: false
         in: query
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: scheduled_date
+        schema:
+          type: string
+          format: date
+        description: Return only workouts scheduled on this date.
+      - in: query
+        name: start
+        schema:
+          type: string
+          format: date
+        description: Return only workouts scheduled on or after this date.
       tags:
       - schedules
       security:
@@ -2940,6 +2963,11 @@ paths:
           description: ''
     post:
       operationId: schedules_create
+      description: |-
+        Workouts placed on days.
+
+        `start` and `end` let a client draw one week without downloading every
+        day it has ever scheduled, the way the planner and meals already do.
       tags:
       - schedules
       requestBody:
@@ -2967,6 +2995,11 @@ paths:
   /api/v1/schedules/{id}/:
     get:
       operationId: schedules_retrieve
+      description: |-
+        Workouts placed on days.
+
+        `start` and `end` let a client draw one week without downloading every
+        day it has ever scheduled, the way the planner and meals already do.
       parameters:
       - in: path
         name: id
@@ -2988,6 +3021,11 @@ paths:
           description: ''
     put:
       operationId: schedules_update
+      description: |-
+        Workouts placed on days.
+
+        `start` and `end` let a client draw one week without downloading every
+        day it has ever scheduled, the way the planner and meals already do.
       parameters:
       - in: path
         name: id
@@ -3021,6 +3059,11 @@ paths:
           description: ''
     patch:
       operationId: schedules_partial_update
+      description: |-
+        Workouts placed on days.
+
+        `start` and `end` let a client draw one week without downloading every
+        day it has ever scheduled, the way the planner and meals already do.
       parameters:
       - in: path
         name: id
@@ -3053,6 +3096,11 @@ paths:
           description: ''
     delete:
       operationId: schedules_destroy
+      description: |-
+        Workouts placed on days.
+
+        `start` and `end` let a client draw one week without downloading every
+        day it has ever scheduled, the way the planner and meals already do.
       parameters:
       - in: path
         name: id

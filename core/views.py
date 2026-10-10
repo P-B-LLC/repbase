@@ -1256,7 +1256,37 @@ class WorkoutExerciseViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         return self.scope_to_owner(super().get_queryset())
 
 
+@extend_schema_view(
+    list=extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="scheduled_date",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only workouts scheduled on this date.",
+            ),
+            OpenApiParameter(
+                name="start",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only workouts scheduled on or after this date.",
+            ),
+            OpenApiParameter(
+                name="end",
+                type=OpenApiTypes.DATE,
+                location=OpenApiParameter.QUERY,
+                description="Return only workouts scheduled on or before this date.",
+            ),
+        ]
+    )
+)
 class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+    """Workouts placed on days.
+
+    `start` and `end` let a client draw one week without downloading every
+    day it has ever scheduled, the way the planner and meals already do.
+    """
+
     queryset = WorkoutSchedule.objects.select_related("owner", "workout")
     serializer_class = WorkoutScheduleSerializer
     permission_classes = [IsAuthenticated]
@@ -1264,7 +1294,15 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
         scheduled_date = date_param(self.request, "scheduled_date")
-        return queryset.filter(scheduled_date=scheduled_date) if scheduled_date else queryset
+        start = date_param(self.request, "start")
+        end = date_param(self.request, "end")
+        if scheduled_date:
+            queryset = queryset.filter(scheduled_date=scheduled_date)
+        if start:
+            queryset = queryset.filter(scheduled_date__gte=start)
+        if end:
+            queryset = queryset.filter(scheduled_date__lte=end)
+        return queryset
 
     def perform_create(self, serializer):
         serializer.save(owner=self.owner_profile())

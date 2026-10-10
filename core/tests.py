@@ -4,7 +4,7 @@ import uuid
 import tempfile
 import warnings
 from unittest import mock
-from datetime import timedelta
+from datetime import date, timedelta
 from zoneinfo import ZoneInfo
 from decimal import Decimal
 
@@ -2147,6 +2147,62 @@ class RotationHandoverTests(RepbaseAPITestMixin, APITestCase):
             {"start_on": str(today + timedelta(days=5))}, format="json",
         )
         self.assertTrue(WorkoutSchedule.objects.filter(id=past.id).exists())
+
+
+class ScheduleRangeTests(RepbaseAPITestMixin, APITestCase):
+    """A week of the schedule, without the rest of its history."""
+
+    LIST = "/api/v1/schedules/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("ranger")
+        self.authenticate(self.token)
+        self.workout = WorkoutTemplate.objects.create(
+            owner=self.profile, name="Push Day", workout_type="lifting"
+        )
+        self.monday = date(2026, 3, 2)
+        for offset in (-1, 0, 3, 6, 7):
+            WorkoutSchedule.objects.create(
+                owner=self.profile,
+                workout=self.workout,
+                scheduled_date=self.monday + timedelta(days=offset),
+            )
+
+    def dates(self, **params):
+        response = self.client.get(self.LIST, params)
+        self.assertEqual(response.status_code, 200, response.data)
+        return [row["scheduled_date"] for row in response.data["results"]]
+
+    def test_start_and_end_bound_the_week_inclusively(self):
+        self.assertEqual(
+            self.dates(start="2026-03-02", end="2026-03-08"),
+            ["2026-03-02", "2026-03-05", "2026-03-08"],
+        )
+
+    def test_either_bound_alone_is_open_on_the_other_side(self):
+        self.assertEqual(self.dates(start="2026-03-08"), ["2026-03-08", "2026-03-09"])
+        self.assertEqual(self.dates(end="2026-03-01"), ["2026-03-01"])
+
+    def test_no_bounds_still_lists_everything(self):
+        self.assertEqual(len(self.dates()), 5)
+
+    def test_a_single_day_still_works_and_combines_with_a_range(self):
+        self.assertEqual(self.dates(scheduled_date="2026-03-05"), ["2026-03-05"])
+        self.assertEqual(
+            self.dates(scheduled_date="2026-03-05", start="2026-03-06"), []
+        )
+
+    def test_a_range_shows_only_your_own_days(self):
+        _, other, _ = self.create_account("stranger")
+        theirs = WorkoutTemplate.objects.create(
+            owner=other, name="Legs", workout_type="lifting"
+        )
+        WorkoutSchedule.objects.create(
+            owner=other, workout=theirs, scheduled_date=self.monday
+        )
+        self.assertEqual(
+            self.dates(start="2026-03-02", end="2026-03-02"), ["2026-03-02"]
+        )
 
 
 class ScheduleClearingTests(RepbaseAPITestMixin, APITestCase):

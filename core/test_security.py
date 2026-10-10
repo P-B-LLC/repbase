@@ -205,6 +205,8 @@ class MalformedInputTests(RepbaseAPITestMixin, APITestCase):
             ("/api/v1/planner/?end=2026-02-30", "end"),
             ("/api/v1/planner/?parent=x", "parent"),
             ("/api/v1/schedules/?scheduled_date=bad", "scheduled_date"),
+            ("/api/v1/schedules/?start=bad", "start"),
+            ("/api/v1/schedules/?end=2026-02-30", "end"),
             ("/api/v1/food/meals/?start=yesterday", "start"),
             ("/api/v1/sessions/?workout=abc", "workout"),
             ("/api/v1/sessions/previous-sets/?exclude_session=z", "exclude_session"),
