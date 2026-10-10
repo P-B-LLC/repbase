@@ -36,6 +36,24 @@ Token rotation invalidates the token used for the request and returns a replacem
 
 List responses are paginated with `count`, `next`, `previous`, and `results` fields.
 
+## Social
+
+- `/api/v1/social/posts/` — posts the reader may see; create one from your own session, meal or planner entry
+- `/api/v1/social/feed/` — the people you follow, newest first (cursor paging)
+- `/api/v1/social/for-you/` — posts picked for you from everyone, each with a `recommendation` saying why (cursor paging)
+- `POST /api/v1/social/impressions/` — what was on screen and for how long, in batches of up to 50
+- `POST`/`DELETE /api/v1/social/posts/{id}/not-interested/` — dismiss a post from For You, or undo it
+- `POST /api/v1/social/posts/{id}/report/` — report a post to the moderators
+- `POST`/`DELETE /api/v1/social/posts/{id}/video/` — attach or remove a clip on your own post
+
+A clip is sent as the request body itself with a video `Content-Type`, not as
+base64 or multipart. The server reads the file to decide what it is: MP4 or
+QuickTime, H.264 or HEVC, at most 60 seconds and 25 MB by default. It answers
+413 when the file is too large, 415 for a non-video `Content-Type`, and 400
+with a sentence under `video` for anything else. Where moderation is on, a new
+clip has `status: "pending"` and is shown only to its author until approved.
+See [RECOMMENDATIONS.md](RECOMMENDATIONS.md) for how For You ranks.
+
 ## Session lifecycle
 
 Create a planned session:

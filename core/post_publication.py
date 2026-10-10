@@ -2,7 +2,7 @@
 from contextlib import contextmanager
 import uuid
 
-from django.core.files.base import ContentFile
+from django.core.files.base import ContentFile, File
 from django.core.files.storage import default_storage
 from django.db import transaction
 
@@ -27,6 +27,20 @@ def publication_media(decoded, extension):
         smaller = feed_variant(decoded)
         if smaller is not None:
             files.append(('feed_image', f'post-photos/feed/{uuid.uuid4().hex}.jpg', smaller))
+    with staged_files(files) as fields:
+        yield fields
+
+
+@contextmanager
+def staged_files(files):
+    """Write server-named files so that no crash can leave one untracked.
+
+    `files` is a list of (field, name, content), where content is bytes or an
+    open file. Shared by photos and clips: the ordering below is the whole
+    guarantee, and two copies of it would be two chances to get it wrong.
+    """
+    if files and not callable(getattr(default_storage, 'save_reserved', None)):
+        raise PublicationMediaError('Storage does not support reserved upload names.')
     # Committed BEFORE any storage write. A process crash leaves a discoverable
     # cleanup job, not an untracked upload. Names are server-generated UUIDs.
     jobs = [PendingMediaDeletion.objects.create(name=name) for _, name, _ in files]
@@ -42,13 +56,14 @@ def publication_media(decoded, extension):
             fields = {}
             for field, name, data in files:
                 try:
-                    actual = default_storage.save_reserved(name, ContentFile(data))
+                    content = data if isinstance(data, File) else ContentFile(data)
+                    actual = default_storage.save_reserved(name, content)
                     written.append(actual)
                     if actual != name:
                         raise PublicationMediaError('Storage violated the reserved-name contract.')
                     fields[field] = actual
                 except Exception as error:
-                    raise PublicationMediaError('Photo storage is unavailable.') from error
+                    raise PublicationMediaError('Media storage is unavailable.') from error
             yield fields
             PendingMediaDeletion.objects.filter(pk__in=[job.pk for job in jobs]).delete()
     except Exception:

@@ -47,13 +47,21 @@ makes one unguessable rather than merely long.
 """
 
 import hashlib
+import mimetypes
 import posixpath
+import re
 import time
 
 from django.conf import settings
 from django.core.files.storage import default_storage
 from django.db.models import Q
-from django.http import FileResponse, HttpResponse, HttpResponseForbidden, HttpResponseNotModified
+from django.http import (
+    FileResponse,
+    HttpResponse,
+    HttpResponseForbidden,
+    HttpResponseNotModified,
+    StreamingHttpResponse,
+)
 from django.utils.crypto import constant_time_compare, salted_hmac
 from django.utils.http import urlencode
 
@@ -135,8 +143,14 @@ def taken_down(name):
     What it cannot do is recall a copy somebody already downloaded. Nothing
     can.
     """
-    from .models import Post
+    from .models import Post, PostVideo
 
+    if name.startswith('post-videos/'):
+        # A clip goes with its post, and also on its own: a moderator who
+        # rejects a clip has not necessarily hidden the workout it is on.
+        return PostVideo.objects.filter(file=name).filter(
+            Q(post__is_hidden=True) | Q(status=PostVideo.Status.REJECTED)
+        ).exists()
     if not name.startswith('post-photos/'):
         return False
     return Post.objects.filter(
@@ -195,9 +209,69 @@ def serve_media(request, path):
     if request.headers.get("If-None-Match") == etag:
         return _cached(HttpResponseNotModified(), request)
 
-    response = FileResponse(default_storage.open(name, "rb"))
+    if name.startswith("post-videos/"):
+        response = _video_response(request, name)
+    else:
+        response = FileResponse(default_storage.open(name, "rb"))
     response["ETag"] = etag
     return _cached(response, request)
+
+
+_BYTE_RANGE = re.compile(r"bytes=(\d*)-(\d*)")
+
+
+def _video_response(request, name):
+    """A clip, whole or in the byte range asked for.
+
+    AVPlayer and Safari will not play an MP4 from a server that cannot answer
+    a Range request: they ask for the first two bytes, expect a 206, and give
+    up on a 200. nginx answers ranges itself when it is sending the file, so
+    this is the path development takes and production does not.
+
+    One range only. A request for several is answered with the whole file,
+    which the specification allows and no player relies on.
+    """
+    size = default_storage.size(name)
+    content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+    match = _BYTE_RANGE.fullmatch(request.headers.get("Range", "").strip())
+    if match is None or match.groups() == ("", ""):
+        response = FileResponse(default_storage.open(name, "rb"), content_type=content_type)
+        response["Accept-Ranges"] = "bytes"
+        return response
+
+    first, last = match.groups()
+    if first == "":
+        # "bytes=-500" is the last five hundred bytes.
+        start, end = max(size - int(last), 0), size - 1
+    else:
+        start = int(first)
+        end = min(int(last), size - 1) if last else size - 1
+    if size == 0 or start >= size or end < start:
+        refused = HttpResponse(status=416)
+        refused["Content-Range"] = f"bytes */{size}"
+        return refused
+
+    handle = default_storage.open(name, "rb")
+    handle.seek(start)
+    response = StreamingHttpResponse(
+        _read_span(handle, end - start + 1), status=206, content_type=content_type
+    )
+    response["Content-Range"] = f"bytes {start}-{end}/{size}"
+    response["Content-Length"] = str(end - start + 1)
+    response["Accept-Ranges"] = "bytes"
+    return response
+
+
+def _read_span(handle, remaining, chunk_size=256 * 1024):
+    try:
+        while remaining > 0:
+            chunk = handle.read(min(chunk_size, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+            yield chunk
+    finally:
+        handle.close()
 
 
 def _cached(response, request):

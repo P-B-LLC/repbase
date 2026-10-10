@@ -4,7 +4,7 @@ from datetime import timedelta
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
-from core.models import PostReport, CommentReport
+from core.models import CommentReport, PostReport, PostVideo
 
 
 class Command(BaseCommand):
@@ -19,7 +19,16 @@ class Command(BaseCommand):
             raise CommandError('Use a review deadline between 1 and 168 hours.')
         cutoff = timezone.now() - timedelta(hours=hours)
         queues = [model.objects.filter(reviewed_at__isnull=True) for model in (PostReport, CommentReport)]
-        overdue = sum(queue.filter(created_at__lt=cutoff).count() for queue in queues)
-        self.stdout.write(f'Open reports: {sum(queue.count() for queue in queues)}; overdue: {overdue}.')
+        # Clips wait for a person before anybody but their author sees them,
+        # so an unreviewed one is somebody's post sitting half-published.
+        clips = PostVideo.objects.filter(status=PostVideo.Status.PENDING)
+        overdue = (
+            sum(queue.filter(created_at__lt=cutoff).count() for queue in queues)
+            + clips.filter(created_at__lt=cutoff).count()
+        )
+        self.stdout.write(
+            f'Open reports: {sum(queue.count() for queue in queues)}; '
+            f'clips awaiting review: {clips.count()}; overdue: {overdue}.'
+        )
         if overdue:
             raise CommandError('Moderation review deadline exceeded. A human must review the admin queue.')

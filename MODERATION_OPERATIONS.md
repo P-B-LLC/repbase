@@ -76,6 +76,40 @@ mailbox or staff credential has been created by this implementation.
    This is not an immutable legal evidence store. Establish an appropriate retention
    policy before promising one, and reconcile legal copy with that policy.
 
+## Video clips: human review
+
+The classifier reads text and still images, not video, so where moderation is
+on (always, in production) a clip is reviewed by a person before anyone but
+its author sees it.
+
+1. Django admin → **Post videos** opens on the clips waiting, oldest first.
+   The change page plays the clip through a signed link; nothing has to be
+   downloaded.
+2. **Approve** shows it to everyone who can see the post. **Reject** keeps it
+   visible to its author only, marked rejected, and the media server refuses
+   to serve it. Both record who decided and when. Both need change permission
+   on videos and posts; a view-only account is not offered them.
+3. `check_moderation_queue` counts waiting clips and treats one older than the
+   deadline as overdue, exactly as it does reports.
+4. While a clip waits, its post stays in its author's followers' feeds without
+   the clip, and is kept out of For You.
+5. Clips are refused before review unless they are MP4 or QuickTime, H.264 or
+   HEVC, no longer than 60 seconds and no larger than 25 MB. Location and
+   device metadata are removed before storage.
+
+## What a takedown reaches
+
+- **Hiding a post** removes it from every feed, For You, comments and
+  notifications, and its photo and clip stop being served even to anyone
+  holding a signed link.
+- **Suspending an account** (`User.is_active = False`) now hides everything it
+  posted and every comment it made, as well as stopping its token. Setting the
+  flag back restores it all.
+- **Three or more open reports** from different people take a post out of For
+  You until the reports are reviewed. It stays in its author's followers'
+  feeds. Closing the reports, whatever the decision, returns it.
+- A person's own report takes the post off their own For You at once.
+
 ## Required before external beta
 
 - Configure a restricted provider key, test actual allowed/flagged/timeout cases

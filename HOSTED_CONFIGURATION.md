@@ -21,6 +21,12 @@ or certify beta readiness. The current SQLite file and media are unchanged.
 - Redis is shared across workers for throttles and cache, with authenticated
   TLS, finite socket timeouts and a per-environment key prefix. DRF throttles
   still are not a strict atomic security perimeter: add ingress abuse controls.
+- Set `REPBASE_NUM_PROXIES` to the number of proxies in front of gunicorn
+  (default 1, for nginx on the same machine). The rate limits identify a client
+  by the address the nearest proxy wrote into X-Forwarded-For; with the wrong
+  count a client can choose its own address and step around every anonymous
+  limit, or every client shares the proxy's. Keep the application port
+  reachable only through that proxy. See SECURITY.md.
 - Database connection reuse defaults to 60 seconds. Transaction pooling disables
   persistent connections, server-side cursors and prepared statements. Confirm
   the provider supports connection startup options/timeouts; for incompatible
