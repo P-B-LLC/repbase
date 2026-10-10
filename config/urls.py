@@ -17,7 +17,7 @@ Including another URLconf
 from django.conf import settings
 from django.contrib import admin
 from django.urls import include, path, re_path
-from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
+from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerSplitView
 
 from core.media import serve_media
 from config.health import live, ready
@@ -33,9 +33,12 @@ urlpatterns = [
     path('api/repbase/', repbase_users, name='repbase-users'),
     path('api/v1/', include('core.urls')),
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
+    # The split view serves its start-up script as a file of its own rather
+    # than inline, which is what lets the page run under a policy that
+    # refuses inline scripts. See core.security.
     path(
         'api/docs/',
-        SpectacularSwaggerView.as_view(url_name='schema'),
+        SpectacularSwaggerSplitView.as_view(url_name='schema'),
         name='swagger-ui',
     ),
     # Not behind `if settings.DEBUG`, which is where this used to live and why

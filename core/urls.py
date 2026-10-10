@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
+from .for_you import ForYouView, ImpressionsView
 from .views import (
     BlockViewSet,
     FollowRequestViewSet,
@@ -87,6 +88,8 @@ urlpatterns = [
         PreviousSetsView.as_view(),
         name="previous-sets",
     ),
+    path("social/for-you/", ForYouView.as_view(), name="for-you"),
+    path("social/impressions/", ImpressionsView.as_view(), name="impressions"),
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/login/", LoginView.as_view(), name="login"),
     path("food/search/", FoodSearchView.as_view(), name="food-search"),

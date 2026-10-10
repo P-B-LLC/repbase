@@ -54,6 +54,11 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    # CSP, Permissions-Policy, CORP and no-store on API answers. See
+    # core.security for why the policy depends on what the response is.
+    'core.security.SecurityHeadersMiddleware',
+    # Before anything reads a query parameter. See core.security.
+    'core.security.RefuseNullBytesMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -148,6 +153,23 @@ STORAGES = {
 MEDIA_URL_TTL = int(os.getenv('REPBASE_MEDIA_URL_TTL', str(7 * 24 * 60 * 60)))
 MEDIA_URL_WINDOW = int(os.getenv('REPBASE_MEDIA_URL_WINDOW', str(24 * 60 * 60)))
 
+# Clips attached to posts. See core.videos and core.uploads.
+#
+# The byte ceiling is the one that protects the server, and it should not be
+# larger than what the proxy in front accepts: nginx's client_max_body_size is
+# 25 MB in the deployed configuration, and a larger limit here would only
+# mean nginx refusing with an HTML page instead of this API refusing with a
+# sentence. A minute of 720p from a phone's own export is comfortably inside.
+VIDEO_MAX_BYTES = int(os.getenv('REPBASE_VIDEO_MAX_BYTES', str(25 * 1024 * 1024)))
+VIDEO_MAX_SECONDS = int(os.getenv('REPBASE_VIDEO_MAX_SECONDS', '60'))
+#: Longest side, and total picture area. 4K in either orientation fits.
+VIDEO_MAX_DIMENSION = 4096
+VIDEO_MAX_PIXELS = 4096 * 2304
+#: None follows MODERATION_ENABLED, which is the right answer everywhere this
+#: has been thought about: the classifier cannot watch video, so where
+#: moderation matters a person has to. config.production pins it on.
+VIDEO_REVIEW_REQUIRED = None
+
 # Set this to the internal location a reverse proxy maps onto MEDIA_ROOT --
 # `/protected-media/` for a standard nginx `internal;` block -- and the file
 # is sent by the proxy while this process only checks the signature and
@@ -205,8 +227,55 @@ REST_FRAMEWORK = {
         'password_reset_confirm': os.environ.get(
             'REPBASE_THROTTLE_RESET_CONFIRM', '30/hour'
         ),
+        # Failed sign-ins against one username, from anywhere. The per-address
+        # limit above cannot see an attack spread across many addresses, and
+        # this one is counted on failures only so that a person who knows
+        # their password is never locked out by somebody who does not.
+        'login_username': os.environ.get('REPBASE_THROTTLE_LOGIN_USERNAME', '20/hour'),
+        # The rest are split by what the request does rather than by which
+        # viewset answers it. `post` above used to be applied to every request
+        # PostViewSet served, reads and likes included, so somebody scrolling
+        # profiles and liking what they saw spent the same sixty an hour that
+        # was meant to bound publishing.
+        #
+        # Likes, reposts, saves and "not interested": cheap, frequent, and
+        # each one notifies somebody, which is what makes them worth bounding.
+        'social': os.environ.get('REPBASE_THROTTLE_SOCIAL', '600/hour'),
+        # Comments had no limit of their own, and they are the other thing
+        # here that puts words in front of other people.
+        'comment': os.environ.get('REPBASE_THROTTLE_COMMENT', '120/hour'),
+        # Following is how spam accounts announce themselves to everybody at
+        # once. Generous for a person, tight for a script.
+        'follow': os.environ.get('REPBASE_THROTTLE_FOLLOW', '200/hour'),
+        # Reports reach a human queue. A person files a few; a flood is an
+        # attempt to bury the queue or to get something taken down by volume.
+        'report': os.environ.get('REPBASE_THROTTLE_REPORT', '30/hour'),
+        # Video uploads are the most expensive request this API accepts.
+        'upload': os.environ.get('REPBASE_THROTTLE_UPLOAD', '20/hour'),
+        # View events arrive in batches from a scrolling feed.
+        'impression': os.environ.get('REPBASE_THROTTLE_IMPRESSION', '600/hour'),
     },
 }
+
+# How many reverse proxies stand between a client and this process.
+#
+# DRF's default, None, takes the *whole* X-Forwarded-For header as the client's
+# identity. nginx appends the real address to whatever the client sent, so a
+# client that sends a different made-up address on every request gets a
+# different identity on every request -- and every anonymous limit above, the
+# ones on sign-in, registration and password reset, never fills. That was
+# reproduced: fifteen failed sign-ins with a rotating header, no 429.
+#
+# With a count, DRF reads the address the nearest trusted proxy wrote and
+# ignores everything a client prepended. Left unset here so local runserver,
+# which has no proxy, behaves exactly as before; config.production sets it.
+_num_proxies = os.getenv('REPBASE_NUM_PROXIES', '').strip()
+if _num_proxies:
+    REST_FRAMEWORK['NUM_PROXIES'] = int(_num_proxies)
+
+#: Where the API docs page loads Swagger UI from. core.security allows exactly
+#: this origin in the page policy, so the two cannot name different hosts.
+API_DOCS_CDN = 'https://cdn.jsdelivr.net'
 
 SPECTACULAR_SETTINGS = {
     'TITLE': 'Repbase API',
@@ -234,7 +303,18 @@ SPECTACULAR_SETTINGS = {
         'WorkoutTypeEnum': 'core.models.WorkoutTypeChoices.choices',
         'CardioMachineEnum': 'core.models.CardioMachine.choices',
     },
+    # Pinned. The default is `swagger-ui-dist@latest`, which runs whatever
+    # was published most recently on this origin's docs page -- with the
+    # admin's session cookie in the same browser. A pinned version can only
+    # change when somebody changes it here.
+    'SWAGGER_UI_DIST': API_DOCS_CDN + '/npm/swagger-ui-dist@5.17.14',
+    'SWAGGER_UI_FAVICON_HREF': API_DOCS_CDN + '/npm/swagger-ui-dist@5.17.14/favicon-32x32.png',
 }
+
+# Error reports -- the technical 500 page in development, admin email in
+# production -- with the Authorization header hidden as well as the settings
+# and headers Django hides already. See core.security.
+DEFAULT_EXCEPTION_REPORTER_FILTER = 'core.security.RedactingExceptionReporterFilter'
 
 SESSION_COOKIE_SECURE = not DEBUG
 CSRF_COOKIE_SECURE = not DEBUG

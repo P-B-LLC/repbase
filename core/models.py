@@ -2767,6 +2767,81 @@ class PostPlannerEntry(models.Model):
         return f"{self.scheduled_date}: {self.title}"
 
 
+def post_video_path(instance, filename):
+    """Where a post's clip lives. Server-chosen, like every stored name."""
+    suffix = pathlib.Path(filename).suffix.lower() or ".mp4"
+    return f"post-videos/{uuid.uuid4().hex}{suffix}"
+
+
+class PostVideo(models.Model):
+    """A short clip attached to a post.
+
+    Its own row rather than three more columns on Post, for the reason the
+    snapshots are siblings: most posts have none, and a clip carries a review
+    state that a photo does not.
+
+    The review state exists because the automated classifier reads text and
+    still images, not video. A photo is checked before it is published; a clip
+    cannot be, so where moderation is on it waits for a person -- shown to its
+    author, marked as waiting, and to nobody else until a moderator approves
+    it. Where moderation is off (development) it is approved on arrival.
+
+    Everything numeric here was measured by `core.uploads.normalise_video`
+    from the file itself, never taken from the request.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Waiting for review"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    post = models.OneToOneField(Post, on_delete=models.CASCADE, related_name="video")
+    #: Indexed because serving a clip asks whether it may still be served, and
+    #: that question is asked by file name once per request.
+    file = models.FileField(upload_to=post_video_path, max_length=255, db_index=True)
+    #: "video/mp4" or "video/quicktime", as the bytes turned out to be.
+    content_type = models.CharField(max_length=40)
+    #: The picture's sample entry: avc1, avc3, hvc1 or hev1.
+    codec = models.CharField(max_length=8)
+    duration_ms = models.PositiveIntegerField()
+    width = models.PositiveIntegerField()
+    height = models.PositiveIntegerField()
+    size_bytes = models.PositiveBigIntegerField()
+    has_audio = models.BooleanField(default=False)
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        "auth.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="reviewed_post_videos",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("created_at", "id")
+        indexes = [models.Index(fields=("status", "created_at"))]
+
+    def __str__(self):
+        return f"video on post {self.post_id} ({self.status})"
+
+    def viewable_by(self, profile):
+        """Whether this reader is shown the clip itself.
+
+        Approved clips go to whoever may see the post; the post's visibility
+        has already decided that by the time this is asked. A clip still
+        waiting, or refused, is its author's alone -- they need to see that
+        it is waiting, and nobody else needs to see it at all.
+        """
+        if self.status == self.Status.APPROVED:
+            return True
+        return profile is not None and self.post.author_id == profile.pk
+
+
 #: What a day starts with when someone first opens it. Four is what the app has
 #: always drawn, and it lives here now rather than there: the screens are meant
 #: to show what the server holds, and a slot drawn only by the client is a row
@@ -3145,7 +3220,12 @@ class PostLike(models.Model):
                 name="unique_post_like",
             )
         ]
-        indexes = [models.Index(fields=["post", "-created_at"])]
+        indexes = [
+            models.Index(fields=["post", "-created_at"]),
+            # One person's recent likes, which is where the For You page
+            # starts working out what they are into.
+            models.Index(fields=["user", "-created_at"]),
+        ]
 
     def __str__(self):
         return f"like on post {self.post_id}"
@@ -3189,7 +3269,12 @@ class PostComment(models.Model):
         #: Oldest first, which is how a conversation reads. Ties broken by id
         #: so a page boundary means the same thing on the next request.
         ordering = ["created_at", "id"]
-        indexes = [models.Index(fields=["post", "created_at"])]
+        indexes = [
+            models.Index(fields=["post", "created_at"]),
+            # One person's recent comments, read as interest by the For You
+            # page.
+            models.Index(fields=["author", "-created_at"]),
+        ]
 
     def __str__(self):
         return f"comment on post {self.post_id}"
@@ -3210,6 +3295,95 @@ class CommentReport(models.Model):
         ordering = ['created_at', 'id']
         constraints = [models.UniqueConstraint(fields=['comment', 'reporter'], name='one_comment_report_per_person')]
         indexes = [models.Index(fields=['reviewed_at', 'created_at'], name='comment_report_review_idx')]
+
+
+class PostView(models.Model):
+    """One reader's history with one post, folded into a single row.
+
+    A row per viewer and post rather than a row per impression. The For You
+    ranking asks three things of this table -- has this person seen it, did
+    they stay, did they skip it -- and each of those is a property of the
+    pair, not of every scroll past. A row per impression would grow with how
+    long people scroll; this grows with how much there is to see.
+
+    What the client reports is bounded and summed, never trusted to set a
+    total. A client can claim it lingered, and that claim moves its own
+    recommendations; it cannot reach anyone else's except through the
+    smoothed rates below, where one reader is one of many.
+    """
+
+    class Surface(models.TextChoices):
+        FOR_YOU = "for_you", "For You"
+        FOLLOWING = "following", "Following"
+        DISCOVER = "discover", "Discover"
+        PROFILE = "profile", "Profile"
+        OTHER = "other", "Other"
+
+    viewer = models.ForeignKey(
+        RepbaseUser, on_delete=models.CASCADE, related_name="post_views"
+    )
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="views")
+    view_count = models.PositiveIntegerField(default=0)
+    #: Time on screen, summed over every viewing.
+    total_dwell_ms = models.PositiveBigIntegerField(default=0)
+    #: The furthest into the post's clip this reader got, in one viewing.
+    #: Null when no viewing reported any watching.
+    max_watch_ms = models.PositiveIntegerField(null=True, blank=True)
+    #: Watched the clip to the end at least once.
+    completed = models.BooleanField(default=False)
+    #: The most recent viewing was a scroll past. Recomputed on each one, so
+    #: coming back to something later and staying clears it.
+    skipped = models.BooleanField(default=False)
+    #: Where it was first seen. Lets quality be measured per surface: a like on
+    #: something the For You page put in front of somebody is a signal about
+    #: the ranking; a like on a friend's post is not.
+    surface = models.CharField(
+        max_length=20, choices=Surface.choices, default=Surface.OTHER
+    )
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("viewer", "post"), name="one_view_row_per_pair")
+        ]
+        indexes = [
+            models.Index(fields=("viewer", "-last_seen_at")),
+            models.Index(fields=("surface", "first_seen_at")),
+        ]
+
+    def __str__(self):
+        return f"{self.viewer_id} viewed post {self.post_id}"
+
+
+class PostFeedback(models.Model):
+    """A reader saying they do not want to see something like this.
+
+    Explicit, and kept apart from views, because it is the strongest negative
+    signal there is and it has to be undoable: "not interested" pressed by
+    mistake has to come back off.
+    """
+
+    class Kind(models.TextChoices):
+        NOT_INTERESTED = "not_interested", "Not interested"
+
+    viewer = models.ForeignKey(
+        RepbaseUser, on_delete=models.CASCADE, related_name="post_feedback"
+    )
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="feedback")
+    kind = models.CharField(
+        max_length=20, choices=Kind.choices, default=Kind.NOT_INTERESTED
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("viewer", "post"), name="one_feedback_per_pair")
+        ]
+        indexes = [models.Index(fields=("viewer", "-created_at"))]
+
+    def __str__(self):
+        return f"{self.viewer_id}: {self.kind} on post {self.post_id}"
 
 
 #: How many questions one profile may answer. Three keeps a profile readable

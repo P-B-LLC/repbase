@@ -5,6 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
@@ -51,6 +52,9 @@ from .post_publication import publication_media, PublicationMediaError
 from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IdempotentCreateMixin
 from .serializers import SessionFinishSerializer
+from .params import date_param, id_param
+from .throttles import FailedSignInLimit, ThrottleByActionMixin
+from .videos import ReceivedVideo, VideoUploadParser, attach_video, remove_video
 from .models import (
     CYCLE_MATERIALIZE_DAYS,
     BodyWeightEntry,
@@ -93,6 +97,7 @@ from .models import (
     Post,
     PostComment,
     CommentReport,
+    PostFeedback,
     PostLike,
     PostMeal,
     PostMealEntry,
@@ -236,7 +241,17 @@ def health(request):
     return JsonResponse({"status": "ok"})
 
 
+@staff_member_required
 def repbase_users(request):
+    """Every member, with their email and measurements, for staff only.
+
+    This page was open to anyone. It sits outside the API, so DRF's
+    IsAuthenticated default never reached it, and it printed each member's
+    email address, height and weight -- the very numbers `shows_height` and
+    `shows_weight` exist to withhold -- to whoever asked for /api/repbase/.
+    Staff can already read all of it in the admin, so that is the audience it
+    keeps; anyone else is sent to sign in there.
+    """
     users = RepbaseUser.objects.select_related("user").order_by("-created_at")
     return render(request, "core/repbase_users.html", {"users": users})
 
@@ -279,8 +294,20 @@ class LoginView(APIView):
 
     @extend_schema(request=LoginSerializer, responses={200: AuthResponseSerializer})
     def post(self, request):
+        # Read defensively: a JSON array body has no .get, and a username
+        # that is not a string is not a username anyone can be locked out by.
+        data = request.data if hasattr(request.data, "get") else {}
+        attempted = data.get("username")
+        limit = FailedSignInLimit(attempted if isinstance(attempted, str) else "")
+        # Before the password is looked at. Past the limit the answer is the
+        # same whether the password is right or wrong, so a guessing run
+        # learns nothing more from this account until the window passes.
+        limit.check()
+
         serializer = LoginSerializer(data=request.data, context={"request": request})
-        serializer.is_valid(raise_exception=True)
+        if not serializer.is_valid():
+            limit.record_failure()
+            raise ValidationError(serializer.errors)
         user = serializer.validated_data["user"]
         profile = profile_for(user)
         token, _ = Token.objects.get_or_create(user=user)
@@ -585,6 +612,11 @@ class PasswordResetConfirmView(APIView):
         if not correct:
             raise invalid
 
+        # Whoever reset the password has shown they hold the mailbox, so the
+        # failed sign-ins somebody else racked up against this name no longer
+        # stand between its owner and the account.
+        FailedSignInLimit(user.username).clear()
+
         profile = profile_for(user)
         return Response(
             AuthResponseSerializer({"token": token.key, "user": profile}).data
@@ -865,7 +897,7 @@ class MePhotoView(APIView):
         ),
     )
 )
-class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
+class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
     queryset = (
         RepbaseUser.objects.select_related("user")
         .prefetch_related("prompts", "social_links")
@@ -873,6 +905,9 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
     )
     serializer_class = PublicRepbaseUserSerializer
     permission_classes = [IsAuthenticated]
+    # Mass-following is how a spam account announces itself to everybody,
+    # and each follow notifies somebody.
+    action_throttle_scopes = {"follow": "follow"}
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -987,6 +1022,29 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
             notify(target, follower, Notification.Kind.FOLLOW)
         return Response(status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
 
+    def _reader_may_read(self, target):
+        """Whether the person asking may see what hangs off this profile.
+
+        The same rule `PublicRepbaseUserSerializer` applies to the profile
+        itself -- open, your own, or one you follow -- plus a block in either
+        direction, which is somebody refusing to appear to the other.
+
+        The profile row already empties itself for a reader who fails this.
+        The three lists below did not: a closed profile's best lifts, and who
+        it follows and is followed by, were served to any signed-in stranger
+        who knew the id. Those lists are as much the profile as the bio is.
+        """
+        viewer = profile_for(self.request.user)
+        if target.pk == viewer.pk:
+            return True
+        if Block.objects.filter(
+            Q(blocker=viewer, blocked=target) | Q(blocker=target, blocked=viewer)
+        ).exists():
+            return False
+        if target.is_profile_public:
+            return True
+        return Follow.objects.filter(follower=viewer, following=target).exists()
+
     @extend_schema(
         responses={200: ProfileHighlightSerializer(many=True)},
         description=(
@@ -998,6 +1056,12 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
     @action(detail=True, methods=["get"], pagination_class=None)
     def highlights(self, request, pk=None):
         target = self.get_object()
+        if not self._reader_may_read(target):
+            # Empty rather than refused, for the reason the closed profile is
+            # emptied rather than dropped: the app asks for this beside the
+            # profile, and a 403 here would be an error screen over a page
+            # that is otherwise drawn as a closed door.
+            return Response([])
         highlights = target.highlights.all()
         return Response(
             ProfileHighlightSerializer(
@@ -1030,6 +1094,10 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
             .select_related("follower__user", "follower__gym")
             .prefetch_related("follower__disciplines")
         )
+        if not self._reader_may_read(target):
+            # An empty page in the usual shape, so a client pages through it
+            # exactly as it would a profile nobody follows.
+            follows = follows.none()
         page = self.paginate_queryset(follows)
         people = [follow.follower for follow in page]
         # get_serializer, not the bare serializer class: it carries the request
@@ -1047,6 +1115,8 @@ class RepbaseUserViewSet(viewsets.ReadOnlyModelViewSet):
             .select_related("following__user", "following__gym")
             .prefetch_related("following__disciplines")
         )
+        if not self._reader_may_read(target):
+            follows = follows.none()
         page = self.paginate_queryset(follows)
         people = [follow.following for follow in page]
         return self.get_paginated_response(self.get_serializer(people, many=True).data)
@@ -1179,7 +1249,7 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
-        scheduled_date = self.request.query_params.get("scheduled_date")
+        scheduled_date = date_param(self.request, "scheduled_date")
         return queryset.filter(scheduled_date=scheduled_date) if scheduled_date else queryset
 
     def perform_create(self, serializer):
@@ -1319,8 +1389,8 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
-        start = self.request.query_params.get("start")
-        end = self.request.query_params.get("end")
+        start = date_param(self.request, "start")
+        end = date_param(self.request, "end")
         if start:
             queryset = queryset.filter(date__gte=start)
         if end:
@@ -1497,7 +1567,7 @@ class FoodEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelV
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
-        meal = self.request.query_params.get("meal")
+        meal = id_param(self.request, "meal")
         return queryset.filter(meal_id=meal) if meal else queryset
 
     def perform_create(self, serializer):
@@ -1784,8 +1854,8 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
-        start = self.request.query_params.get("start")
-        end = self.request.query_params.get("end")
+        start = date_param(self.request, "start")
+        end = date_param(self.request, "end")
         category = self.request.query_params.get("category")
         kind = self.request.query_params.get("kind")
         is_complete = self.request.query_params.get("is_complete")
@@ -1795,12 +1865,7 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         # every screen that draws days asks for a range, and a detail route
         # naming one row has no range to fill.
         if self.action == "list" and end:
-            try:
-                horizon = date.fromisoformat(end)
-            except ValueError:
-                horizon = None
-            if horizon is not None:
-                materialize_planner_repeats(self.owner_profile(), horizon)
+            materialize_planner_repeats(self.owner_profile(), end)
 
         # A step is drawn under its parent, not as a row of the day. Listing
         # both would show the same work twice and make "3 of 5 done" count the
@@ -1812,7 +1877,7 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         # too -- a step could be created and then never ticked off, because
         # every request naming it answered 404.
         if self.action == "list":
-            parent = self.request.query_params.get("parent")
+            parent = id_param(self.request, "parent")
             if parent:
                 queryset = queryset.filter(parent_id=parent)
             elif self.request.query_params.get("include_subtasks") != "true":
@@ -2166,7 +2231,7 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
                     | Q(ended_at__isnull=True, started_at__date__gte=parsed)
                 )
         session_status = self.request.query_params.get("status")
-        workout = self.request.query_params.get("workout")
+        workout = id_param(self.request, "workout")
         workout_name = self.request.query_params.get("workout_name")
         if session_status:
             queryset = queryset.filter(status=session_status)
@@ -2412,7 +2477,7 @@ class SessionExerciseViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
-        session = self.request.query_params.get("session")
+        session = id_param(self.request, "session")
         return queryset.filter(session_id=session) if session else queryset
 
 
@@ -2448,13 +2513,13 @@ class SetEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelVi
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
-        session_exercise = self.request.query_params.get("session_exercise")
+        session_exercise = id_param(self.request, "session_exercise")
         if session_exercise:
             queryset = queryset.filter(session_exercise_id=session_exercise)
         # Whole session at once. Showing what was lifted last time needs every
         # set of the previous session, and asking exercise by exercise costs a
         # request per exercise for data one query already has.
-        session = self.request.query_params.get("session")
+        session = id_param(self.request, "session")
         if session:
             queryset = queryset.filter(session_exercise__session_id=session)
         return queryset
@@ -2620,8 +2685,10 @@ def without_blocked_authors(viewer, queryset, field='author'):
 
 
 def visible_comments_for(viewer, queryset):
+    # A suspended account's comments go with it, as its posts do below.
     return without_blocked_authors(viewer, without_blocked_authors(viewer, queryset),
-                                   'parent__author').filter(is_hidden=False).exclude(parent__is_hidden=True)
+                                   'parent__author').filter(is_hidden=False).exclude(parent__is_hidden=True).filter(
+        author__user__is_active=True)
 
 
 def visible_posts_for(viewer, queryset, include_reposts=True):
@@ -2665,6 +2732,13 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
         # rather than inside them, so the author's own unconditional access
         # below cannot put it back.
         is_hidden=True
+    ).filter(
+        # Suspended. MODERATION_OPERATIONS.md suspends an abusive account by
+        # clearing User.is_active, which stopped its token working and left
+        # everything it had posted in every feed. A suspension that leaves
+        # the abuse up is not much of one. Reversible like hiding: setting
+        # the flag back brings it all back.
+        author__user__is_active=True
     ).filter(
         Q(author=viewer)
         | (
@@ -2720,11 +2794,16 @@ def posts_for_cards():
         "workout",
         "meal",
         "planner",
+        # A one-to-one, so a join rather than a prefetch, for the same reason
+        # the snapshots are: a clip per card would otherwise be a query per
+        # card.
+        "video",
         "repost_of__author__user",
         "repost_of__author__gym",
         "repost_of__workout",
         "repost_of__meal",
         "repost_of__planner",
+        "repost_of__video",
     ).prefetch_related(
         "author__disciplines",
         "author__prompts",
@@ -3066,11 +3145,11 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
             .order_by("-session_exercise__session__started_at", "-id")
         )
 
-        exclude = request.query_params.get("exclude_session")
+        exclude = id_param(request, "exclude_session")
         if exclude:
             entries = entries.exclude(session_exercise__session_id=exclude)
 
-        workout = request.query_params.get("workout")
+        workout = id_param(request, "workout")
         if workout:
             entries = entries.filter(
                 session_exercise__exercise__workout_entries__workout_id=workout
@@ -3167,7 +3246,7 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
     create=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
     partial_update=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
 )
-class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Posts: what someone has chosen to show other people.
 
     Reading and writing use different querysets on purpose. A reader gets
@@ -3181,8 +3260,23 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     serializer_class = PostSerializer
     permission_classes = [IsAuthenticated]
     # Reading the feed is not the concern; writing something everybody else
-    # then sees is.
-    throttle_scope = "post"
+    # then sees is. That was the intent of a single "post" scope, which in
+    # practice was also spent by every read and every like. Reads now fall
+    # under the per-user ceiling alone, publishing keeps its sixty an hour,
+    # and the rest get limits sized for what they are.
+    action_throttle_scopes = {
+        "create": "post",
+        "partial_update": "post",
+        "destroy": "post",
+        # A repost publishes to the reposter's followers, so it is publishing.
+        "repost": "post",
+        "like": "social",
+        "save_workout": "social",
+        "save_meal": "social",
+        "not_interested": "social",
+        "report": "report",
+        "video": "upload",
+    }
     owner_lookup = "author"
     # PATCH without PUT. UpdateModelMixin brings both or neither, and a PUT here
     # would have to accept the snapshot fields it replaces, which is the one
@@ -3191,12 +3285,13 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         profile = self.owner_profile()
-        if self.action in ("partial_update", "destroy"):
+        if self.action in ("partial_update", "destroy", "video"):
             # Editing and deleting belong to the author alone. Scoped rather
             # than checked in the handler, which is what makes someone else's
             # post a 404 instead of a 403. Deliberately not scope_to_owner:
             # that lets a superuser through, and a support account rewriting
             # somebody's caption is not a capability this endpoint should have.
+            # Attaching a clip is editing.
             return super().get_queryset().filter(author=profile)
 
         queryset = annotate_social_counts(
@@ -3207,7 +3302,7 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             # post back through this queryset, and a stray query string on the
             # POST must not be able to hide it.
             return queryset
-        author = self.request.query_params.get("author")
+        author = id_param(self.request, "author")
         if author:
             queryset = queryset.filter(author_id=author)
         return self._matching_search(self._matching_follow_state(queryset))
@@ -3485,6 +3580,38 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         )
 
     @extend_schema(
+        methods=["POST"],
+        request=None,
+        responses={204: None},
+        description=(
+            "Say you are not interested in this post. It leaves your For You "
+            "page at once, and posts like it -- its topics, and to a lesser "
+            "degree its author -- are shown less from then on. It stays in "
+            "your following feed: this is about recommendations, not about "
+            "people you chose to follow. Saying it twice is not an error."
+        ),
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        request=None,
+        responses={204: None},
+        description="Take back \"not interested\" on this post.",
+    )
+    @action(detail=True, methods=["post", "delete"], url_path="not-interested")
+    def not_interested(self, request, pk=None):
+        post = self.get_object()
+        viewer = self.owner_profile()
+        if post.author_id == viewer.pk:
+            raise ValidationError({"post": "That is your own post."})
+        # About a repost, the reader means the thing being passed on.
+        target = post.repost_of or post
+        if request.method == "POST":
+            PostFeedback.objects.get_or_create(viewer=viewer, post=target)
+        else:
+            PostFeedback.objects.filter(viewer=viewer, post=target).delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @extend_schema(
         request=ReportPostSerializer,
         responses={201: PostReportResultSerializer, 200: PostReportResultSerializer},
         description=(
@@ -3656,6 +3783,61 @@ class PostViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 return numbered
         raise ValidationError({"post": "You already have too many copies of that."})
 
+    @extend_schema(
+        methods=["POST"],
+        request={
+            "video/mp4": OpenApiTypes.BINARY,
+            "video/quicktime": OpenApiTypes.BINARY,
+        },
+        responses={200: PostSerializer},
+        description=(
+            "Attach a clip to your own post, replacing any clip already on "
+            "it. Send the file itself as the request body with a video "
+            "Content-Type -- not base64, not multipart.\n\n"
+            "Accepted: MP4 or QuickTime with H.264 or HEVC video, within the "
+            "server's size, length and dimension limits. What the file is, "
+            "and how it is stored, is read from its bytes; the Content-Type "
+            "only has to say it is a video. Location and device metadata are "
+            "removed before the clip is stored.\n\n"
+            "Where moderation is on, a new clip waits for review: the "
+            "response shows it to you with status `pending`, and nobody else "
+            "sees it until a moderator approves it.\n\n"
+            "Refusals: 400 with a sentence under `video`; 413 when the file is "
+            "too large; 415 for a Content-Type that is not a video."
+        ),
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        request=None,
+        # Keyed by status, for the reason the like and repost DELETEs are: a
+        # bare serializer on a DELETE becomes a documented 204.
+        responses={200: PostSerializer},
+        description="Remove the clip from your post. Answers with the post.",
+    )
+    @action(detail=True, methods=["post", "delete"], parser_classes=[VideoUploadParser])
+    def video(self, request, pk=None):
+        post = self.get_object()
+        if post.kind == Post.Kind.REPOST:
+            raise ValidationError(
+                {"video": "A repost shows somebody else's post and cannot carry a clip of its own."}
+            )
+        if request.method == "DELETE":
+            remove_video(post)
+            return Response(self._card(post.pk))
+
+        received = request.data
+        if not isinstance(received, ReceivedVideo):
+            raise ValidationError(
+                {"video": "Send the video file as the request body, with a video Content-Type."}
+            )
+        try:
+            attach_video(post, received)
+        except PublicationMediaError:
+            raise ServiceUnavailable(
+                "Your video was not saved because storage is unavailable. Please retry."
+            )
+        return Response(self._card(post.pk))
+
     def _card(self, pk):
         """The post read back with its counts, as the feed would send it."""
         post = self.get_queryset().get(pk=pk)
@@ -3792,7 +3974,7 @@ class FeedViewSet(OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericView
     create=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
     partial_update=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
 )
-class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
+class PostCommentViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Comments on a post.
 
     Reading is governed by the post, not by the comment: if you may see the
@@ -3804,6 +3986,13 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = PostComment.objects.all()
     serializer_class = PostCommentSerializer
     permission_classes = [IsAuthenticated]
+    # Comments had no limit beyond the per-user ceiling, which let one account
+    # put twelve hundred replies under somebody's post in an hour.
+    action_throttle_scopes = {
+        "create": "comment",
+        "partial_update": "comment",
+        "report": "report",
+    }
     owner_lookup = "author"
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
@@ -3827,7 +4016,7 @@ class PostCommentViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                 )
             )
         )
-        post = self.request.query_params.get("post")
+        post = id_param(self.request, "post")
         if post:
             queryset = queryset.filter(post_id=post)
         if self.action == "list":

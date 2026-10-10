@@ -8,6 +8,8 @@ from decimal import Decimal
 from zoneinfo import available_timezones
 
 from django.contrib.auth import authenticate, get_user_model, password_validation
+from django.contrib.auth.validators import ASCIIUsernameValidator
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.base import ContentFile
 from django.db import transaction
 from django.utils import timezone
@@ -17,6 +19,7 @@ from drf_spectacular.utils import extend_schema_field
 
 from .media import signed_media_url
 from .moderation import check_public_content
+from .uploads import check_image_dimensions, without_metadata
 
 
 class SessionFinishSerializer(serializers.Serializer):
@@ -81,6 +84,8 @@ from .models import (
     PostMeal,
     PostMealEntry,
     PostPlannerEntry,
+    PostVideo,
+    PostView,
     PostWorkout,
     PostWorkoutExercise,
     normalize_gym_text,
@@ -121,8 +126,10 @@ def decode_uploaded_image(raw, field="image_base64"):
         raise serializers.ValidationError(
             {field: "That image is larger than 5 MB."}
         )
-    verify_is_an_image(decoded, field=field)
-    return decoded
+    extension = verify_is_an_image(decoded, field=field)
+    # What is stored and served is the picture without the GPS fix, serial
+    # numbers and captions a camera writes into it. See core.uploads.
+    return without_metadata(decoded, extension, field=field)
 
 
 #: What Pillow calls each format, mapped to the extension it should be stored
@@ -156,8 +163,12 @@ def verify_is_an_image(decoded, field="image_base64"):
     try:
         with Image.open(io.BytesIO(decoded)) as image:
             detected = image.format
+            # From the header, before anything is decoded. Every copy made
+            # from an upload decodes all of it, and a small file can declare
+            # an enormous canvas.
+            check_image_dimensions(*image.size, field=field)
             image.verify()
-    except (UnidentifiedImageError, OSError, ValueError, SyntaxError):
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError, Image.DecompressionBombError):
         raise serializers.ValidationError(
             {field: "That file is not an image we can read."}
         )
@@ -184,22 +195,10 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
-        raw = attrs["image_base64"]
-        # Tolerate a data: URL, since it is the obvious thing to send.
-        if raw.startswith("data:"):
-            _, _, raw = raw.partition(",")
-        try:
-            decoded = base64.b64decode(raw, validate=True)
-        except (binascii.Error, ValueError):
-            raise serializers.ValidationError(
-                {"image_base64": "This is not valid base64."}
-            )
-        if not decoded:
-            raise serializers.ValidationError({"image_base64": "The image is empty."})
-        if len(decoded) > MAX_PROFILE_PHOTO_BYTES:
-            raise serializers.ValidationError(
-                {"image_base64": "That image is larger than 5 MB."}
-            )
+        # The same decoding, ceilings and metadata removal a post's photo
+        # gets. This used to be a copy of that code, and the copy is where a
+        # fix made to one of them would have quietly not arrived.
+        decoded = decode_uploaded_image(attrs["image_base64"])
         # The extension comes from the bytes, not from content_type, which is
         # only ever the client's word for what it sent.
         attrs["extension"] = verify_is_an_image(decoded)
@@ -1175,12 +1174,30 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
 
 
     def validate_username(self, value):
+        # Only a username being changed is held to the rules. The app sends
+        # the current one back with every profile save, and an account made
+        # before the rules existed must still be able to edit its bio.
+        current = getattr(getattr(self.instance, "user", None), "username", None)
+        if value != current:
+            check_new_username(value)
         queryset = User.objects.filter(username__iexact=value)
         if self.instance:
             queryset = queryset.exclude(pk=self.instance.user_id)
         if queryset.exists():
             raise serializers.ValidationError("This username is already in use.")
         return value
+
+    def _check_changed_name(self, field, value):
+        # Like the username: the app resends both names on every save, so
+        # only a name being changed is checked.
+        current = getattr(getattr(self.instance, "user", None), field, None)
+        return value if value == current else check_display_name(value)
+
+    def validate_first_name(self, value):
+        return self._check_changed_name("first_name", value)
+
+    def validate_last_name(self, value):
+        return self._check_changed_name("last_name", value)
 
     def validate_email(self, value):
         queryset = User.objects.filter(email__iexact=value)
@@ -1225,14 +1242,87 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         return instance
 
 
+#: What a username may be made of: ASCII letters, digits and @ . + - _.
+#:
+#: Django's own rule for its User model, which this API never applied --
+#: `create_user` does not run model validators, and these are plain
+#: serializers rather than model ones. So "../admin", a name made of spaces,
+#: or one carrying a right-to-left override that renders it backwards were all
+#: accepted and printed as somebody's @handle.
+#:
+#: The ASCII variant rather than the Unicode one because a handle is how one
+#: person is told apart from another, and Unicode lets "аdmin" with a Cyrillic
+#: "а" sit beside the real one looking identical.
+USERNAME_CHARACTERS = ASCIIUsernameValidator()
+
+#: Handles that would read as the service speaking. Compared without regard to
+#: case, and only on a new or changed username, so nobody already holding one
+#: is touched.
+RESERVED_USERNAMES = frozenset({
+    "admin", "administrator", "moderator", "mod", "staff", "support", "help",
+    "security", "root", "system", "official", "rytivo", "repbase",
+})
+
+#: Characters that reorder or hide text without being visible themselves:
+#: bidirectional overrides and isolates, a zero-width space, the word joiner
+#: and a byte-order mark. In a display name they let "Bob" render as somebody
+#: else's name, or two names that look identical differ invisibly.
+#:
+#: The zero-width joiner and non-joiner are deliberately absent. They are what
+#: holds "👩‍💻" together as one emoji, and Persian and several Indic scripts
+#: need them to spell ordinary words.
+INVISIBLE_FORMATTING = frozenset(
+    [chr(code) for code in range(0x202A, 0x202F)]
+    + [chr(code) for code in range(0x2066, 0x206A)]
+    + ["\u200b", "\u2060", "\ufeff"]
+)
+
+
+def check_new_username(value):
+    """Refuse a username nobody should be given. Raises a field error."""
+    try:
+        USERNAME_CHARACTERS(value)
+    except DjangoValidationError:
+        raise serializers.ValidationError(
+            "Usernames can use letters, numbers and @ . + - _ only."
+        )
+    if value.lower() in RESERVED_USERNAMES:
+        raise serializers.ValidationError("That username is not available.")
+
+
+def check_display_name(value):
+    """Refuse a name carrying characters that disguise what it says."""
+    if any(character in INVISIBLE_FORMATTING for character in value):
+        raise serializers.ValidationError(
+            "Names cannot contain invisible formatting characters."
+        )
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise serializers.ValidationError("Names cannot contain control characters.")
+    return value
+
+
+#: Bounds on a password as typed. The floor is Django's validators' business;
+#: the ceiling is this API's. Without one, a megabyte "password" is run through
+#: UserAttributeSimilarityValidator, which compares it against the username
+#: and email with difflib -- quadratic work bought with a single request.
+#:
+#: Sign-in accepts a longer one than registration does, so that nobody who
+#: already has a long password is shut out by a limit introduced after it.
+MAX_NEW_PASSWORD_LENGTH = 256
+MAX_SIGN_IN_PASSWORD_LENGTH = 4096
+
+
 class RegisterSerializer(serializers.Serializer):
     username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
-    password = serializers.CharField(write_only=True, min_length=8)
-    first_name = serializers.CharField(max_length=150)
-    last_name = serializers.CharField(max_length=150)
+    password = serializers.CharField(
+        write_only=True, min_length=8, max_length=MAX_NEW_PASSWORD_LENGTH
+    )
+    first_name = serializers.CharField(max_length=150, validators=[check_display_name])
+    last_name = serializers.CharField(max_length=150, validators=[check_display_name])
 
     def validate_username(self, value):
+        check_new_username(value)
         if User.objects.filter(username__iexact=value).exists():
             raise serializers.ValidationError("This username is already in use.")
         return value
@@ -1262,8 +1352,10 @@ class RegisterSerializer(serializers.Serializer):
 
 
 class LoginSerializer(serializers.Serializer):
-    username = serializers.CharField()
-    password = serializers.CharField(write_only=True)
+    username = serializers.CharField(max_length=150)
+    password = serializers.CharField(
+        write_only=True, max_length=MAX_SIGN_IN_PASSWORD_LENGTH
+    )
 
     def validate(self, attrs):
         user = authenticate(
@@ -2493,6 +2585,61 @@ class PostPlannerEntrySerializer(serializers.ModelSerializer):
         read_only_fields = ["title", "scheduled_date", "is_complete"]
 
 
+class PostVideoSerializer(serializers.ModelSerializer):
+    """A post's clip, as its reader may see it.
+
+    `status` and `content_type` go out as plain strings, as `kind` does on a
+    post. A choice field would add a `status` enum to the contract, and
+    drf-spectacular resolves two enums of the same field name by renaming
+    both -- so the session status enum the generated clients already use
+    would change its name because of a field on a different object.
+    """
+
+    url = serializers.SerializerMethodField()
+    status = serializers.CharField(read_only=True)
+    content_type = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = PostVideo
+        fields = [
+            "url",
+            "content_type",
+            "duration_ms",
+            "width",
+            "height",
+            "has_audio",
+            "status",
+        ]
+        read_only_fields = fields
+
+    @extend_schema_field(serializers.CharField())
+    def get_url(self, video):
+        """Signed, like a photo's: the link is the authorisation."""
+        return signed_media_url(video.file, self.context.get("request"))
+
+
+def video_for(post, context):
+    """The clip a reader is shown on this post, or None.
+
+    An approved clip goes to whoever may see the post. One still waiting for
+    review, or refused, is shown to its author alone, carrying its status so
+    the app can say why nobody else sees it yet.
+
+    Read through the select_related cache: the reverse one-to-one raises when
+    there is no clip, and that exception is an AttributeError, so getattr's
+    default is the "no clip" answer and no query is made either way.
+    """
+    video = getattr(post, "video", None)
+    if video is None:
+        return None
+    if video.status != PostVideo.Status.APPROVED:
+        request = context.get("request")
+        viewer = getattr(getattr(request, "user", None), "repbase_profile", None)
+        if viewer is None or post.author_id != viewer.id:
+            return None
+    return PostVideoSerializer(video, context=context).data
+
+
 class RepostedPostSerializer(serializers.ModelSerializer):
     """The original, as it appears inside a repost.
 
@@ -2509,6 +2656,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
     planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
     image_url = serializers.SerializerMethodField()
     feed_image_url = serializers.SerializerMethodField()
+    video = serializers.SerializerMethodField()
 
     class Meta:
         model = Post
@@ -2518,6 +2666,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
             "kind",
             "image_url",
             "feed_image_url",
+            "video",
             "caption",
             "workout",
             "meal",
@@ -2533,6 +2682,10 @@ class RepostedPostSerializer(serializers.ModelSerializer):
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_feed_image_url(self, post):
         return feed_image_url_for(post, self.context.get("request"))
+
+    @extend_schema_field(PostVideoSerializer(allow_null=True))
+    def get_video(self, post):
+        return video_for(post, self.context)
 
 
 class PostReplySerializer(serializers.ModelSerializer):
@@ -2756,6 +2909,11 @@ class PostSerializer(serializers.ModelSerializer):
     #: different screens: a feed draws dozens of these and wants the small
     #: one, while opening a post is a deliberate request to see it properly.
     feed_image_url = serializers.SerializerMethodField()
+    #: The clip on this post, when there is one this reader may watch. Null
+    #: for a post with no clip, and for a clip still waiting for review unless
+    #: the reader is its author. Added after the iOS client was generated,
+    #: which ignores keys it does not know.
+    video = serializers.SerializerMethodField()
     #: Counted by the database, not by the length of a list the client would
     #: otherwise have to be sent. A card shows the number; only the detail page
     #: asks who.
@@ -2783,6 +2941,7 @@ class PostSerializer(serializers.ModelSerializer):
             "kind",
             "image_url",
             "feed_image_url",
+            "video",
             "caption",
             "visibility",
             "workout",
@@ -2844,6 +3003,10 @@ class PostSerializer(serializers.ModelSerializer):
         the smaller copy existed.
         """
         return feed_image_url_for(post, self.context.get("request"))
+
+    @extend_schema_field(PostVideoSerializer(allow_null=True))
+    def get_video(self, post):
+        return video_for(post, self.context)
 
     @extend_schema_field(serializers.IntegerField(allow_null=True))
     def get_source_id(self, post):
@@ -2988,6 +3151,77 @@ class PostSerializer(serializers.ModelSerializer):
         return getattr(user, "repbase_profile", None)
 
 
+class RecommendationSerializer(serializers.Serializer):
+    """Why the For You page put a post where it did.
+
+    `reason` is a short code -- following, interest, popular, discovery or
+    fresh -- sent as a plain string so a reason added later is a value the
+    client does not recognise rather than a decoding error. `label` is a
+    sentence fit to show under the post as it is.
+    """
+
+    reason = serializers.CharField(read_only=True)
+    label = serializers.CharField(read_only=True)
+
+
+class ForYouPostSerializer(PostSerializer):
+    """A post on the For You page: the ordinary card, plus why it is there."""
+
+    recommendation = serializers.SerializerMethodField()
+
+    class Meta(PostSerializer.Meta):
+        fields = PostSerializer.Meta.fields + ["recommendation"]
+        read_only_fields = PostSerializer.Meta.read_only_fields + ["recommendation"]
+
+    @extend_schema_field(RecommendationSerializer)
+    def get_recommendation(self, post):
+        reason, label = getattr(post, "_recommendation", ("fresh", "New in the community"))
+        return {"reason": reason, "label": label}
+
+
+class ForYouPageSerializer(serializers.Serializer):
+    """One page of the For You feed, in the shape every cursor page has."""
+
+    next = serializers.CharField(read_only=True, allow_null=True)
+    previous = serializers.CharField(read_only=True, allow_null=True)
+    results = ForYouPostSerializer(many=True, read_only=True)
+
+
+class ImpressionSerializer(serializers.Serializer):
+    """One post having been on somebody's screen.
+
+    Every figure is bounded. These are the client's own report, and a client
+    is free to claim it lingered for a year; the claim is capped here and its
+    reach is limited to the reporter's own recommendations and to rates that
+    are smoothed over everybody else's views.
+    """
+
+    post = serializers.IntegerField(min_value=1)
+    #: How long the post was on screen this time.
+    dwell_ms = serializers.IntegerField(min_value=0, max_value=10 * 60 * 1000, default=0)
+    #: How far into the post's clip this viewing got, when it has one.
+    watch_ms = serializers.IntegerField(
+        min_value=0, max_value=60 * 60 * 1000, required=False, allow_null=True, default=None
+    )
+    #: Whether the clip played to its end.
+    completed = serializers.BooleanField(default=False)
+    surface = serializers.ChoiceField(
+        choices=PostView.Surface.choices, default=PostView.Surface.OTHER
+    )
+
+
+class ImpressionBatchSerializer(serializers.Serializer):
+    #: Fifty at most, which is more than two pages of a feed. A client sends
+    #: these as it goes, not as one upload at the end of a session.
+    events = ImpressionSerializer(many=True, allow_empty=False, max_length=50)
+
+
+class ImpressionResultSerializer(serializers.Serializer):
+    #: How many of the posts named were recorded. Posts the reader cannot
+    #: see, and their own, are left out without complaint.
+    recorded = serializers.IntegerField(read_only=True)
+
+
 class CreatePostSerializer(serializers.Serializer):
     """What to post, and who may see it.
 
@@ -2997,7 +3231,17 @@ class CreatePostSerializer(serializers.Serializer):
     from anyone who could type one.
     """
 
-    kind = serializers.ChoiceField(choices=Post.Kind.choices)
+    #: The three kinds made from something of the author's. `repost` is not
+    #: among them: a repost is made by `posts/{id}/repost/` from somebody
+    #: else's post and has no source of its own. Accepting it here sent the
+    #: id down the planner branch of `source_for`, built a repost pointing at
+    #: nothing, and then failed with a 500 reading it back.
+    kind = serializers.ChoiceField(
+        choices=[
+            choice for choice in Post.Kind.choices
+            if choice[0] != Post.Kind.REPOST
+        ]
+    )
     source_id = serializers.IntegerField(min_value=1)
     caption = serializers.CharField(
         max_length=300,
@@ -3705,7 +3949,9 @@ class PasswordResetConfirmSerializer(serializers.Serializer):
 
     email = serializers.EmailField()
     code = serializers.CharField(min_length=6, max_length=6)
-    new_password = serializers.CharField(write_only=True, min_length=8)
+    new_password = serializers.CharField(
+        write_only=True, min_length=8, max_length=MAX_NEW_PASSWORD_LENGTH
+    )
 
     def validate_new_password(self, value):
         # The same rules registration applies. A reset is not a way around

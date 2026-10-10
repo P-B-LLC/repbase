@@ -19,6 +19,9 @@ The native iOS application is maintained as a separate project. This repository 
 - Exercise progress history and training volume
 - Body-weight history
 - Owner-scoped data access
+- A social feed: posts built from workouts, meals and plans, with photos and short video clips
+- A personalized For You page (see [RECOMMENDATIONS.md](RECOMMENDATIONS.md))
+- Reporting, moderation and human review of video (see [MODERATION_OPERATIONS.md](MODERATION_OPERATIONS.md))
 - Interactive OpenAPI documentation
 
 ## Technology
@@ -139,11 +142,16 @@ Starting and ending a session records its timestamps. `duration_seconds` is calc
 
 ## Testing and validation
 
-Run the automated API tests:
+Run the automated API tests (about 690 tests, three minutes):
 
 ```powershell
-python manage.py test
+python manage.py test core
 ```
+
+[TESTING.md](TESTING.md) covers every suite across the three repositories --
+the backend on SQLite and PostgreSQL, the contract checks, the web client's
+unit tests, the web-to-backend integration suite, and the iOS tests -- and what
+each one proves.
 
 Check Django configuration and pending model changes:
 
@@ -176,6 +184,9 @@ SQLite is appropriate for local development. A production deployment should use 
 
 - [User Guide](USER_GUIDE.md) - plain-language walkthrough
 - [API Guide](API.md) - API integration details
+- [Testing](TESTING.md) - how to run every suite, and what each covers
+- [Security](SECURITY.md) - audit findings, controls in place, remaining risks
+- [Recommendations](RECOMMENDATIONS.md) - how the For You page ranks, and how to tune and monitor it
 - [Product Feature Summary](PRODUCT_FEATURE_SUMMARY.md) - product scope and roadmap
 - [OpenAPI specification](openapi.yaml) - machine-readable contract for the iOS client
 

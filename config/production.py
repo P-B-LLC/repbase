@@ -8,6 +8,10 @@ from .environment import boolean, database, integer, production_values
 # before importing this module via the deployment entry points.
 DEBUG = False
 MODERATION_ENABLED = True
+# The classifier reads text and photos, not video, so a clip is seen by a
+# person before anybody else sees it. Not configurable here for the same
+# reason moderation itself is not.
+VIDEO_REVIEW_REQUIRED = True
 globals().update(production_values(os.environ))
 DATABASES = {'default': database(os.environ, BASE_DIR, production=True)}  # noqa: F405
 SESSION_COOKIE_SECURE = True
@@ -22,6 +26,28 @@ STORAGES = {**STORAGES, 'staticfiles': {  # noqa: F405
     'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
 }}
 CSRF_TRUSTED_ORIGINS = ['https://' + host for host in ALLOWED_HOSTS]  # noqa: F405
+
+# One proxy -- nginx on the same machine -- unless the deployment says
+# otherwise. Without a count, a client-supplied X-Forwarded-For becomes the
+# throttle identity and every anonymous rate limit can be stepped around. See
+# the note beside NUM_PROXIES in settings. This relies on the application port
+# not being reachable except through that proxy, which is the same condition
+# DJANGO_TRUST_PROXY_HTTPS already states.
+REST_FRAMEWORK = {  # noqa: F405
+    **REST_FRAMEWORK,  # noqa: F405
+    'NUM_PROXIES': integer(os.environ, 'REPBASE_NUM_PROXIES', 1, 0, 5),
+}
+
+# The schema and its docs page describe every endpoint, parameter and error
+# this API has. Nothing ships that fetches them at run time -- both clients
+# are generated from the committed openapi.yaml -- so on a hosted server they
+# are for staff, who can sign in to the admin and read them there. Set
+# REPBASE_PUBLIC_API_DOCS=true to publish them.
+if not boolean(os.environ, 'REPBASE_PUBLIC_API_DOCS'):
+    SPECTACULAR_SETTINGS = {  # noqa: F405
+        **SPECTACULAR_SETTINGS,  # noqa: F405
+        'SERVE_PERMISSIONS': ['rest_framework.permissions.IsAdminUser'],
+    }
 
 # Enable ONLY when ingress strips untrusted X-Forwarded-Proto and direct
 # access to the application port is blocked. Default: trust no proxy headers.

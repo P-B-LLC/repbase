@@ -2,12 +2,15 @@ from django.contrib import admin
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
+from django.utils.html import format_html
 
+from .media import signed_media_path
 from .models import (
     BodyWeightEntry,
     Block,
     Exercise,
     Post,
+    PostVideo,
     PostComment,
     CommentReport,
     PostReport,
@@ -19,6 +22,7 @@ from .models import (
     WorkoutSession,
     WorkoutTemplate,
 )
+from .videos import set_review
 
 
 @admin.register(RepbaseUser)
@@ -249,15 +253,101 @@ class PostAdmin(admin.ModelAdmin):
     def report_count(self, post):
         return post._reports
 
-    @admin.action(description="Hide")
+    # `permissions` on both. An action that names none is offered to anyone
+    # who can open the list at all -- view permission is enough -- so a
+    # read-only moderator could take posts down and put them back. The
+    # report admin above already required change permission; this did not.
+    @admin.action(description="Hide", permissions=["change"])
     def hide_posts(self, request, queryset):
         count = queryset.update(is_hidden=True, hidden_at=timezone.now())
         self.message_user(request, f"{count} post(s) hidden.")
 
-    @admin.action(description="Unhide")
+    @admin.action(description="Unhide", permissions=["change"])
     def unhide_posts(self, request, queryset):
         count = queryset.update(is_hidden=False, hidden_at=None)
         self.message_user(request, f"{count} post(s) restored.")
+
+
+class PendingClipFilter(admin.SimpleListFilter):
+    """Waiting, decided, or everything. Waiting unless asked otherwise."""
+
+    title = "review state"
+    parameter_name = "review"
+
+    def lookups(self, request, model_admin):
+        return (("waiting", "Waiting"), ("decided", "Decided"))
+
+    def queryset(self, request, queryset):
+        if self.value() == "decided":
+            return queryset.exclude(status=PostVideo.Status.PENDING)
+        if self.value() == "waiting":
+            return queryset.filter(status=PostVideo.Status.PENDING)
+        return queryset
+
+    def value(self):
+        return super().value() or ("waiting" if "review" not in self.used_parameters else None)
+
+
+@admin.register(PostVideo)
+class PostVideoAdmin(admin.ModelAdmin):
+    """The clips waiting for a person, oldest first.
+
+    The classifier that checks photos and text cannot watch video, so this
+    queue is the only review a clip gets. The change page plays the clip
+    through the same signed URL the app uses; nothing here downloads it.
+    """
+
+    list_display = ("created_at", "post_author", "status", "length", "dimensions", "reviewed_at")
+    list_filter = (PendingClipFilter, "status")
+    search_fields = ("post__author__user__username", "post__caption")
+    list_select_related = ("post__author__user",)
+    readonly_fields = (
+        "post", "preview", "content_type", "codec", "duration_ms", "width", "height",
+        "size_bytes", "has_audio", "status", "reviewed_at", "reviewed_by", "created_at",
+    )
+    exclude = ("file",)
+    ordering = ("created_at",)
+    actions = ("approve_clips", "reject_clips")
+
+    def has_add_permission(self, request):
+        # Clips arrive through the API, checked; never typed in here.
+        return False
+
+    def has_moderate_videos_permission(self, request):
+        return request.user.has_perms(("core.change_postvideo", "core.change_post"))
+
+    @admin.display(description="author", ordering="post__author")
+    def post_author(self, video):
+        return video.post.author.user.username
+
+    @admin.display(description="length", ordering="duration_ms")
+    def length(self, video):
+        return f"{video.duration_ms / 1000:.1f} s"
+
+    @admin.display(description="size")
+    def dimensions(self, video):
+        return f"{video.width}×{video.height}"
+
+    @admin.display(description="clip")
+    def preview(self, video):
+        if not video.file:
+            return "—"
+        return format_html(
+            '<video src="{}" controls preload="metadata" style="max-width: 480px"></video>',
+            signed_media_path(video.file.name),
+        )
+
+    @admin.action(description="Approve: show to everyone who can see the post",
+                  permissions=["moderate_videos"])
+    def approve_clips(self, request, queryset):
+        count = set_review(queryset, PostVideo.Status.APPROVED, request.user)
+        self.message_user(request, f"{count} clip(s) approved.")
+
+    @admin.action(description="Reject: show to nobody but the author",
+                  permissions=["moderate_videos"])
+    def reject_clips(self, request, queryset):
+        count = set_review(queryset, PostVideo.Status.REJECTED, request.user)
+        self.message_user(request, f"{count} clip(s) rejected.")
 
 
 @admin.register(PostComment)

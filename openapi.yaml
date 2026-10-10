@@ -4247,6 +4247,72 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/social/for-you/:
+    get:
+      operationId: social_for_you_list
+      description: |-
+        Posts picked for the reader, from everyone, best first.
+
+        The first page ranks from scratch, so it always reflects what the reader
+        did a moment ago. Later pages read the ranking that first page made, by
+        position, so paging never repeats or skips a post. Each page is checked
+        against the visibility rules again as it is served: a post hidden,
+        deleted, dismissed or blocked since the ranking was made does not appear.
+      parameters:
+      - in: query
+        name: cursor
+        schema:
+          type: string
+        description: The position carried by the previous page's `next` link. Absent
+          means rank afresh and start at the top.
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: How many posts to return, at most 50. Asking for more is refused
+          rather than reduced.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForYouPage'
+          description: ''
+  /api/v1/social/impressions/:
+    post:
+      operationId: social_impressions_create
+      description: Record a batch of views. Posts the reader cannot see, and their
+        own posts, are ignored rather than refused, so a client does not need to know
+        which of the posts it showed have since gone.
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImpressionBatchRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ImpressionBatchRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ImpressionBatchRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImpressionResult'
+          description: ''
   /api/v1/social/notifications/:
     get:
       operationId: social_notifications_list
@@ -4552,6 +4618,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/Post'
           description: ''
+  /api/v1/social/posts/{id}/not-interested/:
+    post:
+      operationId: social_posts_not_interested_create
+      description: 'Say you are not interested in this post. It leaves your For You
+        page at once, and posts like it -- its topics, and to a lesser degree its
+        author -- are shown less from then on. It stays in your following feed: this
+        is about recommendations, not about people you chose to follow. Saying it
+        twice is not an error.'
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+    delete:
+      operationId: social_posts_not_interested_destroy
+      description: Take back "not interested" on this post.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/social/posts/{id}/report/:
     post:
       operationId: social_posts_report_create
@@ -4704,6 +4811,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SavedWorkoutResult'
+          description: ''
+  /api/v1/social/posts/{id}/video/:
+    post:
+      operationId: social_posts_video_create
+      description: |-
+        Attach a clip to your own post, replacing any clip already on it. Send the file itself as the request body with a video Content-Type -- not base64, not multipart.
+
+        Accepted: MP4 or QuickTime with H.264 or HEVC video, within the server's size, length and dimension limits. What the file is, and how it is stored, is read from its bytes; the Content-Type only has to say it is a video. Location and device metadata are removed before the clip is stored.
+
+        Where moderation is on, a new clip waits for review: the response shows it to you with status `pending`, and nobody else sees it until a moderator approves it.
+
+        Refusals: 400 with a sentence under `video`; 413 when the file is too large; 415 for a Content-Type that is not a video.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          video/mp4:
+            schema:
+              type: string
+              format: binary
+          video/quicktime:
+            schema:
+              type: string
+              format: binary
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+    delete:
+      operationId: social_posts_video_destroy
+      description: Remove the clip from your post. Answers with the post.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
           description: ''
   /api/v1/step-counts/:
     get:
@@ -5515,13 +5684,11 @@ components:
       - workout
       - meal
       - planner
-      - repost
       type: string
       description: |-
         * `workout` - Workout
         * `meal` - Meal
         * `planner` - Planner
-        * `repost` - Repost
     CreatePostRequest:
       type: object
       description: |-
@@ -6059,6 +6226,150 @@ components:
       - protein_grams
       - serving_description
       - source_id
+    ForYouPage:
+      type: object
+      description: One page of the For You feed, in the shape every cursor page has.
+      properties:
+        next:
+          type: string
+          readOnly: true
+          nullable: true
+        previous:
+          type: string
+          readOnly: true
+          nullable: true
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/ForYouPost'
+          readOnly: true
+      required:
+      - next
+      - previous
+      - results
+    ForYouPost:
+      type: object
+      description: 'A post on the For You page: the ordinary card, plus why it is
+        there.'
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        author:
+          allOf:
+          - $ref: '#/components/schemas/PublicRepbaseUser'
+          readOnly: true
+        kind:
+          type: string
+          readOnly: true
+        image_url:
+          type: string
+          nullable: true
+          readOnly: true
+        feed_image_url:
+          type: string
+          nullable: true
+          readOnly: true
+        video:
+          allOf:
+          - $ref: '#/components/schemas/PostVideo'
+          nullable: true
+          readOnly: true
+        caption:
+          type: string
+          readOnly: true
+        visibility:
+          type: string
+          readOnly: true
+        workout:
+          allOf:
+          - $ref: '#/components/schemas/PostWorkout'
+          readOnly: true
+          nullable: true
+        meal:
+          allOf:
+          - $ref: '#/components/schemas/PostMeal'
+          readOnly: true
+          nullable: true
+        planner:
+          allOf:
+          - $ref: '#/components/schemas/PostPlannerEntry'
+          readOnly: true
+          nullable: true
+        source_id:
+          type: integer
+          nullable: true
+          readOnly: true
+        viewer_follows_author:
+          type: boolean
+          readOnly: true
+        shows_weights:
+          type: boolean
+          readOnly: true
+        viewer_is_author:
+          type: boolean
+          readOnly: true
+        like_count:
+          type: integer
+          readOnly: true
+        comment_count:
+          type: integer
+          readOnly: true
+        repost_count:
+          type: integer
+          readOnly: true
+        viewer_has_liked:
+          type: boolean
+          readOnly: true
+        viewer_has_reposted:
+          type: boolean
+          readOnly: true
+        viewer_saved:
+          type: boolean
+          readOnly: true
+        repost_of:
+          allOf:
+          - $ref: '#/components/schemas/RepostedPost'
+          nullable: true
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+        recommendation:
+          allOf:
+          - $ref: '#/components/schemas/Recommendation'
+          readOnly: true
+      required:
+      - author
+      - caption
+      - comment_count
+      - created_at
+      - feed_image_url
+      - id
+      - image_url
+      - kind
+      - like_count
+      - meal
+      - planner
+      - recommendation
+      - repost_count
+      - repost_of
+      - shows_weights
+      - source_id
+      - updated_at
+      - video
+      - viewer_follows_author
+      - viewer_has_liked
+      - viewer_has_reposted
+      - viewer_is_author
+      - viewer_saved
+      - visibility
+      - workout
     Gear:
       type: object
       properties:
@@ -6276,6 +6587,55 @@ components:
       - ended_at
       - external_id
       - started_at
+    ImpressionBatchRequest:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/ImpressionRequest'
+      required:
+      - events
+    ImpressionRequest:
+      type: object
+      description: |-
+        One post having been on somebody's screen.
+
+        Every figure is bounded. These are the client's own report, and a client
+        is free to claim it lingered for a year; the claim is capped here and its
+        reach is limited to the reporter's own recommendations and to rates that
+        are smoothed over everybody else's views.
+      properties:
+        post:
+          type: integer
+          minimum: 1
+        dwell_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          default: 0
+        watch_ms:
+          type: integer
+          maximum: 3600000
+          minimum: 0
+          nullable: true
+        completed:
+          type: boolean
+          default: false
+        surface:
+          allOf:
+          - $ref: '#/components/schemas/SurfaceEnum'
+          default: other
+      required:
+      - post
+    ImpressionResult:
+      type: object
+      properties:
+        recorded:
+          type: integer
+          readOnly: true
+      required:
+      - recorded
     InitialWorkoutExercise:
       type: object
       properties:
@@ -6354,10 +6714,12 @@ components:
         username:
           type: string
           minLength: 1
+          maxLength: 150
         password:
           type: string
           writeOnly: true
           minLength: 1
+          maxLength: 4096
       required:
       - password
       - username
@@ -7029,6 +7391,7 @@ components:
           type: string
           writeOnly: true
           minLength: 8
+          maxLength: 256
       required:
       - code
       - email
@@ -7878,6 +8241,11 @@ components:
           type: string
           nullable: true
           readOnly: true
+        video:
+          allOf:
+          - $ref: '#/components/schemas/PostVideo'
+          nullable: true
+          readOnly: true
         caption:
           type: string
           readOnly: true
@@ -7960,6 +8328,7 @@ components:
       - shows_weights
       - source_id
       - updated_at
+      - video
       - viewer_follows_author
       - viewer_has_liked
       - viewer_has_reposted
@@ -8260,6 +8629,46 @@ components:
       required:
       - already_reported
       - reason
+    PostVideo:
+      type: object
+      description: |-
+        A post's clip, as its reader may see it.
+
+        `status` and `content_type` go out as plain strings, as `kind` does on a
+        post. A choice field would add a `status` enum to the contract, and
+        drf-spectacular resolves two enums of the same field name by renaming
+        both -- so the session status enum the generated clients already use
+        would change its name because of a field on a different object.
+      properties:
+        url:
+          type: string
+          readOnly: true
+        content_type:
+          type: string
+          readOnly: true
+        duration_ms:
+          type: integer
+          readOnly: true
+        width:
+          type: integer
+          readOnly: true
+        height:
+          type: integer
+          readOnly: true
+        has_audio:
+          type: boolean
+          readOnly: true
+        status:
+          type: string
+          readOnly: true
+      required:
+      - content_type
+      - duration_ms
+      - has_audio
+      - height
+      - status
+      - url
+      - width
     PostWorkout:
       type: object
       description: |-
@@ -8900,6 +9309,25 @@ components:
       - name
       - protein_grams
       - servings
+    Recommendation:
+      type: object
+      description: |-
+        Why the For You page put a post where it did.
+
+        `reason` is a short code -- following, interest, popular, discovery or
+        fresh -- sent as a plain string so a reason added later is a value the
+        client does not recognise rather than a decoding error. `label` is a
+        sentence fit to show under the post as it is.
+      properties:
+        reason:
+          type: string
+          readOnly: true
+        label:
+          type: string
+          readOnly: true
+      required:
+      - label
+      - reason
     RegisterRequest:
       type: object
       properties:
@@ -8915,6 +9343,7 @@ components:
           type: string
           writeOnly: true
           minLength: 8
+          maxLength: 256
         first_name:
           type: string
           minLength: 1
@@ -9147,6 +9576,11 @@ components:
           type: string
           nullable: true
           readOnly: true
+        video:
+          allOf:
+          - $ref: '#/components/schemas/PostVideo'
+          nullable: true
+          readOnly: true
         caption:
           type: string
           readOnly: true
@@ -9179,6 +9613,7 @@ components:
       - kind
       - meal
       - planner
+      - video
       - workout
     SavedFoodIngredient:
       type: object
@@ -9619,6 +10054,20 @@ components:
         * `planned` - Planned
         * `active` - Active
         * `completed` - Completed
+    SurfaceEnum:
+      enum:
+      - for_you
+      - following
+      - discover
+      - profile
+      - other
+      type: string
+      description: |-
+        * `for_you` - For You
+        * `following` - Following
+        * `discover` - Discover
+        * `profile` - Profile
+        * `other` - Other
     TrainingStats:
       type: object
       description: |-
