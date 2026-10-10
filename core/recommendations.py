@@ -60,8 +60,9 @@ from django.conf import settings
 from django.core import signing
 from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
-from django.db.models import Count, Exists, F, OuterRef, Q, Subquery, Value
-from django.db.models.functions import Coalesce, Greatest
+from django.db import connection
+from django.db.models import Count, Exists, OuterRef, Q, Subquery, Value
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .models import (
@@ -900,35 +901,74 @@ def record_impressions(viewer, events, now=None):
             entry["watch"] = max(entry["watch"] or 0, watched)
         entry["completed"] = entry["completed"] or bool(event.get("completed"))
 
-    visible = set(
+    visible = sorted(
         visible_posts_for(viewer, Post.objects.filter(pk__in=merged))
         .exclude(author=viewer).values_list("pk", flat=True)
     )
-    PostView.objects.bulk_create(
-        [
-            PostView(viewer=viewer, post_id=post_id, surface=merged[post_id]["surface"],
-                     last_seen_at=now)
-            for post_id in visible
-        ],
-        ignore_conflicts=True,
-    )
-    for post_id in visible:
-        entry = merged[post_id]
-        changes = {
-            "view_count": F("view_count") + entry["count"],
-            "total_dwell_ms": F("total_dwell_ms") + entry["dwell"],
-            "last_seen_at": now,
+    if visible:
+        _upsert_views(viewer, [(post_id, merged[post_id]) for post_id in visible], now)
+    return len(visible)
+
+
+def _upsert_views(viewer, entries, now):
+    """Add a batch to its PostView rows in one statement.
+
+    `INSERT ... ON CONFLICT DO UPDATE`, which SQLite and PostgreSQL both
+    speak. It was a bulk insert and then an UPDATE per post -- 50 posts, 51
+    statements -- because Django's own upsert can only overwrite a column,
+    and every counter here is added to. One statement is also one row lock
+    per pair taken in post order, rather than fifty separate round trips.
+
+    The new row and the update say the same thing: the counters are summed,
+    the furthest watch and "ever completed" are kept, `skipped` is the latest
+    viewing's verdict, and `surface` and `first_seen_at` keep the first.
+    """
+    ops = connection.ops
+    table = ops.quote_name(PostView._meta.db_table)
+    columns = [
+        "viewer_id", "post_id", "view_count", "total_dwell_ms", "max_watch_ms",
+        "completed", "skipped", "surface", "first_seen_at", "last_seen_at",
+    ]
+    first_seen = ops.adapt_datetimefield_value(timezone.now())
+    last_seen = ops.adapt_datetimefield_value(now)
+    params = []
+    for post_id, entry in entries:
+        params += [
+            viewer.pk,
+            post_id,
+            entry["count"],
+            entry["dwell"],
+            entry["watch"],
+            entry["completed"],
             # The latest viewing decides. Coming back and staying is not a
             # skip, however the first pass went.
-            "skipped": (
+            (
                 entry["dwell"] < SKIP_MS * entry["count"]
                 and not entry["completed"]
                 and (entry["watch"] or 0) < SKIP_MS
             ),
-        }
-        if entry["completed"]:
-            changes["completed"] = True
-        if entry["watch"] is not None:
-            changes["max_watch_ms"] = Greatest(Coalesce(F("max_watch_ms"), Value(0)), Value(entry["watch"]))
-        PostView.objects.filter(viewer=viewer, post_id=post_id).update(**changes)
-    return len(visible)
+            # A plain string: raw parameters skip the field's own conversion,
+            # and psycopg would send an enum member by its name.
+            str(entry["surface"]),
+            first_seen,
+            last_seen,
+        ]
+    row = "(" + ", ".join(["%s"] * len(columns)) + ")"
+    current = f"{table}.{ops.quote_name('max_watch_ms')}"
+    sql = (
+        f"INSERT INTO {table} ({', '.join(ops.quote_name(c) for c in columns)}) "
+        f"VALUES {', '.join([row] * len(entries))} "
+        f"ON CONFLICT ({ops.quote_name('viewer_id')}, {ops.quote_name('post_id')}) DO UPDATE SET "
+        f"view_count = {table}.view_count + excluded.view_count, "
+        f"total_dwell_ms = {table}.total_dwell_ms + excluded.total_dwell_ms, "
+        # CASE rather than GREATEST, which SQLite does not have.
+        f"max_watch_ms = CASE "
+        f"WHEN excluded.max_watch_ms IS NULL THEN {current} "
+        f"WHEN {current} IS NULL OR excluded.max_watch_ms > {current} THEN excluded.max_watch_ms "
+        f"ELSE {current} END, "
+        f"completed = ({table}.completed OR excluded.completed), "
+        f"skipped = excluded.skipped, "
+        f"last_seen_at = excluded.last_seen_at"
+    )
+    with connection.cursor() as cursor:
+        cursor.execute(sql, params)

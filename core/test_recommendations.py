@@ -552,6 +552,33 @@ class ImpressionTests(ForYouTestCase):
         self.assertEqual(row.max_watch_ms, 4000)
         self.assertEqual(PostView.objects.count(), 1)
 
+    def test_a_later_batch_keeps_the_furthest_watch_and_the_first_surface(self):
+        post = self.meals[0]
+        self.send({"post": post.pk, "dwell_ms": 5000, "watch_ms": 8000, "surface": "for_you"})
+        self.send({"post": post.pk, "dwell_ms": 200, "watch_ms": 1000, "surface": "profile"},
+                  {"post": self.meals[1].pk, "dwell_ms": 4000})
+        row = PostView.objects.get(viewer=self.profile, post=post)
+        self.assertEqual((row.view_count, row.total_dwell_ms, row.max_watch_ms), (2, 5200, 8000))
+        self.assertEqual(row.surface, "for_you")
+        self.assertTrue(row.skipped)
+        self.assertFalse(row.completed)
+        fresh = PostView.objects.get(viewer=self.profile, post=self.meals[1])
+        self.assertEqual((fresh.view_count, fresh.total_dwell_ms, fresh.max_watch_ms), (1, 4000, None))
+        self.assertEqual(fresh.surface, "other")
+        self.assertIsNotNone(fresh.first_seen_at)
+
+    def test_a_full_batch_is_written_in_one_statement(self):
+        posts = self.running + self.lifting + self.meals
+        PostView.objects.create(viewer=self.profile, post=posts[0], view_count=4)
+        events = [{"post": post.pk, "dwell_ms": 2000} for post in posts]
+        with CaptureQueriesContext(connection) as captured:
+            recorded = recommendations.record_impressions(self.profile, events)
+        self.assertEqual(recorded, len(posts))
+        # One to decide what is visible, one to write it.
+        self.assertEqual(len(captured), 2, [q["sql"][:80] for q in captured])
+        self.assertEqual(PostView.objects.get(viewer=self.profile, post=posts[0]).view_count, 5)
+        self.assertEqual(PostView.objects.filter(viewer=self.profile).count(), len(posts))
+
     def test_invisible_and_own_posts_are_ignored_quietly(self):
         private = meal_post(self.cooks[0], visibility="private")
         own = meal_post(self.profile)
