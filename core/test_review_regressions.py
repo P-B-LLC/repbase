@@ -12,12 +12,14 @@ from rest_framework.test import APITestCase
 
 from .media_storage import ReservedNameFileSystemStorage
 from .models import (
+    Follow,
     Gear,
     PlannerEntry,
     Post,
     PostMeal,
     ProfilePrompt,
     ProfileSocialLink,
+    RepbaseUser,
     SaveReceipt,
     UserDiscipline,
     WorkoutSession,
@@ -158,16 +160,8 @@ class RepostFeedQueryCostTests(RepbaseAPITestMixin, APITestCase):
         )
 
     #: The tables `posts_for_cards` is responsible for loading once rather
-    #: than once per row. Not the whole response: a repost's nested author
-    #: also pays its own, unrelated per-row cost for the follower lookups
-    #: behind `viewer_follows`/`viewer_has_requested`, because `get_repost_of`
-    #: builds a fresh `RepostedPostSerializer` -- and so a fresh nested author
-    #: field with nothing memoised -- for every row. That is a real cost, and
-    #: it is not this one: it is a property of how a repost is serialized, not
-    #: of what `posts_for_cards` fetches, and fixing it would mean changing
-    #: `get_repost_of` itself rather than adding a prefetch. Scoping the
-    #: assertion to these four tables is what keeps this test about the
-    #: prefetch and not about that separate, pre-existing cost.
+    #: than once per row. The test below checks those by name, so a missing
+    #: prefetch says which one; the one after it checks the whole response.
     PREFETCHED_TABLES = (
         "core_userdiscipline",
         "core_profileprompt",
@@ -204,6 +198,44 @@ class RepostFeedQueryCostTests(RepbaseAPITestMixin, APITestCase):
             "the reposted author's disciplines, prompts, social links or "
             "meal entries are no longer fully prefetched",
         )
+
+    def test_the_whole_response_costs_the_same_however_many_reposts(self):
+        """Not only the prefetched tables: every query the page makes.
+
+        A repost's nested author used to look up the reader's follows and
+        follow requests once per row, because `get_repost_of` builds a fresh
+        serializer for each original and the lookup was memoised on the
+        serializer. It is memoised on the response now.
+        """
+        self.add_repost()
+        with CaptureQueriesContext(connection) as first:
+            self.assertEqual(self.client.get(self.URL).status_code, 200)
+
+        for _ in range(4):
+            self.add_repost()
+        with CaptureQueriesContext(connection) as second:
+            response = self.client.get(self.URL)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data["results"]), 10)
+        self.assertEqual(
+            len(second.captured_queries),
+            len(first.captured_queries),
+            [query["sql"][:90] for query in second.captured_queries],
+        )
+
+    def test_a_reposted_author_says_whether_the_reader_follows_them(self):
+        """The shared lookup still answers per author, not once for all."""
+        self.add_repost()
+        self.add_repost()
+        followed = RepbaseUser.objects.get(user__username="original1")
+        Follow.objects.create(follower=self.reader, following=followed)
+        response = self.client.get(self.URL)
+        authors = {
+            row["repost_of"]["author"]["username"]: row["repost_of"]["author"]["viewer_follows"]
+            for row in response.data["results"]
+            if row["repost_of"]
+        }
+        self.assertEqual(authors, {"original1": True, "original2": False})
 
     def test_the_reposted_author_still_renders_in_full(self):
         """The assertion that the saved queries did not cost the data."""

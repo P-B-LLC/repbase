@@ -1001,37 +1001,43 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     @property
     def _requested_profile_ids(self):
         """Who the reader has an unanswered request out to. One query."""
-        if not hasattr(self, "_requested_cache"):
+        cached = self.context.get("_requested_profile_ids")
+        if cached is None:
             reader = getattr(self.context.get("request"), "user", None)
             if reader and reader.is_authenticated:
-                self._requested_cache = set(
+                cached = set(
                     FollowRequest.objects.filter(
                         requester__user_id=reader.id
                     ).values_list("target_id", flat=True)
                 )
             else:
-                self._requested_cache = set()
-        return self._requested_cache
+                cached = set()
+            self.context["_requested_profile_ids"] = cached
+        return cached
 
     @property
     def _followed_profile_ids(self):
         """Who the reader follows, read once for the whole response.
 
         Asked per profile this would be a query per row when a list of them
-        comes back. With `many=True` DRF reuses one child serializer for every
-        object, so caching it here costs one query however many arrive.
+        comes back. Kept in the context, which the whole response shares,
+        rather than on this serializer: a repost builds a fresh serializer for
+        its original's author on every row, so a cache on the instance was
+        one Follow and one FollowRequest query per repost.
         """
-        if not hasattr(self, "_followed_cache"):
+        cached = self.context.get("_followed_profile_ids")
+        if cached is None:
             reader = getattr(self.context.get("request"), "user", None)
             if reader and reader.is_authenticated:
-                self._followed_cache = set(
+                cached = set(
                     Follow.objects.filter(
                         follower__user_id=reader.id
                     ).values_list("following_id", flat=True)
                 )
             else:
-                self._followed_cache = set()
-        return self._followed_cache
+                cached = set()
+            self.context["_followed_profile_ids"] = cached
+        return cached
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_profile_photo_url(self, profile):
