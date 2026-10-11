@@ -12,14 +12,17 @@ from django.contrib.auth.validators import ASCIIUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.files.base import ContentFile
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 from rest_framework import serializers
 
 from drf_spectacular.utils import extend_schema_field
 
+from . import models as core_models
 from .media import signed_media_url
 from .moderation import check_public_content
 from .uploads import check_image_dimensions, without_metadata
+from .throttles import FailedSignInLimit
 
 
 class SessionFinishSerializer(serializers.Serializer):
@@ -55,6 +58,7 @@ from .models import (
     UserDiscipline,
     MAX_PROFILE_SOCIAL_LINKS,
     PlannerEntry,
+    PlannerRecurrence,
     PostReport,
     ProfileSocialLink,
     SocialLinkError,
@@ -70,6 +74,7 @@ from .models import (
     MAX_PROFILE_HIGHLIGHTS,
     MAX_PROFILE_PROMPTS,
     today_for,
+    plan_ahead_limit,
     ProfileHighlight,
     ProfilePrompt,
     best_set_for,
@@ -374,7 +379,9 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
     """A reusable meal. Ingredients are written with it in one request: a
     recipe with no ingredients is not a thing anyone wants to save."""
 
-    ingredients = SavedFoodIngredientSerializer(many=True)
+    #: Bounded, because applying a saved meal copies every ingredient onto
+    #: each of up to 31 days in one transaction.
+    ingredients = SavedFoodIngredientSerializer(many=True, max_length=100)
     #: Declared rather than left to the model field, which is a TextField and
     #: would otherwise be exposed with no ceiling at all. The number matches
     #: the one a post's instructions are held to, so a recipe copied out of a
@@ -780,7 +787,7 @@ class ProfileHighlightWriteSerializer(serializers.Serializer):
         min_value=Decimal("0"),
     )
     manual_reps = serializers.IntegerField(
-        required=False, allow_null=True, min_value=1,
+        required=False, allow_null=True, min_value=1, max_value=1000,
     )
 
     def validate(self, attrs):
@@ -1094,8 +1101,32 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
 
 class RepbaseUserSerializer(serializers.ModelSerializer):
     def validate(self, attrs):
+        self._confirm_new_email(attrs)
         check_public_content(attrs, request=self.context.get("request"))
         return attrs
+
+    def _confirm_new_email(self, attrs):
+        """A different email address needs the account's password as well.
+
+        The email is where a password reset goes. Changing it took only a
+        token, so whoever held a stolen one could move the address and reset
+        the password -- turning a token that can be revoked into an account
+        that cannot be recovered. A wrong password counts against the same
+        per-username limit as a failed sign-in, so this is not a way to guess.
+        """
+        supplied = attrs.pop("current_password", None)
+        email = attrs.get("user", {}).get("email")
+        user = getattr(self.instance, "user", None)
+        if user is None or email is None or email.lower() == (user.email or "").lower():
+            return
+        limit = FailedSignInLimit(user.username)
+        limit.check()
+        if not supplied or not user.check_password(supplied):
+            if supplied:
+                limit.record_failure()
+            raise serializers.ValidationError(
+                {"current_password": "Enter your current password to change your email address."}
+            )
 
     username = serializers.CharField(source="user.username", max_length=150)
     first_name = serializers.CharField(source="user.first_name", max_length=150)
@@ -1138,6 +1169,16 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
     #: two ways to write the same rows and one of them would drift.
     social_links = ProfileSocialLinkSerializer(many=True, read_only=True)
 
+    #: Write-only, and needed only when `email` changes. Bounded like the
+    #: password a sign-in accepts.
+    current_password = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        max_length=4096,
+        help_text="The account's password. Required when changing email.",
+    )
+
 
     class Meta:
         model = RepbaseUser
@@ -1166,6 +1207,7 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
             "shows_target_weight",
             "is_profile_public",
             "social_links",
+            "current_password",
             "created_at",
             "updated_at",
         ]
@@ -1479,7 +1521,7 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
         help_text="Update-only: atomically replace the exercise plan, preserving supplied relation IDs.",
     )
     initial_exercises = InitialWorkoutExerciseSerializer(
-        many=True, required=False, write_only=True,
+        many=True, required=False, write_only=True, max_length=200,
         help_text="Create-only: save all initial exercises in the same transaction as the template.",
     )
     initial_date = serializers.DateField(
@@ -1891,6 +1933,28 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     {"repeat_ends_on": "The repeat has to end after the day it starts."}
                 )
+            repeater = getattr(self.instance, "owner", None) or (
+                self.context["request"].user.repbase_profile
+            )
+            # Its first days are written straight away, from the day it starts;
+            # see PLAN_AHEAD_LIMIT_DAYS for why that has to be near.
+            if start is not None and start > plan_ahead_limit(repeater):
+                raise serializers.ValidationError(
+                    {"repeat_every_days": "A repeat can start at most a year from today."}
+                )
+            if self.instance is None:
+                running = PlannerRecurrence.objects.filter(owner=repeater).filter(
+                    Q(ends_on__isnull=True) | Q(ends_on__gt=today_for(repeater))
+                )
+                if running.count() >= core_models.MAX_ACTIVE_PLANNER_REPEATS:
+                    raise serializers.ValidationError(
+                        {
+                            "repeat_every_days": (
+                                "You have as many repeating tasks as one account can "
+                                "hold. End one before adding another."
+                            )
+                        }
+                    )
         elif attrs.get("repeat_ends_on") is not None:
             raise serializers.ValidationError(
                 {"repeat_ends_on": "Say how often it repeats before saying when it stops."}
@@ -2079,7 +2143,9 @@ class SessionCardioSerializer(serializers.Serializer):
     """A cardio finisher performed after a session's exercises."""
 
     machine = serializers.ChoiceField(choices=CardioMachine.choices)
-    seconds = serializers.IntegerField(min_value=1)
+    #: A week. Declared by hand, so nothing else bounds it, and a number past
+    #: the database's integer range was a 500 rather than a 400.
+    seconds = serializers.IntegerField(min_value=1, max_value=7 * 24 * 60 * 60)
     distance_km = serializers.DecimalField(
         max_digits=7,
         decimal_places=3,
@@ -3537,7 +3603,7 @@ class DailyStepCountEntrySerializer(serializers.Serializer):
     """One day of steps on its way in from the device."""
 
     day = serializers.DateField()
-    steps = serializers.IntegerField(min_value=0)
+    steps = serializers.IntegerField(min_value=0, max_value=1_000_000)
 
 
 class DailyStepCountRecordSerializer(serializers.Serializer):
@@ -3548,7 +3614,9 @@ class DailyStepCountRecordSerializer(serializers.Serializer):
     Sending one day at a time would leave those corrections behind.
     """
 
-    days = DailyStepCountEntrySerializer(many=True, allow_empty=True)
+    #: Each day is an upsert in one transaction, so the batch is bounded:
+    #: the app sends a week, and a year is more than any backfill needs.
+    days = DailyStepCountEntrySerializer(many=True, allow_empty=True, max_length=400)
 
 
 class HealthWorkoutSerializer(serializers.Serializer):
@@ -3574,7 +3642,9 @@ class HealthWorkoutSerializer(serializers.Serializer):
 
 
 class HealthWorkoutImportSerializer(serializers.Serializer):
-    workouts = HealthWorkoutSerializer(many=True, allow_empty=True)
+    #: Bounded for the same reason as step counts: two lookups and a write per
+    #: workout, in one transaction. The app sends thirty days.
+    workouts = HealthWorkoutSerializer(many=True, allow_empty=True, max_length=500)
 
 
 class HealthImportResultSerializer(serializers.Serializer):
@@ -3928,7 +3998,10 @@ class PersonalizationSerializer(serializers.ModelSerializer):
     """
 
     training_types = serializers.ListField(
-        child=serializers.CharField(max_length=60), required=False, allow_empty=True
+        child=serializers.CharField(max_length=60),
+        required=False,
+        allow_empty=True,
+        max_length=20,
     )
 
     class Meta:

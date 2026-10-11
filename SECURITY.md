@@ -126,6 +126,40 @@ for the defaults and environment variables.
 | Low (correctness) | A rotation's slot checks -- one slot per position, positions inside the rotation -- were in a `validate` method that a second `validate` in the same class replaced. Duplicate positions reached the database as a 500. | Both checks run again. | `tests.RotationSlotValidationTests` |
 | Operational | With DEBUG off, Django sends request errors only to `ADMINS`, which is unset, so a 500's traceback was discarded. | `config.production` logs Django errors and the app's own loggers to stderr (journald). | `test_hosted_configuration.ProductionConfigurationTests` |
 
+## Second audit, October 2026
+
+A fresh pass over all three repositories, looking for what the first one
+missed. Every fix has a test in `core/test_security_audit.py`, written as the
+attack and seen failing against the code before the fix. The "Before" column
+was measured against the unmodified commit.
+
+| # | Severity | Finding | Before | Fix |
+| --- | --- | --- | --- | --- |
+| A1 | High | Three endpoints wrote a row per day (or week) up to a date the client chose, unbounded: `GET /planner/?end=`, `POST cycles/{id}/plan-ahead/`, `POST schedules/plan-week/`. Any account with one daily repeating task could fill the database and hold a worker. | One GET with `end` 20,000 days out wrote 20,000 rows in 39 s (SQLite); `end=9999-12-31` is about 2.9 million. A far-future repeat or rotation start was a 500 (date overflow). | Nothing is written past a year ahead (`PLAN_AHEAD_LIMIT_DAYS`), enforced in the writers themselves; repeats and rotations cannot start past it; at most 100 repeating tasks run at once per account. Same GET: 367 rows, 0.1 s. |
+| A2 | High | Django's own sign-in pages had no limits. `/api-auth/login/` signs any account in, and the session works on the whole API (SessionAuthentication), so it was an unthrottled way round the API's sign-in limits. `/admin/login/` was the same for staff. | 30 wrong passwords at `/api-auth/login/`: all 200, then the right one signed in and `/api/v1/me/` answered 200. | `core.auth_backends.SignInLimitBackend`: every `authenticate()` -- API, admin, browsable API, insights, access -- counts failures against the username and refuses it past the limit. Django's form sign-ins also share a per-client-address limit (5 per 15 minutes). |
+| A3 | Medium | The insights/access sign-in limit keyed on `REMOTE_ADDR`, which behind nginx is nginx. One client's six attempts locked every member of staff out. nginx also passed a client's own `X-Forwarded-For` through unchanged on `/insights/` and `/media/`. | After client A's six attempts, client B's first: 429. | Keyed on the proxy-written client address (`client_address`, believes X-Forwarded-For only with `REPBASE_NUM_PROXIES`); nginx now sets X-Forwarded-For on those locations. Client B: 200. |
+| A4 | Medium | Password reset limits were per source address only. Across many addresses an attacker could have codes issued without limit (each spending the last, five guesses each) and flood the owner's inbox. | Unlimited codes and guesses per account. | Per email address, from anywhere: 5 codes an hour (silently dropped past it, still 204) and 20 wrong codes a day across all codes (429). Counted for unknown addresses too, so neither says whether an account exists. |
+| A5 | Medium | `scope_to_owner` exempted superusers, so a superuser's token read, changed and deleted every account's workouts, meals, sessions, routes and body weight through the app API, and the superuser's own app listed all of it. | A superuser's `GET /workouts/` returned another member's private plan. | No exemption; staff use the admin for other people's records. Custom exercises likewise. |
+| A6 | Medium | Changing the account email took only a token, so a stolen token became a permanent takeover: move the email, then reset the password. | `PATCH /me/ {"email": "attacker@..."}` with a token: 200. | A different email needs `current_password` (new optional write-only field); wrong guesses count against the sign-in limit. Neither client edits email, so neither is affected. |
+| A7 | Medium | A gym's member list named people with closed profiles -- whose profiles hide their gym -- to anyone, including people they had blocked: where somebody trains, to a stranger. | A stranger saw the closed profile in the list. | Only people the reader could open, never either side of a block. The member count is unchanged. |
+| A8 | Medium | A gym whose creator deleted their account (`SET_NULL`) could be renamed or deleted by anybody signed in. | A stranger renamed it: 200. | Only its creator, or staff with `change_gym`. |
+| A9 | Medium | gunicorn listened on `0.0.0.0`. Wherever the port was reachable, a client could skip nginx's TLS and rate limits and write its own X-Forwarded-For, which the throttles believe with `NUM_PROXIES=1`. | -- | Loopback by default (`GUNICORN_BIND_HOST`), validated as an IP address. |
+| A10 | Medium | `deploy/configure.py` connected the app as `doadmin`, the managed cluster's administrator, with `sslmode=require` (no hostname check), and wrote settings `config.production` refuses. | -- | Writes a `config.production` file with `verify-full`, refuses administrative role names, and sets the proxy settings; `deploy/README.md` gives the SQL for a least-privilege role. The live server was not inspected. |
+| A11 | Low | Request lists had no length limit: an 8 MB body held about 230,000 step counts, each an upsert in one transaction. Likewise Health imports, saved-meal ingredients (copied onto up to 31 days at once), a new workout's exercises, personalization types. | -- | 400 days, 500 workouts, 100 ingredients, 200 exercises, 20 types. The apps send 7 days and 30 days. |
+| A12 | Low | Hand-declared integer fields had no ceiling, and PostgreSQL answers an out-of-range integer with an error: a 500. | `manual_reps`, `steps`: "integer out of range" on PostgreSQL. | Bounded (reps 1000, steps 1,000,000, cardio a week). |
+| A13 | Low | A food search term longer than the cache column (200) was a 500 on PostgreSQL, after spending two calls of the shared FoodData Central allowance. | "value too long for type character varying(200)". | Cut to 100 characters. |
+| A14 | Low | CI jobs in all three repositories ran with the repository's default token permissions. | -- | `permissions: contents: read` in every workflow. |
+| A15 | Low | nginx inherited the TLS protocol list from `nginx.conf`, which on Ubuntu still names TLSv1 and TLSv1.1. | -- | `ssl_protocols TLSv1.2 TLSv1.3` in the site; set it in the http block too (see the comment there). |
+| A16 | Low (iOS) | The app opened whatever URL the server sent as a social link, so a tampered or impersonated server could make a profile icon open `tel:`, `sms:` or another app's deep link. The server already allows https only. | -- | Links that are not https are dropped when decoded. |
+
+Checked and found sound: queryset scoping of every owned resource against
+foreign keys in request bodies, the signed-media design, the MP4/JPEG/PNG/WebP
+parsers (every loop advances, every count is capped), the role and moderation
+endpoints (actor re-read under a lock, protected tiers), the web client (no
+HTML injection sinks, relative URLs, strict CSP), and iOS token storage
+(Keychain, this device only) and transport (HTTPS required in Release, no
+arbitrary loads).
+
 ## Remaining risks
 
 1. **The web client keeps its token in `localStorage`.** Any script injected
@@ -143,10 +177,13 @@ for the defaults and environment variables.
    rytivo.app (`deploy/rytivo.app.nginx.conf` in the web repository). The
    IP-address server block the iOS app uses is configured on the server and
    is in neither repository; give it the same limits.
-4. **`NUM_PROXIES` relies on the deployment.** gunicorn binds `0.0.0.0`; if
-   its port is reachable without going through nginx, a client can again
-   choose its own address. Keep the port firewalled, and raise the count if a
-   CDN or load balancer is put in front.
+4. **`NUM_PROXIES` relies on the deployment.** gunicorn now listens on
+   loopback by default, but a systemd unit passing its own `--bind` overrides
+   that; if the port is reachable without going through nginx, a client can
+   again choose its own address. Keep the port firewalled too, and raise the
+   count if a CDN or load balancer is put in front. Every nginx location that
+   reaches Django must set X-Forwarded-For -- including the IP-address block,
+   which is in neither repository.
 5. **Video is moderated by people only.** The queue has to be staffed; until a
    clip is reviewed it is visible to its author alone.
 6. **A blocked person can still open the blocker's public profile by id.**
@@ -158,10 +195,11 @@ for the defaults and environment variables.
    (three open reports) until a moderator looks. It stays in its author's
    followers' feeds. This trades brigading against keeping reported content
    from spreading while it waits.
-9. **The iOS app is unchanged.** It keeps working against this backend -- every
-   contract change is additive -- but does not yet show For You, report views,
-   play clips or offer "not interested". Its generated client must be
-   regenerated on a Mac with Xcode; see `RECOMMENDATIONS.md`.
+9. **The iOS app is behind the contract.** It keeps working against this
+   backend -- every contract change is additive -- but does not yet show For
+   You, report views, play clips or offer "not interested". Its generated
+   client must be regenerated on a Mac with Xcode; see `RECOMMENDATIONS.md`.
+   The October 2026 change to it (A16) was syntax-checked, not built.
 10. **Photos lose HDR gain maps and depth data** along with their metadata,
     so an iPhone HDR photo displays as standard range. HEIC uploads were
     already refused (Pillow here has no HEIF support).
@@ -169,11 +207,27 @@ for the defaults and environment variables.
     production requirements and `npm audit --audit-level=high` in the web
     repository. The first run found two PyJWT advisories (neither on a code
     path used here); PyJWT was raised to 2.15.1.
+12. **Production's settings module is unknown from here.** `deploy/README.md`
+    once said the droplet runs `config.settings`. If so, the protections
+    `config.production` adds are absent -- above all `REPBASE_NUM_PROXIES`,
+    without which every throttle can be dodged with a made-up header. Check
+    `/etc/repbase.env` and the database role it connects as.
+13. **Deleting an account takes only a token.** `DELETE /me/` is permanent and
+    asks for nothing more. Requiring the password would break the iOS
+    deletion flow App Store review requires, so it waits for a client change.
+14. **A per-username limit can be used to lock somebody out** for up to an
+    hour by failing at their username on purpose. That is the trade the
+    limit makes against distributed guessing; a password reset clears it.
+15. **Changing email does not notify the old address.** The password is now
+    required, which is the protection that matters; a notice would also tell
+    the owner if their password is known.
 
 ## Not verified here
 
-- The nginx configuration was checked for structure but not with `nginx -t`,
-  which needs nginx installed; run it before reloading.
+- The nginx site file passes `nginx -t` on nginx 1.31.6 (October 2026), and
+  was run on high ports in front of a stub backend to confirm the forwarded
+  headers each location sends. The droplet runs 1.24; run `nginx -t` there
+  before reloading.
 - The Django-served pages -- the admin, including the clip review page, and
   the API docs -- were driven in headless Chrome under their CSP with no
   violations. The web app's own CSP is sent by nginx, which the Vite dev

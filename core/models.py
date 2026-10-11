@@ -1310,6 +1310,10 @@ def plan_recurring_week(owner, week_start, today):
     current_week = week_start_for(today)
     if week_start < current_week:
         return []
+    # Every Monday from now to `week_start` is planned, so a week years ahead
+    # was every week in between. Past the horizon there is nothing to write.
+    if week_start > today + timedelta(days=PLAN_AHEAD_LIMIT_DAYS):
+        return []
 
     created = []
     recurrences = WorkoutRecurrence.objects.filter(owner=owner).select_related(
@@ -1625,6 +1629,25 @@ class PlannerEntry(models.Model):
 #: a year of rows to clear. Rows past this appear as the calendar reaches them.
 PLANNER_REPEAT_HORIZON_DAYS = 60
 
+#: The furthest ahead anything is written on somebody's behalf -- repeating
+#: tasks, rotation days, weekly repeats -- however far ahead they ask about.
+#:
+#: Each of those is filled in up to a date the client names, one row per day
+#: or week. With no ceiling, one request naming the year 9999 wrote close to
+#: three million rows. A year covers every calendar any screen draws; past
+#: it, a repeat simply appears as the calendar reaches it.
+PLAN_AHEAD_LIMIT_DAYS = 366
+
+#: Repeating tasks still running at once, per account. Each one writes a row
+#: a day out to the horizon above, so the count is what bounds the rows a
+#: single account can have written for it. Far more than anybody keeps.
+MAX_ACTIVE_PLANNER_REPEATS = 100
+
+
+def plan_ahead_limit(owner):
+    """The last day anything is filled in for this person, in their own zone."""
+    return today_for(owner) + timedelta(days=PLAN_AHEAD_LIMIT_DAYS)
+
 
 class PlannerRecurrence(models.Model):
     """A task that comes back every so many days.
@@ -1751,6 +1774,9 @@ def materialize_planner_repeats(owner, through):
     again.
     """
     created = []
+    # Whatever the caller asked for, nothing past the horizon: `through`
+    # comes from a query parameter, and every day up to it is a row.
+    through = min(through, plan_ahead_limit(owner))
     rules = PlannerRecurrence.objects.filter(owner=owner).prefetch_related("steps")
     for rule in rules:
         if rule.ends_on is not None and rule.ends_on <= rule.starts_on:

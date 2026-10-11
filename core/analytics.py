@@ -7,7 +7,6 @@ from django.conf import settings
 from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.views import LoginView, LogoutView
 from django.contrib.auth.decorators import login_required
-from django.core.cache import cache
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, transaction
 from django.db.models import Count, F, Max, Q, Sum
@@ -15,10 +14,10 @@ from django.db.models.functions import Greatest
 from django.http import HttpResponseForbidden, HttpResponse
 from django.shortcuts import render
 from django.utils import timezone
-from django.utils.crypto import salted_hmac
 from django.views.decorators.cache import never_cache
 
 from .analytics_models import DailyActiveAccount, DailyApiMetric, RecentApiMetric
+from .throttles import sign_in_attempt_refusal
 from .models import RepbaseUser, WorkoutSession, PlannerEntry, FoodMeal
 
 ADMIN_EMAIL = 'admin@rytivo.app'
@@ -60,16 +59,13 @@ class InsightsLoginView(LoginView):
     redirect_authenticated_user = False
 
     def post(self, request, *args, **kwargs):
-        # Per-source rate limit; never store a raw IP or submitted username.
-        key = 'insights-login:' + salted_hmac('insights-login', request.META.get('REMOTE_ADDR', '')).hexdigest()
-        try:
-            cache.add(key, 0, 900)
-            attempts = cache.incr(key)
-        except Exception:
-            # Do not fail open if the shared rate limiter is unavailable.
-            return HttpResponse('Sign-in temporarily unavailable.', status=503)
-        if attempts > 5:
-            return HttpResponse('Too many attempts. Try again in 15 minutes.', status=429)
+        # Per client address, shared with the admin's and the browsable API's
+        # sign-in pages. It used to key on REMOTE_ADDR, which behind nginx is
+        # nginx -- one bucket for everybody, so six bad attempts from anywhere
+        # locked every member of staff out for a quarter of an hour.
+        refusal = sign_in_attempt_refusal(request)
+        if refusal is not None:
+            return refusal
         response = super().post(request, *args, **kwargs)
         if response.status_code == 302:
             request.session.set_expiry(1800)

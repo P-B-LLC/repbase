@@ -77,6 +77,7 @@ You page, video uploads and the security audit:
 | `test_recommendations` | Topic, scoring, ranking and cursor units; different people get different pages; the page responds to likes, follows, views and "not interested"; new accounts; every eligibility rule; paging; constant query count as content grows; impressions; the quality report; the populated page against the schema |
 | `test_reporting` | Reporting posts end to end, privacy of report detail, limits, a moderator's takedown reaching every feed and the photo itself, suspensions hiding content |
 | `test_security` | The staff-only member list, closed profiles' sub-lists, IDOR across every owner-scoped resource, malformed filters (no 500s), injection-shaped search text, security headers and CORS, CSRF for cookie sessions, error-report redaction, production-only settings |
+| `test_security_audit` | The October 2026 audit, one class per finding: planning horizons that one request could fill the database through, sign-in limits on Django's own pages (admin, browsable API, insights) and behind the proxy, per-account password-reset limits, no superuser bypass in the app API, ownerless gyms, gym members hiding closed profiles, the password needed to change email, bounded batches and numbers, long food searches, gunicorn listening on loopback |
 
 Shared builders live in `core/fixtures_for_tests.py` (named so the test runner
 skips it). Real video fixtures and how to regenerate them are in

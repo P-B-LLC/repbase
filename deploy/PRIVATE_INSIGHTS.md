@@ -56,10 +56,15 @@ Revocation intentionally does not remove staff status or unrelated permissions.
 3. **Before public exposure, enforce a shared login rate limit at the reverse
    proxy or configure a shared atomic cache backend.** The built-in default
    local-memory cache limits only one worker. The application adds a five-attempt
-   /15-minute per-source limit, but this alone is not a distributed defense.
-   `REMOTE_ADDR` behind a proxy may group all users together; do not fix this by
-   blindly trusting X-Forwarded-For. Prefer restricting this admin route to a VPN
-   or operator IP as defense in depth. MFA is not implemented here.
+   /15-minute per-client limit, shared with the admin's and the browsable API's
+   sign-in pages, and every failed password counts against the username however
+   it arrives. The client is read from X-Forwarded-For only with
+   `REPBASE_NUM_PROXIES` set, and only the entry the proxy wrote; without it the
+   socket address is used, which behind nginx groups everybody together. So set
+   `REPBASE_NUM_PROXIES=1` and make every nginx location that reaches Django set
+   `X-Forwarded-For $proxy_add_x_forwarded_for` (the site file in rytivo-web
+   does). Prefer restricting this admin route to a VPN or operator IP as defense
+   in depth. MFA is not implemented here.
    Only after verifying the shared limit across workers, set
    `ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED=true`. Production insights returns
    503 until this operator confirmation is configured; it does not configure

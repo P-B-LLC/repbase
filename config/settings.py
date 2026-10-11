@@ -148,6 +148,17 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
+# Every password check -- the API, the admin, the browsable API and the
+# private workspaces -- counts failures against the username here. See
+# core.auth_backends. Changing this signs existing admin sessions out once,
+# since a session remembers the backend that created it.
+AUTHENTICATION_BACKENDS = ['core.auth_backends.SignInLimitBackend']
+
+# Attempts each client address gets at Django's own sign-in pages per fifteen
+# minutes, across all of them. See core.throttles.sign_in_attempt_refusal.
+DJANGO_LOGIN_ATTEMPTS_PER_ADDRESS = int(os.getenv('REPBASE_LOGIN_ATTEMPTS_PER_ADDRESS', '5'))
+
+
 # Internationalization
 # https://docs.djangoproject.com/en/6.1/topics/i18n/
 
@@ -268,6 +279,17 @@ REST_FRAMEWORK = {
         # spent. Five tries at six codes is the honest ceiling.
         'password_reset_confirm': os.environ.get(
             'REPBASE_THROTTLE_RESET_CONFIRM', '30/hour'
+        ),
+        # The two above per address; these two per email address, from
+        # anywhere. Without them an attacker with many addresses could have a
+        # fresh code issued as often as they liked, five guesses each, and
+        # fill the owner's inbox doing it. Counted whether or not the address
+        # has an account, and a code that is not sent still answers 204.
+        'password_reset_account': os.environ.get(
+            'REPBASE_THROTTLE_RESET_ACCOUNT', '5/hour'
+        ),
+        'password_reset_account_failures': os.environ.get(
+            'REPBASE_THROTTLE_RESET_ACCOUNT_FAILURES', '20/day'
         ),
         # Failed sign-ins against one username, from anywhere. The per-address
         # limit above cannot see an attack spread across many addresses, and

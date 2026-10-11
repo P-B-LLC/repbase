@@ -16,10 +16,12 @@ Including another URLconf
 """
 from django.conf import settings
 from django.contrib import admin
+from django.contrib.auth.views import LoginView
 from django.urls import include, path, re_path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerSplitView
 
 from core.media import serve_media
+from core.throttles import limit_sign_in_attempts
 from core.analytics import dashboard, InsightsLoginView, InsightsLogoutView
 from core.access_portal import workspace, edit_access, reports, AccessLoginView, AccessLogoutView
 from config.health import live, ready
@@ -38,6 +40,15 @@ urlpatterns = [
     path('health/ready/', ready, name='health-ready'),
     path('', home, name='home'),
     path('health/', health, name='health'),
+    # The admin's and the browsable API's sign-in pages, limited per client
+    # address like the insights one. Listed before the includes that also
+    # define them, so these are the ones that answer; the includes still
+    # provide the names their templates reverse.
+    path('admin/login/', limit_sign_in_attempts(admin.site.login)),
+    path(
+        'api-auth/login/',
+        limit_sign_in_attempts(LoginView.as_view(template_name='rest_framework/login.html')),
+    ),
     path('admin/', admin.site.urls),
     path('api-auth/', include('rest_framework.urls')),
     path('api/repbase/', repbase_users, name='repbase-users'),

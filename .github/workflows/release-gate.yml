@@ -9,6 +9,11 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Read-only. Nothing here pushes, comments or publishes, so the job token
+# gets no more than a checkout needs, whatever the repository default is.
+permissions:
+  contents: read
+
 jobs:
   checks:
     uses: ./.github/workflows/ci.yml

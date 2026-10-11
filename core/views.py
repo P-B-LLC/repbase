@@ -53,7 +53,12 @@ from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IdempotentCreateMixin
 from .serializers import SessionFinishSerializer
 from .params import date_param, id_param
-from .throttles import FailedSignInLimit, ThrottleByActionMixin
+from .throttles import (
+    FailedSignInLimit,
+    PasswordResetFailureLimit,
+    PasswordResetIssueLimit,
+    ThrottleByActionMixin,
+)
 from .videos import ReceivedVideo, VideoUploadParser, attach_video, remove_video
 from .models import (
     CYCLE_MATERIALIZE_DAYS,
@@ -112,6 +117,7 @@ from .models import (
     PlannerRecurrenceStep,
     PLANNER_REPEAT_HORIZON_DAYS,
     materialize_planner_repeats,
+    plan_ahead_limit,
     training_day_of,
     plan_recurring_week,
     week_start_for,
@@ -301,9 +307,10 @@ class LoginView(APIView):
         # learns nothing more from this account until the window passes.
         limit.check()
 
+        # Failures are counted by core.auth_backends.SignInLimitBackend, which
+        # every sign-in page shares, so they are not counted again here.
         serializer = LoginSerializer(data=request.data, context={"request": request})
         if not serializer.is_valid():
-            limit.record_failure()
             raise ValidationError(serializer.errors)
         user = serializer.validated_data["user"]
         profile = profile_for(user)
@@ -421,7 +428,10 @@ class FoodSearchView(APIView):
         ),
     )
     def get(self, request):
-        term = FoodSearchCache.normalize(request.query_params.get("q", ""))
+        # Cut to what anybody types into a search box. The cache column holds
+        # 200, and a longer term reached PostgreSQL as a 500 after spending
+        # two calls of the allowance every user shares.
+        term = FoodSearchCache.normalize(request.query_params.get("q", ""))[:100].strip()
         if len(term) < 2:
             return Response([])
 
@@ -513,6 +523,14 @@ class PasswordResetRequestView(APIView):
 
     @staticmethod
     def send_code(email):
+        # Per email address, from anywhere, and counted before the lookup so
+        # an address with no account is counted the same. Past the limit the
+        # request is dropped silently: the 204 has already gone, and saying
+        # anything different would say the address is being targeted.
+        issued = PasswordResetIssueLimit(email)
+        if issued.exceeded():
+            return
+        issued.record()
         user = User.objects.filter(email__iexact=email).first()
         if user is None:
             return
@@ -601,11 +619,18 @@ class PasswordResetConfirmView(APIView):
             {"code": "That code is wrong or has expired. Ask for a new one."}
         )
 
+        # Across every code issued for this address, not only the live one:
+        # a fresh code must not buy fresh guesses. Kept for addresses with
+        # no account too, so a 429 here says nothing about whether one exists.
+        failures = PasswordResetFailureLimit(email)
+        failures.check()
+
         user = User.objects.filter(email__iexact=email).first()
         if user is None:
             # The same words as a wrong code, for the same reason the request
             # endpoint says nothing: an address that is not registered should
             # not be distinguishable from one that is.
+            failures.record()
             raise invalid
 
         with transaction.atomic():
@@ -643,12 +668,14 @@ class PasswordResetConfirmView(APIView):
         # exception that was supposed to record it -- a ceiling that resets
         # itself on every wrong guess is not a ceiling.
         if not correct:
+            failures.record()
             raise invalid
 
         # Whoever reset the password has shown they hold the mailbox, so the
         # failed sign-ins somebody else racked up against this name no longer
         # stand between its owner and the account.
         FailedSignInLimit(user.username).clear()
+        failures.clear()
 
         profile = profile_for(user)
         return Response(
@@ -1190,11 +1217,13 @@ class ExerciseViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = super().get_queryset().select_related("created_by")
-        if not self.request.user.is_superuser:
-            profile = profile_for(self.request.user)
-            queryset = queryset.filter(
-                Q(created_by__isnull=True) | Q(created_by=profile)
-            )
+        # The shared catalogue and the reader's own, for superusers too: a
+        # custom exercise is its creator's private vocabulary, and nobody
+        # else's picker should offer it.
+        profile = profile_for(self.request.user)
+        queryset = queryset.filter(
+            Q(created_by__isnull=True) | Q(created_by=profile)
+        )
         # Matched the way the app matches names: ignoring case and surrounding
         # space. Without this a client reads the whole catalogue to find one
         # row, on every workout save.
@@ -1214,8 +1243,12 @@ class OwnedViewSetMixin:
         return profile_for(self.request.user)
 
     def scope_to_owner(self, queryset):
-        if self.request.user.is_superuser:
-            return queryset
+        # Everybody, superusers included. A superuser bypass here once let a
+        # superuser's token read, edit and delete every account's workouts,
+        # meals, sessions, routes and body weight through this API, and put
+        # all of it in that superuser's own lists. Staff who need to look at
+        # somebody else's records do it in the admin, which is audited and
+        # permission-checked; through the app, an account is an account.
         return queryset.filter(**{self.owner_lookup: self.owner_profile()})
 
 
@@ -1815,9 +1848,17 @@ class GymViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=profile_for(self.request.user))
 
     def _assert_owner(self, instance):
+        # A gym nobody owns -- one the app shipped with, or one whose creator
+        # has since deleted their account, which nulls the link -- is not open
+        # to everyone. It used to be: anybody signed in could rename or delete
+        # a gym other people list as theirs. Staff with permission to change
+        # gyms can still correct one.
         owner = profile_for(self.request.user)
-        if instance.created_by_id not in (None, owner.id) and not self.request.user.is_superuser:
-            raise PermissionDenied("Only the person who added this gym can change it.")
+        if instance.created_by_id == owner.id:
+            return
+        if self.request.user.has_perm("core.change_gym"):
+            return
+        raise PermissionDenied("Only the person who added this gym can change it.")
 
     def perform_update(self, serializer):
         self._assert_owner(serializer.instance)
@@ -1834,10 +1875,32 @@ class GymViewSet(viewsets.ModelViewSet):
     @extend_schema(responses={200: PublicRepbaseUserSerializer(many=True)})
     @action(detail=True, methods=["get"], pagination_class=None)
     def members(self, request, pk=None):
-        """Who trains here. This is what makes a shared gym worth having."""
+        """Who trains here. This is what makes a shared gym worth having.
+
+        Only the people whose profile the reader could open. A closed profile
+        hides its gym, and listing the person here said where they train to
+        any stranger who asked -- including somebody they had blocked, for
+        whom that is the one thing worth knowing. The count on the gym still
+        includes everybody; a number names nobody.
+        """
         gym = self.get_object()
-        people = gym.members.select_related("user").order_by("user__username")
-        return Response(PublicRepbaseUserSerializer(people, many=True).data)
+        viewer = profile_for(request.user)
+        blocked_either_way = Block.objects.filter(
+            Q(blocker=viewer, blocked=OuterRef("pk"))
+            | Q(blocker=OuterRef("pk"), blocked=viewer)
+        )
+        follows = Follow.objects.filter(follower=viewer, following=OuterRef("pk"))
+        people = (
+            gym.members.select_related("user")
+            .exclude(Exists(blocked_either_way))
+            .filter(Q(pk=viewer.pk) | Q(is_profile_public=True) | Exists(follows))
+            .order_by("user__username")
+        )
+        return Response(
+            PublicRepbaseUserSerializer(
+                people, many=True, context=self.get_serializer_context()
+            ).data
+        )
 
 
 @extend_schema_view(
@@ -4892,6 +4955,10 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             raise ValidationError(
                 {"start_on": "A rotation cannot start before today."}
             )
+        if start_on > plan_ahead_limit(owner):
+            raise ValidationError(
+                {"start_on": "A rotation can start at most a year from today."}
+            )
 
         with transaction.atomic():
             # The rotation on the way out keeps every day up to the handover,
@@ -5079,6 +5146,8 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         read as two sessions to everything that counts them.
         """
         owner = cycle.owner
+        # A day per row, up to a date the client chose. See PLAN_AHEAD_LIMIT_DAYS.
+        through = min(through, plan_ahead_limit(owner))
         start = max(cycle.effective_from, today_for(cycle.owner))
         if cycle.materialized_through and cycle.materialized_through >= start:
             start = cycle.materialized_through + timedelta(days=1)

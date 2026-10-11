@@ -2062,7 +2062,14 @@ paths:
   /api/v1/gyms/{id}/members/:
     get:
       operationId: gyms_members_list
-      description: Who trains here. This is what makes a shared gym worth having.
+      description: |-
+        Who trains here. This is what makes a shared gym worth having.
+
+        Only the people whose profile the reader could open. A closed profile
+        hides its gym, and listing the person here said where they train to
+        any stranger who asked -- including somebody they had blocked, for
+        whom that is the one thing worth knowing. The count on the gym still
+        includes everybody; a number names nobody.
       parameters:
       - in: path
         name: id
@@ -6153,6 +6160,7 @@ components:
           format: date
         steps:
           type: integer
+          maximum: 1000000
           minimum: 0
       required:
       - day
@@ -7989,6 +7997,7 @@ components:
             type: string
             minLength: 1
             maxLength: 60
+          maxItems: 20
         weekly_target:
           type: integer
           maximum: 9223372036854775807
@@ -8135,6 +8144,11 @@ components:
           type: boolean
         is_profile_public:
           type: boolean
+        current_password:
+          type: string
+          writeOnly: true
+          description: The account's password. Required when changing email.
+          maxLength: 4096
     PatchedSavedFoodMealRequest:
       type: object
       description: |-
@@ -8384,6 +8398,7 @@ components:
           items:
             type: string
             maxLength: 60
+          maxItems: 20
         weekly_target:
           type: integer
           maximum: 9223372036854775807
@@ -9345,6 +9360,7 @@ components:
           nullable: true
         manual_reps:
           type: integer
+          maximum: 1000
           minimum: 1
           nullable: true
       required:
@@ -9969,6 +9985,11 @@ components:
           type: boolean
         is_profile_public:
           type: boolean
+        current_password:
+          type: string
+          writeOnly: true
+          description: The account's password. Required when changing email.
+          maxLength: 4096
       required:
       - email
       - first_name
@@ -10274,6 +10295,7 @@ components:
           $ref: '#/components/schemas/CardioMachineEnum'
         seconds:
           type: integer
+          maximum: 604800
           minimum: 1
         distance_km:
           type: string

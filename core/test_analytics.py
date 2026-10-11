@@ -122,7 +122,7 @@ class AnalyticsTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(self.client.post('/insights/login/', {}).status_code, 429)
 
     def test_rate_limit_failure_denies_login(self):
-        with patch('core.analytics.cache.add', side_effect=RuntimeError('offline')):
+        with patch('core.throttles.cache.add', side_effect=RuntimeError('offline')):
             self.assertEqual(self.client.post('/insights/login/', {}).status_code, 503)
 
     @override_settings(DEBUG=False, SESSION_COOKIE_SECURE=False, ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED=True)

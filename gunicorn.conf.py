@@ -1,8 +1,35 @@
 """Bounded WSGI workers; size against the hosted database connection budget."""
+import ipaddress
 import os
+
+from django.core.exceptions import ImproperlyConfigured
+
 from config.environment import integer
 
-bind = '0.0.0.0:' + str(integer(os.environ, 'PORT', 8000, 1, 65535))
+
+def _bind_host(value):
+    """An interface to listen on, as an address gunicorn's bind accepts.
+
+    Loopback unless told otherwise. nginx on the same machine is the only
+    thing that should reach this port: anything else skips its TLS and its
+    rate limits, and can write its own X-Forwarded-For -- which, with
+    REPBASE_NUM_PROXIES set, the throttles believe. It used to listen on
+    every interface, which left all of that to a firewall rule.
+    """
+    value = value.strip()
+    if value == 'localhost':
+        return value
+    try:
+        address = ipaddress.ip_address(value.strip('[]'))
+    except ValueError:
+        raise ImproperlyConfigured(
+            'GUNICORN_BIND_HOST must be an IP address, such as 127.0.0.1.'
+        ) from None
+    return f'[{address}]' if address.version == 6 else str(address)
+
+
+bind = (_bind_host(os.environ.get('GUNICORN_BIND_HOST', '127.0.0.1'))
+        + ':' + str(integer(os.environ, 'PORT', 8000, 1, 65535)))
 workers = integer(os.environ, 'WEB_CONCURRENCY', 2, 1, 32)
 # CHANGED (perf): 'sync' workers serve exactly one request at a time. The
 # moderation check in core/moderation.py makes a blocking HTTPS call to
