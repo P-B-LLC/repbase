@@ -1,5 +1,6 @@
 """Private immutable local objects. Never serve this root as public media."""
 import hashlib
+import os
 import shutil
 from pathlib import Path
 from django.conf import settings
@@ -34,6 +35,8 @@ def write(key, source):
     digest = hashlib.sha256()
     size = 0
     with target.open('xb') as output:
+        if os.name == 'posix':
+            os.fchmod(output.fileno(), 0o640)
         while chunk := source.read(256 * 1024):
             size += len(chunk)
             digest.update(chunk)

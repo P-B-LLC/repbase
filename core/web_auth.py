@@ -1,5 +1,6 @@
 """Same-origin browser sessions. Native clients keep their existing token API."""
 from django.contrib.auth import get_user_model, login, logout
+from django.conf import settings
 from django.db import transaction
 from django.middleware.csrf import get_token
 from django.utils.decorators import method_decorator
@@ -55,7 +56,7 @@ class BrowserLoginView(BrowserSessionView):
         user = get_user_model().objects.select_for_update().get(pk=body.validated_data['user'].pk)
         if not user.is_active:
             raise AuthenticationFailed()
-        login(request._request, user, backend='django.contrib.auth.backends.ModelBackend')
+        login(request._request, user, backend=body.validated_data['user'].backend)
         request.session.set_expiry(30 * 60 if any(capabilities(user).values()) else 12 * 60 * 60)
         return session_response(request, user)
 
@@ -71,7 +72,7 @@ class BrowserRegisterView(BrowserSessionView):
         body.is_valid(raise_exception=True)
         with transaction.atomic():
             profile = body.save()
-            login(request._request, profile.user, backend='django.contrib.auth.backends.ModelBackend')
+            login(request._request, profile.user, backend=settings.AUTHENTICATION_BACKENDS[0])
             request.session.set_expiry(12 * 60 * 60)
         return session_response(request, profile.user, status=201)
 
