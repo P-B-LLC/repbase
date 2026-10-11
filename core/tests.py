@@ -11,8 +11,9 @@ from decimal import Decimal
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.core.files.base import ContentFile
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.test import SimpleTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 from rest_framework.authtoken.models import Token
 from rest_framework.test import APIClient, APITestCase
@@ -1229,6 +1230,42 @@ class PasswordResetTests(APITestCase):
         self.assertEqual(response.status_code, 204)
         self.assertEqual(self.sent, [])
         self.assertFalse(PasswordResetCode.objects.exists())
+
+    def test_the_answer_is_ready_before_anything_is_looked_up(self):
+        """Timing must not say what the 204 does not.
+
+        Called the way a WSGI server calls it: the response comes back, and
+        only `close()` -- after the bytes are sent -- does the work. Both
+        addresses produce the same response having done the same nothing.
+        """
+        from rest_framework.test import APIRequestFactory
+
+        from .views import PasswordResetRequestView
+
+        view = PasswordResetRequestView.as_view()
+        with mock.patch("core.views.send_mail") as send:
+            for email in ("nobody@example.invalid", self.EMAIL):
+                request = APIRequestFactory().post(
+                    self.REQUEST, {"email": email}, format="json"
+                )
+                with CaptureQueriesContext(connection) as before_sending:
+                    response = view(request)
+                    response.render()
+                self.assertEqual(response.status_code, 204)
+                self.assertEqual(len(before_sending), 0, email)
+                self.assertFalse(send.called, email)
+                self.assertFalse(PasswordResetCode.objects.exists(), email)
+                self.assertEqual(response.content, b"")
+                response.close()
+        self.assertEqual(send.call_count, 1)
+        self.assertEqual(send.call_args.kwargs["recipient_list"], [self.EMAIL])
+        self.assertIsNotNone(self.live_code())
+
+    def test_a_failure_after_the_answer_never_reaches_the_server(self):
+        with mock.patch("core.views.User.objects.filter", side_effect=RuntimeError("db gone")):
+            with self.assertLogs("core.views", level="ERROR"):
+                response, _ = self.ask()
+        self.assertEqual(response.status_code, 204)
 
     def test_known_address_is_emailed_six_digits(self):
         response, code = self.ask()

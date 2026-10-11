@@ -453,6 +453,31 @@ class FoodSearchView(APIView):
         return Response(payload)
 
 
+
+class AfterResponse(Response):
+    """A response that runs `then` once it has been sent.
+
+    WSGI servers call `close()` after the last byte is written, so the client
+    has its answer by the time `then` starts; Django's test client calls it
+    before returning, so tests see the work done. `then` must not raise into
+    the server: a failure is logged and the response has already gone.
+    """
+
+    def __init__(self, then, **kwargs):
+        super().__init__(**kwargs)
+        self._then = then
+
+    def close(self):
+        then, self._then = self._then, None
+        try:
+            if then is not None:
+                then()
+        except Exception:
+            logger.exception("Work after a response failed")
+        finally:
+            super().close()
+
+
 class PasswordResetRequestView(APIView):
     """Send a code to an address, if it belongs to somebody.
 
@@ -483,57 +508,66 @@ class PasswordResetRequestView(APIView):
         payload.is_valid(raise_exception=True)
         email = payload.validated_data["email"]
 
+        # Answered before anything is looked up. Finding the account, hashing
+        # a code and handing a message to the mail provider take hundreds of
+        # milliseconds, and only for an address that has an account -- so a
+        # 204 that waited for them said, by when it arrived, exactly what its
+        # body is careful not to. The work runs once the answer has gone.
+        return AfterResponse(lambda: self.send_code(email), status=status.HTTP_204_NO_CONTENT)
+
+    @staticmethod
+    def send_code(email):
         user = User.objects.filter(email__iexact=email).first()
-        if user is not None:
-            with transaction.atomic():
-                PasswordResetCode.objects.filter(
-                    user=user, used_at__isnull=True
-                ).update(used_at=timezone.now())
+        if user is None:
+            return
+        with transaction.atomic():
+            PasswordResetCode.objects.filter(
+                user=user, used_at__isnull=True
+            ).update(used_at=timezone.now())
 
-                code = f"{secrets.randbelow(1_000_000):06d}"
-                issued = PasswordResetCode.objects.create(
-                    user=user,
-                    code_hash=make_password(code),
-                    expires_at=timezone.now() + PasswordResetCode.LIFETIME,
-                )
-            minutes = int(PasswordResetCode.LIFETIME.total_seconds() // 60)
-            try:
-                send_mail(
-                    # Rytivo, not Repbase. This is the one email the product
-                    # sends, it goes to someone who is already locked out, and
-                    # a code arriving under a name they have never seen reads
-                    # like the phishing attempt they should be watching for.
-                    # The repo and the Python package keep the old name; what
-                    # a user is shown does not have to.
-                    subject="Your Rytivo reset code",
-                    message=(
-                        f"Your Rytivo password reset code is {code}.\n\n"
-                        f"It works once and expires in {minutes} minutes. "
-                        "If you did not ask to reset your password, you can "
-                        "ignore this email and nothing will change."
-                    ),
-                    from_email=settings.DEFAULT_FROM_EMAIL,
-                    recipient_list=[user.email],
-                    fail_silently=False,
-                )
-            except Exception:
-                # The row is committed before the send, so a provider that
-                # refuses the message would otherwise leave a live code
-                # nobody received: an account with a reset outstanding and no
-                # way to reach it. Spend it, so asking again issues a fresh
-                # one rather than colliding with a ghost.
-                PasswordResetCode.objects.filter(
-                    pk=issued.pk, used_at__isnull=True
-                ).update(used_at=timezone.now())
-                # And still answer 204. A 500 here could only ever happen for
-                # an address that has an account, which is exactly the
-                # difference this endpoint exists to hide -- it would turn a
-                # mail outage into the account enumerator the 204 was written
-                # to prevent. The operator finds out from this log and from
-                # `manage.py check --deploy`. A stranger finds out nothing.
-                logger.exception("Password reset email could not be sent")
-
-        return Response(status=status.HTTP_204_NO_CONTENT)
+            code = f"{secrets.randbelow(1_000_000):06d}"
+            issued = PasswordResetCode.objects.create(
+                user=user,
+                code_hash=make_password(code),
+                expires_at=timezone.now() + PasswordResetCode.LIFETIME,
+            )
+        minutes = int(PasswordResetCode.LIFETIME.total_seconds() // 60)
+        try:
+            send_mail(
+                # Rytivo, not Repbase. This is the one email the product
+                # sends, it goes to someone who is already locked out, and
+                # a code arriving under a name they have never seen reads
+                # like the phishing attempt they should be watching for.
+                # The repo and the Python package keep the old name; what
+                # a user is shown does not have to.
+                subject="Your Rytivo reset code",
+                message=(
+                    f"Your Rytivo password reset code is {code}.\n\n"
+                    f"It works once and expires in {minutes} minutes. "
+                    "If you did not ask to reset your password, you can "
+                    "ignore this email and nothing will change."
+                ),
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                recipient_list=[user.email],
+                fail_silently=False,
+            )
+        except Exception:
+            # The row is committed before the send, so a provider that
+            # refuses the message would otherwise leave a live code
+            # nobody received: an account with a reset outstanding and no
+            # way to reach it. Spend it, so asking again issues a fresh
+            # one rather than colliding with a ghost.
+            PasswordResetCode.objects.filter(
+                pk=issued.pk, used_at__isnull=True
+            ).update(used_at=timezone.now())
+            # And tell the caller nothing: the 204 has already gone. A
+            # failure that reached them could only ever happen for an
+            # address that has an account, which is exactly the difference
+            # this endpoint exists to hide -- it would turn a mail outage
+            # into the account enumerator the 204 was written to prevent.
+            # The operator finds out from this log and from
+            # `manage.py check --deploy`. A stranger finds out nothing.
+            logger.exception("Password reset email could not be sent")
 
 
 class PasswordResetConfirmView(APIView):
