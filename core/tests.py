@@ -1238,6 +1238,8 @@ class PasswordResetTests(APITestCase):
         only `close()` -- after the bytes are sent -- does the work. Both
         addresses produce the same response having done the same nothing.
         """
+        from django.core.signals import request_finished
+        from django.db import close_old_connections
         from rest_framework.test import APIRequestFactory
 
         from .views import PasswordResetRequestView
@@ -1256,7 +1258,14 @@ class PasswordResetTests(APITestCase):
                 self.assertFalse(send.called, email)
                 self.assertFalse(PasswordResetCode.objects.exists(), email)
                 self.assertEqual(response.content, b"")
-                response.close()
+                # As Django's test client does: closing a response ends the
+                # request, which would otherwise close the test's database
+                # connection out from under its transaction.
+                request_finished.disconnect(close_old_connections)
+                try:
+                    response.close()
+                finally:
+                    request_finished.connect(close_old_connections)
         self.assertEqual(send.call_count, 1)
         self.assertEqual(send.call_args.kwargs["recipient_list"], [self.EMAIL])
         self.assertIsNotNone(self.live_code())
