@@ -3723,7 +3723,12 @@ class WorkoutCycleSerializer(serializers.ModelSerializer):
             "updated_at",
         ]
 
-    def validate(self, attrs):
+    def _validate_positions(self, attrs):
+        """One slot per position, each inside the rotation.
+
+        Was a second method named `validate`, which the one below replaced:
+        Python keeps the later of two definitions, so none of this ran.
+        """
         length = attrs.get("length", getattr(self.instance, "length", None))
         slots = attrs.get("slots")
         if slots is not None and length is not None:
@@ -3751,7 +3756,7 @@ class WorkoutCycleSerializer(serializers.ModelSerializer):
         return value
 
     def validate(self, attrs):
-        attrs = super().validate(attrs)
+        attrs = self._validate_positions(super().validate(attrs))
         owner = self.context["request"].user.repbase_profile
 
         # A workout driven by both a weekly repeat and a rotation would have

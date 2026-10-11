@@ -44,6 +44,7 @@ from .models import (
     SavedFoodMeal,
     SessionExercise,
     SetEntry,
+    WorkoutCycle,
     WorkoutExercise,
     WorkoutSchedule,
     WorkoutSession,
@@ -1878,6 +1879,57 @@ class WeeklyGoalTests(RepbaseAPITestMixin, APITestCase):
         _, _, other = self.create_account("goal_other")
         self.authenticate(other)
         self.assertEqual(self._stats()["weekly_goal"], 0)
+
+
+class RotationSlotValidationTests(RepbaseAPITestMixin, APITestCase):
+    """A rotation's slots must fit inside it, one per position.
+
+    WorkoutCycleSerializer had two methods named `validate`. Python keeps the
+    second, so these checks, written in the first, never ran: two slots on
+    one position reached the database's unique constraint as a 500, and a
+    slot past the rotation's length was saved.
+    """
+
+    CYCLES = "/api/v1/cycles/"
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("slotter")
+        self.authenticate(self.token)
+        self.push = WorkoutTemplate.objects.create(
+            owner=self.profile, name="Push", workout_type="lifting"
+        ).id
+        self.pull = WorkoutTemplate.objects.create(
+            owner=self.profile, name="Pull", workout_type="lifting"
+        ).id
+
+    def create(self, length, slots):
+        return self.client.post(
+            self.CYCLES,
+            {
+                "name": "PPL", "length": length,
+                "anchor_date": str(timezone.now().date()),
+                "slots": [{"position": p, "workout": w} for p, w in slots],
+            },
+            format="json",
+        )
+
+    def test_two_slots_cannot_share_a_position(self):
+        response = self.create(2, [(1, self.push), (1, self.pull)])
+        self.assertEqual(response.status_code, 400, response.content[:200])
+        self.assertIn("slots", response.data)
+        self.assertFalse(WorkoutCycle.objects.exists())
+
+    def test_a_slot_must_be_inside_the_rotation(self):
+        for position in (0, 3):
+            with self.subTest(position=position):
+                response = self.create(2, [(1, self.push), (position, self.pull)])
+                self.assertEqual(response.status_code, 400, response.content[:200])
+                self.assertIn("slots", response.data)
+        self.assertFalse(WorkoutCycle.objects.exists())
+
+    def test_a_valid_rotation_is_still_accepted(self):
+        response = self.create(2, [(1, self.push), (2, self.pull)])
+        self.assertEqual(response.status_code, 201, response.data)
 
 
 class RotationSwitchingTests(RepbaseAPITestMixin, APITestCase):
