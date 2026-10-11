@@ -4174,7 +4174,12 @@ class UndoingAWorkoutUnticksItsTaskTests(RepbaseAPITestMixin, APITestCase):
         self.user, self.profile, self.token = self.create_account("undoer")
         self.authenticate(self.token)
         self.workout = WorkoutTemplate.objects.create(owner=self.profile, name="Push Day")
-        self.started = timezone.now() - timedelta(hours=1)
+        # Yesterday at noon UTC, not an hour ago: the tests add 20 minutes for
+        # a second session on the same day, and an hour ago crossed midnight
+        # UTC whenever the suite ran between 00:00 and 01:20.
+        self.started = (timezone.now() - timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0
+        )
         self.task = PlannerEntry.objects.create(
             owner=self.profile,
             kind=PlannerEntry.Kind.TASK,
