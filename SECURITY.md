@@ -118,6 +118,14 @@ for the defaults and environment variables.
 | `REPBASE_THROTTLE_*` | see settings | Each limit is configurable; lower is safer. |
 | `DJANGO_SECURE_HSTS_SECONDS` | 3600 | Raise to a year once HTTPS is settled. |
 
+## Found after the audit
+
+| Severity | Finding | Fix | Test |
+| --- | --- | --- | --- |
+| Low | A password reset for an address with an account hashed a code and waited for the mail provider before answering; one without answered at once. The 204 was the same, its timing was not. Registration already reveals whether an email is taken, so this added little, but it undid the point of the 204. | The lookup, the code and the send run in the response's `close()`, after the answer is written. Against gunicorn both cases answer in 1-2 ms. | `tests.PasswordResetTests.test_the_answer_is_ready_before_anything_is_looked_up` |
+| Low (correctness) | A rotation's slot checks -- one slot per position, positions inside the rotation -- were in a `validate` method that a second `validate` in the same class replaced. Duplicate positions reached the database as a 500. | Both checks run again. | `tests.RotationSlotValidationTests` |
+| Operational | With DEBUG off, Django sends request errors only to `ADMINS`, which is unset, so a 500's traceback was discarded. | `config.production` logs Django errors and the app's own loggers to stderr (journald). | `test_hosted_configuration.ProductionConfigurationTests` |
+
 ## Remaining risks
 
 1. **The web client keeps its token in `localStorage`.** Any script injected
@@ -130,9 +138,11 @@ for the defaults and environment variables.
    expiring, hashed tokens (for example django-rest-knox) would need a client
    update in both apps.
 3. **Rate limits are best effort.** They live in the cache and are not
-   atomic; in development the cache is per-process. Add ingress limits in
-   nginx (`limit_req`) for sign-in, registration and uploads in production,
-   as `/insights/login/` already has.
+   atomic; in development the cache is per-process. nginx now also limits
+   sign-in, registration, password reset and video uploads per address on
+   rytivo.app (`deploy/rytivo.app.nginx.conf` in the web repository). The
+   IP-address server block the iOS app uses is configured on the server and
+   is in neither repository; give it the same limits.
 4. **`NUM_PROXIES` relies on the deployment.** gunicorn binds `0.0.0.0`; if
    its port is reachable without going through nginx, a client can again
    choose its own address. Keep the port firewalled, and raise the count if a
@@ -155,8 +165,10 @@ for the defaults and environment variables.
 10. **Photos lose HDR gain maps and depth data** along with their metadata,
     so an iPhone HDR photo displays as standard range. HEIC uploads were
     already refused (Pillow here has no HEIF support).
-11. **No automated dependency scanning.** Add `pip-audit` and `npm audit` to
-    CI.
+11. ~~No automated dependency scanning.~~ CI now runs `pip-audit` over the
+    production requirements and `npm audit --audit-level=high` in the web
+    repository. The first run found two PyJWT advisories (neither on a code
+    path used here); PyJWT was raised to 2.15.1.
 
 ## Not verified here
 

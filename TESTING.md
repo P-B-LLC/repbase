@@ -21,7 +21,7 @@ python3.14 -m venv .venv            # Python 3.14 is what CI uses; 3.12+ works
 .venv/bin/python manage.py test core
 ```
 
-About three minutes for ~690 tests. Useful variations:
+About three minutes for ~815 tests (a minute with `--parallel 4`). Useful variations:
 
 ```sh
 .venv/bin/python manage.py test core.test_recommendations      # one module
@@ -55,6 +55,7 @@ name. Never point it, or any test setting, at a real database.
 .venv/bin/python manage.py check
 .venv/bin/python manage.py makemigrations --check --dry-run
 .venv/bin/python manage.py spectacular --file /tmp/openapi.yaml && diff openapi.yaml /tmp/openapi.yaml
+pip install pip-audit && pip-audit -r requirements-production.txt   # known vulnerabilities
 ```
 
 After changing a serializer or a view's schema, regenerate the contract with

@@ -1,6 +1,6 @@
 # Performance Fix: Repost Feed N+1 Queries
 
-**Status:** Done, not yet committed
+**Status:** Done, committed
 **Date:** 2026-10-09
 **Area:** Backend / Feed & Post APIs
 
@@ -41,10 +41,13 @@ grew with the number of reposts instead of staying flat.
   fresh serializer per repost row, which defeats internal caching and causes
   a repeat `Follow`/`FollowRequest` lookup per row. Not fixed here — needs
   restructuring the serializer's caching, a bigger change.
+  *Fixed 2026-10-10: see the last entry.*
 - Production currently runs on `config.settings` instead of
   `config.production`, so Redis caching and compressed static file serving
   are not active. This is a known, intentional in-progress migration — needs
   Redis and a DB cert set up before the cutover.
+  *Since then `deploy/configure.py` writes `DJANGO_SETTINGS_MODULE=config.production`;
+  confirm the running service uses it.*
 - Synchronous image processing (resize/re-encode) happens inside the request
   cycle, inside a DB transaction. No task queue (Celery, etc.) exists yet to
   move this to the background.
@@ -53,7 +56,7 @@ grew with the number of reposts instead of staying flat.
 
 # Performance: For You Ranking, Uploads and View Tracking
 
-**Status:** Done, not yet committed
+**Status:** Done, committed
 **Date:** 2026-10-10
 **Area:** Backend / For You feed, video and photo uploads, social endpoints
 
@@ -168,7 +171,7 @@ Also:
   eligible ids with a lean query, then compute counts for those ids alone.
 - **Impressions update one row per post**: 53 queries for a batch of 50.
   A single `INSERT … ON CONFLICT DO UPDATE` adding to the counters would make
-  it one statement.
+  it one statement. *Fixed 2026-10-10: see the last entry.*
 - **The photo decode check is most of the 76 ms**, and `feed_variant()`
   decodes the same picture again a moment later. A reduced-size draft decode,
   or one decode shared by both, would cut it. It still runs synchronously in
@@ -187,3 +190,49 @@ Also:
   their metadata, and players fetch the header to draw a first frame. An HEVC
   clip plays only in browsers that decode HEVC, which not all do; only Chrome
   was tested.
+
+---
+
+# Performance: Impressions in One Statement, Follow Lookups per Response, Week Ranges
+
+**Status:** Done, committed
+**Date:** 2026-10-10
+**Area:** Backend / view tracking, feed serialization, the schedule list
+
+## Why
+
+Three costs listed above as still open, each growing with use:
+
+- a batch of impressions was one query per post;
+- each repost in a feed looked up the reader's follows and follow requests
+  again;
+- a client could read the schedule only all at once or one day at a time.
+
+## What Was Changed
+
+- `core/recommendations.py`: a batch of view events is written with one
+  `INSERT … ON CONFLICT (viewer, post) DO UPDATE`, which adds to the
+  counters. Written out because Django's upsert can only overwrite columns.
+  Same merge rules as before.
+- `core/serializers.py`: the reader's followed and requested ids are kept in
+  the serializer context, which the whole response shares, instead of on
+  each serializer instance.
+- `core/views.py`: `GET /api/v1/schedules/` takes `start` and `end`.
+
+## Verification
+
+- A batch of 50 impressions: 2 queries (visibility, then the write), down
+  from 53. Asserted in `ImpressionTests`, on SQLite and PostgreSQL 16.
+- A feed of 5 reposts makes as many queries as a feed of 1, counting every
+  query, not only the prefetched tables (`RepostFeedQueryCostTests`).
+- 814 backend tests pass on SQLite and PostgreSQL 16.
+
+## Needs To Be Changed / Improved
+
+- Still open from above: the For You candidate query's dependence on table
+  statistics, the double photo decode, synchronous image work in the request,
+  and the interest profile rebuilt on every first page. Caching that profile
+  would trade away the page reacting at once to a like or a follow, which the
+  tests and RECOMMENDATIONS.md promise, unless every write that feeds it also
+  invalidates it.
+

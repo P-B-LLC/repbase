@@ -142,7 +142,7 @@ Starting and ending a session records its timestamps. `duration_seconds` is calc
 
 ## Testing and validation
 
-Run the automated API tests (about 690 tests, three minutes):
+Run the automated API tests (about 815 tests, three minutes):
 
 ```powershell
 python manage.py test core
