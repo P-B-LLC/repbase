@@ -1,0 +1,8 @@
+{% extends 'access/base.html' %}{% block content %}
+<a href="{% url 'access-workspace' %}">← Administration</a>
+<h1>{% if profile %}Customize @{{ profile.user.username }}{% else %}Community studio{% endif %}</h1>
+<p>Owner-only tools. Custom labels and badges are cosmetic: they grant no permissions and cannot imitate official administrative roles. All changes are audited.</p>
+<p>Featured posts continue to respect privacy, blocks, and moderation. One announcement and one featured post are shown at a time.</p>
+{% if saved %}<p role="status">Saved. The server will supply these changes to supported community views.</p>{% endif %}
+<form method="post">{% csrf_token %}{{ form.as_p }}<button>Save community changes</button></form>
+{% endblock %}

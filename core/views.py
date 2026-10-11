@@ -296,6 +296,7 @@ class LoginView(APIView):
     throttle_classes = [ScopedRateThrottle]
 
     @extend_schema(request=LoginSerializer, responses={200: AuthResponseSerializer})
+    @transaction.atomic
     def post(self, request):
         # Read defensively: a JSON array body has no .get, and a username
         # that is not a string is not a username anyone can be locked out by.
@@ -313,6 +314,9 @@ class LoginView(APIView):
         if not serializer.is_valid():
             raise ValidationError(serializer.errors)
         user = serializer.validated_data["user"]
+        user = User.objects.select_for_update().get(pk=user.pk)
+        if not user.is_active:
+            raise AuthenticationFailed()
         profile = profile_for(user)
         token, _ = Token.objects.get_or_create(user=user)
         response = AuthResponseSerializer({"token": token.key, "user": profile})
@@ -634,6 +638,9 @@ class PasswordResetConfirmView(APIView):
             raise invalid
 
         with transaction.atomic():
+            user = User.objects.select_for_update().get(pk=user.pk)
+            if not user.is_active:
+                raise invalid
             entry = (
                 PasswordResetCode.objects.select_for_update()
                 .filter(user=user, used_at__isnull=True)
@@ -689,6 +696,9 @@ class RotateTokenView(APIView):
     @extend_schema(request=None, responses={200: AuthResponseSerializer})
     @transaction.atomic
     def post(self, request):
+        fresh_user = User.objects.select_for_update().get(pk=request.user.pk)
+        if not fresh_user.is_active:
+            raise AuthenticationFailed()
         if isinstance(request.auth, Token):
             current = Token.objects.select_for_update().filter(pk=request.auth.pk).first()
             if current is None:
@@ -2935,6 +2945,7 @@ def posts_for_cards():
     """
     return Post.objects.select_related(
         "author__user",
+        "author__user__accountaccess",
         "author__gym",
         "workout",
         "meal",
