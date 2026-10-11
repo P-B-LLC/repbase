@@ -101,3 +101,18 @@ jobs:
             diff openapi.yaml /tmp/openapi.yaml | head -40
             exit 1
           fi
+
+  # Known vulnerabilities in the pinned dependencies, from the PyPI and OSV
+  # advisory databases. Its own job so a new advisory names itself rather
+  # than hiding among test output. The fix is usually a version bump in
+  # requirements.txt; when an advisory does not apply and no fixed version
+  # exists yet, `--ignore-vuln <ID>` here, with a comment saying why.
+  dependency-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: pip install pip-audit
+      - run: pip-audit -r requirements-production.txt

@@ -1,9 +1,9 @@
-Django==6.1
-djangorestframework==3.18.0
+Django==6.1.2
+djangorestframework==3.18.3
 drf-spectacular==0.30.0
 Pillow==12.3.0
 jsonschema==4.26.0
 PyYAML==6.0.3
-psycopg[binary]==3.3.5
+psycopg[binary]==3.3.6
 httpx[http2]==0.28.1
-PyJWT[crypto]==2.14.0
+PyJWT[crypto]==2.15.1
