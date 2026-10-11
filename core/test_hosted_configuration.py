@@ -86,6 +86,30 @@ class ProductionConfigurationTests(SimpleTestCase):
             env=env, capture_output=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stderr.decode())
 
+    def test_production_logs_server_errors_and_ranking_lines_to_stderr(self):
+        """With DEBUG off, Django's default sent a 500's traceback nowhere."""
+        env = {**os.environ, **self.valid(), 'DJANGO_SETTINGS_MODULE': 'config.production',
+               'DATABASE_URL': 'postgresql://test:test@db.example.com/rytivo'}
+        result = subprocess.run([sys.executable, '-c',
+            "import django, logging; django.setup(); "
+            "logging.getLogger('django.request').error('a server error'); "
+            "logging.getLogger('django.request').warning('a not found'); "
+            "logging.getLogger('core.recommendations').info('a ranking line'); "
+            "logging.getLogger('core.views').debug('a debug line')"],
+            env=env, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        logged = result.stderr.decode()
+        self.assertIn('ERROR django.request: a server error', logged)
+        self.assertIn('INFO core.recommendations: a ranking line', logged)
+        self.assertNotIn('a not found', logged)
+        self.assertNotIn('a debug line', logged)
+
+        env['REPBASE_LOG_LEVEL'] = 'loud'
+        result = subprocess.run([sys.executable, '-c', 'import django; django.setup()'],
+                                env=env, capture_output=True, timeout=15)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'REPBASE_LOG_LEVEL must be one of', result.stderr)
+
     def test_production_module_fails_without_explicit_debug_false(self):
         env = {**os.environ, **self.valid(), 'DJANGO_SETTINGS_MODULE': 'config.production',
                'DATABASE_URL': 'postgresql://test:test@db.example.com/rytivo',

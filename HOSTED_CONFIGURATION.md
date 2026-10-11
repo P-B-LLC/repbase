@@ -102,6 +102,12 @@ the image build with the required build-time configuration).
 - Gunicorn bounds worker lifetime and request/graceful timeouts. Access logs
   omit query strings, authorization headers and bodies. Review host-level logs
   too, especially signed photo URLs. Add provider alerts before beta.
+- Application logs go to stderr under `config.production`: Django at
+  `DJANGO_LOG_LEVEL` (default ERROR, so every 500 is logged with its
+  traceback and 404s are not) and the app's own `core` loggers at
+  `REPBASE_LOG_LEVEL` (default INFO, which includes one line per For You
+  ranking). Read them with `journalctl -u repbase`. Before this, a 500's
+  traceback was discarded whenever DEBUG was off.
 
 ## Verification and remaining provider work
 

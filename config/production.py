@@ -49,6 +49,50 @@ if not boolean(os.environ, 'REPBASE_PUBLIC_API_DOCS'):
         'SERVE_PERMISSIONS': ['rest_framework.permissions.IsAdminUser'],
     }
 
+# Where errors go. Django's own default sends request errors to the console
+# only while DEBUG is on and otherwise to ADMINS by email, and this project
+# sets no ADMINS -- so with DEBUG off a 500's traceback went nowhere at all,
+# and neither did the For You page's INFO line per ranking that
+# RECOMMENDATIONS.md tells you to watch. Both now go to stderr, which gunicorn
+# shares and systemd keeps (`journalctl -u repbase`). Request paths are
+# logged without query strings, and the exception reporter filter in
+# settings redacts the Authorization header from what Django attaches.
+_LOG_LEVELS = {'DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'}
+
+
+def _log_level(name, default):
+    value = os.environ.get(name, default).upper()
+    if value not in _LOG_LEVELS:
+        from django.core.exceptions import ImproperlyConfigured
+        raise ImproperlyConfigured(f'{name} must be one of {", ".join(sorted(_LOG_LEVELS))}.')
+    return value
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'formatters': {
+        'plain': {'format': '%(asctime)s %(levelname)s %(name)s: %(message)s'},
+    },
+    'handlers': {
+        'stderr': {'class': 'logging.StreamHandler', 'formatter': 'plain'},
+    },
+    'root': {'handlers': ['stderr'], 'level': 'WARNING'},
+    'loggers': {
+        # ERROR: 500s and refused hosts, not every 404 a scanner asks for.
+        'django': {
+            'handlers': ['stderr'],
+            'level': _log_level('DJANGO_LOG_LEVEL', 'ERROR'),
+            'propagate': False,
+        },
+        'core': {
+            'handlers': ['stderr'],
+            'level': _log_level('REPBASE_LOG_LEVEL', 'INFO'),
+            'propagate': False,
+        },
+    },
+}
+
 # Enable ONLY when ingress strips untrusted X-Forwarded-Proto and direct
 # access to the application port is blocked. Default: trust no proxy headers.
 if boolean(os.environ, 'DJANGO_TRUST_PROXY_HTTPS'):
