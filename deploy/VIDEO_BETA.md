@@ -131,5 +131,61 @@ Include `/var/log/nginx/rytivo-video-access.log` in log rotation.
 Validated: real MP4/MOV/HEVC encoding under the worker limits, PostgreSQL
 queue concurrency, ownership/visibility revocation regressions, server
 health, rejected unsigned asset requests, and internal-path rejection.
-Still required: a device upload through the deployed API, actual signed
-playback/Range through nginx, and an off-droplet media backup/restore drill.
+Still required: a device upload through the deployed API and a coordinated
+production database/media recovery plan. See the isolated delivery drill below.
+
+## Delivery and recovery drill (2026-10-11)
+
+`core.test_video_delivery.VideoDeliveryDrill` passed on the droplet, using a
+disposable Django test database, synthetic clips, real FFmpeg and a separate
+loopback nginx process. It reuses the installed nginx video routes, replacing
+only the upstream, private media alias and access-log destination. It does not
+create production accounts/posts or alter the public nginx configuration.
+
+Verified:
+
+- Raw HTTP upload through nginx returns processing with no playable URL;
+  the real background pipeline subsequently produces ready video.
+- Signed GET returns the exact processed bytes and MP4 content type; HEAD
+  returns the length without a body. Responses are private/no-store.
+- Initial and suffix byte ranges return 206 with the expected bytes;
+  an unsatisfiable range returns 416.
+- Tampered signatures, direct internal-file access and inactive-viewer
+  GET/HEAD requests are rejected. Signed query capabilities are absent from
+  the isolated access log. Existing unit tests cover expiry/blocking/takedown.
+- A quiescent synthetic media snapshot was restored into a different directory
+  and served again successfully with a signed Range request.
+- The six-file archive was copied to the Windows workstation, returned to the
+  droplet, checksum-verified and restored into a new directory. Both restored
+  MP4 outputs passed ffprobe. The archive SHA-256 was
+  `49cfbc802efafeb7db29cda3d672a25734e161d032b4551d5c1ea49f2cc3a785`.
+- Two restore guard tests passed, including checksum corruption, traversal,
+  untracked files and refusal to overwrite an existing destination.
+
+The final combined run passed all 25 pipeline/delivery tests; both restore
+guard tests also passed (27 tests total). Intentional failed-job/duration-limit
+log messages came from failure-recovery cases, not unexpected test failures.
+
+The opt-in integration command, in an isolated checkout without production
+environment variables, is:
+
+```sh
+RYTIVO_NGINX_DRILL=1 python manage.py test core.test_video_delivery --noinput
+python -m unittest deploy.test_synthetic_media_restore
+```
+
+Requires the installed nginx snippet, nginx/FFmpeg on PATH and permission to
+read that snippet. Normal test discovery skips the nginx drill. Never run this
+against a production database configuration. The restored-archive utility
+accepts only a new `/tmp/rytivo-video-check.*` destination and synthetic manifest
+archives; it is intentionally **not** a production backup/restore utility.
+
+Scope limits: loopback HTTP exercises the installed delivery routes, not a
+physical iPhone, AVPlayer, public TLS or a live customer post. The user currently
+has only the Mac simulator. Small synthetic clips are not a maximum-size load
+test. Offsite transfer to this workstation proves a media restore drill, not
+durable offsite retention or scheduled backups. No dedicated media backup was
+found in the inspected systemd timers or `/etc/cron.d`; DigitalOcean's external
+backup settings have not been verified. Establish encrypted offsite retention
+and a matching database snapshot procedure before declaring disaster recovery
+ready. A database backup alone cannot restore these local video files.
