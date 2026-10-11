@@ -34,7 +34,7 @@ def main():
         raise SystemExit('Expected a regular /etc/repbase.env file.')
     original = target.read_text()
     backup = target.with_name('repbase.env.video-backup.' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ'))
-    with backup.open('x', opener=lambda path, flags: os.open(path, flags, 0o600)) as handle:
+    with open(backup, 'x', opener=lambda path, flags: os.open(path, flags, 0o600)) as handle:
         handle.write(original)
     descriptor, temporary = tempfile.mkstemp(prefix='.repbase-video-', dir='/etc')
     try:
