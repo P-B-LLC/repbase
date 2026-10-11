@@ -106,5 +106,30 @@ remain the scaling path; the storage adapter already isolates that boundary.
 Changing the storage backend setting does not migrate existing files: copy
 and verify assets and plan reference migration before a future switch to S3.
 
-The client changes in this work cover the web feed. Native iOS video-upload
-and player integration still needs its own implementation and device validation.
+The native implementation is on IOS-Frontend's `feat/video-beta` branch.
+It imports file-backed clips without allocating the full video in memory,
+checks limits before posting, uploads through the authenticated generated
+client, retries on the existing post, and creates a player only after a tap.
+Real-device visual and playback validation is still required.
+
+## Deployed configuration (2026-10-11)
+
+The backend feature branch preserves the live account-controls branch.
+The droplet has distro FFmpeg, a setgid private media root owned by
+`django:rytivo-media`, nginx group read access, bounded upload ingress,
+and the constrained worker/timer. `configure_video.py` backs up the private
+environment before changing only video settings. Native code is a separate
+branch, not yet merged into the release branch.
+
+Playback access logs use `$uri`, not `$request` or `$request_uri`, so signed
+query capabilities are not logged. The same sanitized format applies after
+the internal redirect. Media-route nginx error logs are suppressed because
+nginx includes the original signed request in errors; use sanitized access
+status/latency, the queue metrics and Django errors to diagnose failures.
+Include `/var/log/nginx/rytivo-video-access.log` in log rotation.
+
+Validated: real MP4/MOV/HEVC encoding under the worker limits, PostgreSQL
+queue concurrency, ownership/visibility revocation regressions, server
+health, rejected unsigned asset requests, and internal-path rejection.
+Still required: a device upload through the deployed API, actual signed
+playback/Range through nginx, and an off-droplet media backup/restore drill.
