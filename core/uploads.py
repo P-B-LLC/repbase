@@ -57,7 +57,6 @@ moved to match where the media data now sits.
 
 import io
 import os
-import shutil
 import struct
 import tempfile
 from dataclasses import dataclass

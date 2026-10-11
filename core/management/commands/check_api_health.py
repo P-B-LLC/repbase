@@ -14,10 +14,10 @@ from datetime import timedelta
 from django.conf import settings
 from django.core.mail import send_mail
 from django.core.management.base import BaseCommand
-from django.db.models import Max, Q, Sum
+from django.db.models import Max, Sum
 from django.utils import timezone
 
-from core.analytics import BUCKET_MINUTES, bucket_for
+from core.analytics import bucket_for
 from core.analytics_models import AnalyticsAccess, ApiAlert, RecentApiMetric
 
 #: How far back a run looks. Wider than the schedule it runs on, so a blip

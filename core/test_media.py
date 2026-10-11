@@ -14,9 +14,7 @@ photo on screen on every refresh.
 import time
 
 from django.core.files.base import ContentFile
-from django.core.files.storage import default_storage
 from django.test import override_settings
-from django.urls import reverse
 from rest_framework.test import APITestCase
 
 from . import media

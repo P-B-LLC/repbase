@@ -1,7 +1,6 @@
 import logging
 import secrets
-import uuid
-from datetime import date, timedelta
+from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
@@ -74,8 +73,6 @@ from .models import (
     Gym,
     NutritionGoal,
     DEFAULT_FOOD_MEAL_COUNT,
-    MAX_PROFILE_HIGHLIGHTS,
-    MAX_PROFILE_PROMPTS,
     ProfileHighlight,
     ProfilePrompt,
     PlannerCategory,
@@ -118,7 +115,6 @@ from .models import (
     training_day_of,
     plan_recurring_week,
     week_start_for,
-    zone_for,
 )
 from .permissions import IsCustomExerciseOwnerOrAdmin
 from .serializers import (

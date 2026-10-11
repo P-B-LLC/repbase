@@ -3,15 +3,12 @@ from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.contrib.auth import get_user_model
 from django.core import mail
-from django.core.cache import cache
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import DatabaseError
 from django.http import HttpResponse
 from django.test import RequestFactory, override_settings
-from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APITestCase, APIClient
 

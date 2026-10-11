@@ -7,7 +7,6 @@ security audit, its docstring says what was wrong before.
 import os
 import subprocess
 import sys
-from datetime import timedelta
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model

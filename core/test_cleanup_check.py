@@ -9,7 +9,6 @@ and does nothing would pass the second question and fail the first.
 
 from datetime import timedelta
 
-from django.core.files.base import ContentFile
 from django.test import TestCase
 from django.utils import timezone
 

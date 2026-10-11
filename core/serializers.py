@@ -72,7 +72,6 @@ from .models import (
     today_for,
     ProfileHighlight,
     ProfilePrompt,
-    LIFT_KEYWORDS,
     best_set_for,
     estimated_one_rep_max,
     Block,

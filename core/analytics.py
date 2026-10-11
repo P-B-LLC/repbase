@@ -18,7 +18,7 @@ from django.utils import timezone
 from django.utils.crypto import salted_hmac
 from django.views.decorators.cache import never_cache
 
-from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric, RecentApiMetric
+from .analytics_models import DailyActiveAccount, DailyApiMetric, RecentApiMetric
 from .models import RepbaseUser, WorkoutSession, PlannerEntry, FoodMeal
 
 ADMIN_EMAIL = 'admin@rytivo.app'

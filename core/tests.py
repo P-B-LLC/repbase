@@ -29,7 +29,6 @@ from .models import (
     Follow,
     FollowRequest,
     Gym,
-    Notification,
     ProfileSocialLink,
     PasswordResetCode,
     PlannerEntry,
@@ -2232,7 +2231,7 @@ class RotationHandoverTests(RepbaseAPITestMixin, APITestCase):
     def test_days_already_trained_are_left_alone(self):
         # A handover must never reach backwards into what has been done.
         today = timezone.now().date()
-        old = self.rotation("Old block", [self.push, self.pull])
+        self.rotation("Old block", [self.push, self.pull])
         past = WorkoutSchedule.objects.create(
             owner=self.profile,
             workout_id=self.push,
