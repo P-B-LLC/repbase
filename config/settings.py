@@ -222,6 +222,31 @@ VIDEO_MAX_PIXELS = 4096 * 2304
 #: has been thought about: the classifier cannot watch video, so where
 #: moderation matters a person has to. config.production pins it on.
 VIDEO_REVIEW_REQUIRED = None
+VIDEO_PIPELINE_ENABLED = os.getenv('VIDEO_PIPELINE_ENABLED', 'false').lower() == 'true'
+# Explicit temporary exception; processing, ownership, and access still apply.
+VIDEO_MODERATION_BYPASS = os.getenv('VIDEO_MODERATION_BYPASS', 'false').lower() == 'true'
+VIDEO_STORAGE_BUCKET = os.getenv('VIDEO_STORAGE_BUCKET', '')
+VIDEO_STORAGE_ENDPOINT = os.getenv('VIDEO_STORAGE_ENDPOINT', '')
+VIDEO_STORAGE_REGION = os.getenv('VIDEO_STORAGE_REGION', 'us-east-1')
+VIDEO_STORAGE_ACCESS_KEY = os.getenv('VIDEO_STORAGE_ACCESS_KEY', '')
+VIDEO_STORAGE_SECRET_KEY = os.getenv('VIDEO_STORAGE_SECRET_KEY', '')
+VIDEO_DIRECT_MAX_BYTES = 100 * 1024 * 1024
+VIDEO_FFMPEG = os.getenv('VIDEO_FFMPEG', 'ffmpeg')
+VIDEO_FFPROBE = os.getenv('VIDEO_FFPROBE', 'ffprobe')
+VIDEO_PROCESS_TIMEOUT = 180
+VIDEO_LEASE_SECONDS = 900
+VIDEO_MAX_ATTEMPTS = 3
+VIDEO_STORAGE_BACKEND = os.getenv('VIDEO_STORAGE_BACKEND', 'local')
+VIDEO_LOCAL_ROOT = os.getenv('VIDEO_LOCAL_ROOT', str(BASE_DIR / 'private-videos'))
+VIDEO_LOCAL_ACCEL_PREFIX = os.getenv('VIDEO_LOCAL_ACCEL_PREFIX', '')
+VIDEO_LOCAL_STORAGE_LIMIT = 2 * 1024 * 1024 * 1024
+VIDEO_LOCAL_MIN_FREE = 1024 * 1024 * 1024
+if VIDEO_PIPELINE_ENABLED and VIDEO_STORAGE_BACKEND == 'local':
+    VIDEO_MAX_BYTES = min(VIDEO_MAX_BYTES, 15 * 1024 * 1024)
+    VIDEO_MAX_SECONDS = min(VIDEO_MAX_SECONDS, 30)
+    VIDEO_MAX_DIMENSION = 1920
+    VIDEO_MAX_PIXELS = 1920 * 1080
+    VIDEO_DIRECT_MAX_BYTES = VIDEO_MAX_BYTES
 
 # Set this to the internal location a reverse proxy maps onto MEDIA_ROOT --
 # `/protected-media/` for a standard nginx `internal;` block -- and the file
@@ -364,6 +389,8 @@ SPECTACULAR_SETTINGS = {
     # The names kept are the ones that say what the value is. "Machine" alone
     # does not, and "Activity" reads like something other than a workout type.
     'ENUM_NAME_OVERRIDES': {
+        'ContentTypeEnum': ['image/heic', 'image/jpeg', 'image/png', 'image/webp'],
+        'VideoUploadContentTypeEnum': ['video/mp4', 'video/quicktime', 'video/x-m4v'],
         'AppRoleEnum': 'core.access.ALL_ROLES',
         'AssignableAppRoleEnum': 'core.access.ROLES',
         'WorkoutTypeEnum': 'core.models.WorkoutTypeChoices.choices',

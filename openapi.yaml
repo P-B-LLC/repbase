@@ -5111,6 +5111,39 @@ paths:
               schema:
                 $ref: '#/components/schemas/Post'
           description: ''
+  /api/v1/social/posts/{post_id}/video-upload/:
+    post:
+      operationId: social_posts_video_upload_create
+      parameters:
+      - in: path
+        name: post_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/UploadRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UploadRequestRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+          description: ''
   /api/v1/step-counts/:
     get:
       operationId: step_counts_list
@@ -5370,6 +5403,51 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ProfileHighlight'
+          description: ''
+  /api/v1/video-events/:
+    post:
+      operationId: video_events_create
+      tags:
+      - video-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaybackEventRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlaybackEventRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PlaybackEventRequestRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/video-uploads/{job_id}/complete/:
+    post:
+      operationId: video_uploads_complete_create
+      parameters:
+      - in: path
+        name: job_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - video-uploads
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
           description: ''
   /api/v1/workout-exercises/:
     get:
@@ -6240,6 +6318,16 @@ components:
       description: |-
         * `sandbox` - sandbox
         * `production` - production
+    EventEnum:
+      enum:
+      - upload_failed
+      - playback_error
+      - playback_started
+      type: string
+      description: |-
+        * `upload_failed` - upload_failed
+        * `playback_error` - playback_error
+        * `playback_started` - playback_started
     Exercise:
       type: object
       properties:
@@ -8642,6 +8730,17 @@ components:
         * `youtube` - YouTube
         * `x` - X
         * `website` - Website
+    PlaybackEventRequestRequest:
+      type: object
+      properties:
+        post_id:
+          type: integer
+          minimum: 1
+        event:
+          $ref: '#/components/schemas/EventEnum'
+      required:
+      - event
+      - post_id
     Post:
       type: object
       description: |-
@@ -9079,6 +9178,7 @@ components:
       properties:
         url:
           type: string
+          nullable: true
           readOnly: true
         content_type:
           type: string
@@ -9098,13 +9198,32 @@ components:
         status:
           type: string
           readOnly: true
+        processing_state:
+          type: string
+          readOnly: true
+        processing_error:
+          type: string
+          readOnly: true
+        thumbnail_url:
+          type: string
+          nullable: true
+          readOnly: true
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoVariant'
+          readOnly: true
       required:
       - content_type
       - duration_ms
       - has_audio
       - height
+      - processing_error
+      - processing_state
       - status
+      - thumbnail_url
       - url
+      - variants
       - width
     PostWorkout:
       type: object
@@ -10606,6 +10725,63 @@ components:
           readOnly: true
       required:
       - unread
+    UploadRequestRequest:
+      type: object
+      properties:
+        size_bytes:
+          type: integer
+          maximum: 104857600
+          minimum: 1
+        content_type:
+          $ref: '#/components/schemas/VideoUploadContentTypeEnum'
+      required:
+      - content_type
+      - size_bytes
+    UploadResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+        upload_url:
+          type: string
+          format: uri
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+      - id
+      - state
+    VideoUploadContentTypeEnum:
+      enum:
+      - video/mp4
+      - video/quicktime
+      - video/x-m4v
+      type: string
+      description: |-
+        * `video/mp4` - video/mp4
+        * `video/quicktime` - video/quicktime
+        * `video/x-m4v` - video/x-m4v
+    VideoVariant:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        size_bytes:
+          type: integer
+        url:
+          type: string
+          nullable: true
+      required:
+      - height
+      - size_bytes
+      - url
+      - width
     VisibilityEnum:
       enum:
       - public

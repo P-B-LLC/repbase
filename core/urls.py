@@ -1,4 +1,5 @@
 from django.urls import path
+from .video_pipeline_views import UploadStart, UploadFinish, PlaybackEvent, serve_asset
 from rest_framework.routers import DefaultRouter
 from .access_views import (MyAccessView, AccessUsersView, UserAccessView,
                            ModerationReportsView, ModerationDecisionView)
@@ -86,6 +87,10 @@ router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
 urlpatterns = [
+    path('social/posts/<int:post_id>/video-upload/', UploadStart.as_view(), name='video-upload-start'),
+    path('video-uploads/<uuid:job_id>/complete/', UploadFinish.as_view(), name='video-upload-complete'),
+    path('video-events/', PlaybackEvent.as_view(), name='video-event'),
+    path('video-assets/', serve_asset, name='video-asset'),
     path('me/access/', MyAccessView.as_view(), name='my-access'),
     path('administration/users/', AccessUsersView.as_view(), name='access-users'),
     path('administration/users/<int:profile_id>/access/', UserAccessView.as_view(), name='user-access'),

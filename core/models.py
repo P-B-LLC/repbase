@@ -13,6 +13,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
+from .video_jobs_models import VideoJob, VideoStoredObject, VideoMetric, VideoDailyUpload  # noqa: F401
 from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
 from .access_models import AccountAccess, AccessPolicyLock, AccessAudit  # noqa: F401
 from zoneinfo import ZoneInfo
@@ -2857,6 +2858,10 @@ class PostVideo(models.Model):
         REJECTED = "rejected", "Rejected"
 
     post = models.OneToOneField(Post, on_delete=models.CASCADE, related_name="video")
+    processing_state = models.CharField(max_length=16, default='ready')
+    variants = models.JSONField(default=list)
+    thumbnail_key = models.CharField(max_length=255, blank=True)
+    processing_error = models.CharField(max_length=40, blank=True)
     #: Indexed because serving a clip asks whether it may still be served, and
     #: that question is asked by file name once per request.
     file = models.FileField(upload_to=post_video_path, max_length=255, db_index=True)

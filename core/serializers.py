@@ -2686,6 +2686,13 @@ class PostPlannerEntrySerializer(serializers.ModelSerializer):
         read_only_fields = ["title", "scheduled_date", "is_complete"]
 
 
+class VideoVariantSerializer(serializers.Serializer):
+    width = serializers.IntegerField()
+    height = serializers.IntegerField()
+    size_bytes = serializers.IntegerField()
+    url = serializers.CharField(allow_null=True)
+
+
 class PostVideoSerializer(serializers.ModelSerializer):
     """A post's clip, as its reader may see it.
 
@@ -2697,6 +2704,8 @@ class PostVideoSerializer(serializers.ModelSerializer):
     """
 
     url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField()
+    variants = serializers.SerializerMethodField()
     status = serializers.CharField(read_only=True)
     content_type = serializers.CharField(read_only=True)
 
@@ -2710,13 +2719,39 @@ class PostVideoSerializer(serializers.ModelSerializer):
             "height",
             "has_audio",
             "status",
+            "processing_state",
+            "processing_error",
+            "thumbnail_url",
+            "variants",
         ]
         read_only_fields = fields
 
-    @extend_schema_field(serializers.CharField())
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_url(self, video):
         """Signed, like a photo's: the link is the authorisation."""
+        if video.processing_state != 'ready':
+            return None
+        if video.variants:
+            if video.status != 'approved':
+                return None
+            from .video_pipeline_views import asset_url
+            return asset_url(video, video.variants[0]['key'], self.context.get('request'))
         return signed_media_url(video.file, self.context.get("request"))
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_thumbnail_url(self, video):
+        if video.processing_state != 'ready' or video.status != 'approved' or not video.thumbnail_key:
+            return None
+        from .video_pipeline_views import asset_url
+        return asset_url(video, video.thumbnail_key, self.context.get('request'))
+
+    @extend_schema_field(VideoVariantSerializer(many=True))
+    def get_variants(self, video):
+        if video.processing_state != 'ready' or video.status != 'approved':
+            return []
+        from .video_pipeline_views import asset_url
+        return [{'width': v['width'], 'height': v['height'], 'size_bytes': v['size_bytes'],
+            'url': asset_url(video, v['key'], self.context.get('request'))} for v in video.variants]
 
 
 def video_for(post, context):

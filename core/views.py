@@ -3970,13 +3970,20 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             remove_video(post)
             return Response(self._card(post.pk))
 
+        if settings.VIDEO_PIPELINE_ENABLED and settings.VIDEO_STORAGE_BACKEND != 'local':
+            raise ValidationError({'video': 'Use direct video-upload initiation and completion endpoints.'})
+
         received = request.data
         if not isinstance(received, ReceivedVideo):
             raise ValidationError(
                 {"video": "Send the video file as the request body, with a video Content-Type."}
             )
         try:
-            attach_video(post, received)
+            if settings.VIDEO_PIPELINE_ENABLED:
+                from .video_pipeline import queue_local
+                queue_local(post, received)
+            else:
+                attach_video(post, received)
         except PublicationMediaError:
             raise ServiceUnavailable(
                 "Your video was not saved because storage is unavailable. Please retry."
