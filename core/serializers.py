@@ -31,6 +31,7 @@ class SessionFinishSerializer(serializers.Serializer):
             raise serializers.ValidationError("Finish time cannot be in the future.")
         return value
 
+
 from .models import (
     CardioMachine,
     completed_sessions_for,
@@ -1174,7 +1175,6 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         help_text="The account's password. Required when changing email.",
     )
 
-
     class Meta:
         model = RepbaseUser
         fields = [
@@ -1242,8 +1242,6 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         if profile.user_id != getattr(request.user, "id", None):
             return False
         return allowed(request.user)
-
-
 
     def validate_username(self, value):
         # Only a username being changed is held to the rules. The app sends
@@ -2282,7 +2280,6 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Workout does not belong to this user.")
         return value
 
-
     def validate_gear(self, value):
         """Gear must be the user's, and must suit the sport.
 
@@ -2326,6 +2323,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         return SetEntry.objects.filter(
             session_exercise__session=session,
         ).exclude(weight_kg__isnull=True, reps__isnull=True).count()
+
 
 class SessionRoutePointSerializer(serializers.ModelSerializer):
     class Meta:
@@ -3531,24 +3529,6 @@ class FollowRequestSerializer(serializers.ModelSerializer):
         return profile_photo_url_for(
             request_row.requester, self.context.get("request")
         )
-
-
-class FollowSerializer(serializers.ModelSerializer):
-    """The record that one person follows another.
-
-    Response only. Both people are named by the URL and the token, so a request
-    body would carry nothing, and the checks a follow needs — not yourself, not
-    someone either of you has blocked — cannot be made from a body that names
-    nobody. They belong in the view.
-    """
-
-    follower = serializers.PrimaryKeyRelatedField(read_only=True)
-    following = serializers.PrimaryKeyRelatedField(read_only=True)
-
-    class Meta:
-        model = Follow
-        fields = ["id", "follower", "following", "created_at"]
-        read_only_fields = ["id", "follower", "following", "created_at"]
 
 
 class BlockSerializer(serializers.ModelSerializer):

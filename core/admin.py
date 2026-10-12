@@ -24,6 +24,7 @@ class AccessAuditAdmin(admin.ModelAdmin):
     def has_view_permission(self, request, obj=None):
         return request.user.is_active and request.user.is_superuser
 
+
 from .media import signed_media_path
 from .models import (
     BodyWeightEntry,

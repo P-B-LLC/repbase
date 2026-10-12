@@ -438,10 +438,6 @@ class WorkoutTemplate(models.Model):
             )
         ]
 
-    @property
-    def tracks_distance(self):
-        return self.workout_type in self.DISTANCE_TYPES
-
     def __str__(self):
         return self.name
 
@@ -2889,18 +2885,6 @@ class PostVideo(models.Model):
 
     def __str__(self):
         return f"video on post {self.post_id} ({self.status})"
-
-    def viewable_by(self, profile):
-        """Whether this reader is shown the clip itself.
-
-        Approved clips go to whoever may see the post; the post's visibility
-        has already decided that by the time this is asked. A clip still
-        waiting, or refused, is its author's alone -- they need to see that
-        it is waiting, and nobody else needs to see it at all.
-        """
-        if self.status == self.Status.APPROVED:
-            return True
-        return profile is not None and self.post.author_id == profile.pk
 
 
 #: What a day starts with when someone first opens it. Four is what the app has

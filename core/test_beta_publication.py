@@ -60,6 +60,7 @@ class BetaPublicationTests(RepbaseAPITestMixin, APITransactionTestCase):
     def test_thumbnail_failure_rolls_back_and_cleans_original(self):
         save = self.storage.save
         written = []
+
         def fail_thumbnail(name, content):
             if '/feed/' in name:
                 raise OSError('thumbnail offline')
@@ -116,6 +117,7 @@ class BetaPublicationTests(RepbaseAPITestMixin, APITransactionTestCase):
         class InterruptedPublication(BaseException):
             pass
         save = self.storage.save
+
         def interrupted(name, content):
             save(name, content)
             # Bypass ordinary exception cleanup, like a terminated worker.

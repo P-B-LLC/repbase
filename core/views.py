@@ -458,7 +458,6 @@ class FoodSearchView(APIView):
         return Response(payload)
 
 
-
 class AfterResponse(Response):
     """A response that runs `then` once it has been sent.
 
@@ -952,7 +951,6 @@ class MePhotoView(APIView):
         )
 
 
-
 @extend_schema_view(
     list=extend_schema(
         parameters=[
@@ -1002,13 +1000,7 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
             return queryset
 
         viewer = profile_for(self.request.user)
-        blocked_either_way = Block.objects.filter(
-            Q(blocker=viewer, blocked=OuterRef("pk"))
-            | Q(blocker=OuterRef("pk"), blocked=viewer)
-        )
-        queryset = queryset.exclude(pk=viewer.pk).exclude(
-            Exists(blocked_either_way)
-        )
+        queryset = without_blocked_authors(viewer, queryset.exclude(pk=viewer.pk), "pk")
 
         search = (self.request.query_params.get("search") or "").strip()
         # A handle is written with one and stored without.
@@ -1898,15 +1890,10 @@ class GymViewSet(viewsets.ModelViewSet):
         """
         gym = self.get_object()
         viewer = profile_for(request.user)
-        blocked_either_way = Block.objects.filter(
-            Q(blocker=viewer, blocked=OuterRef("pk"))
-            | Q(blocker=OuterRef("pk"), blocked=viewer)
-        )
         follows = Follow.objects.filter(follower=viewer, following=OuterRef("pk"))
         people = (
-            gym.members.select_related("user")
+            without_blocked_authors(viewer, gym.members.select_related("user"), "pk")
             .filter(user__is_active=True)
-            .exclude(Exists(blocked_either_way))
             .filter(Q(pk=viewer.pk) | Q(is_profile_public=True) | Exists(follows))
             .order_by("user__username")
         )
@@ -2086,7 +2073,6 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
             materialize_planner_repeats(
                 owner, entry.scheduled_date + timedelta(days=PLANNER_REPEAT_HORIZON_DAYS)
             )
-
 
         # A new step lands unfinished, so a parent that had been ticked off
         # is no longer done. Asked rather than assumed, because the parent may
@@ -4263,7 +4249,6 @@ class PostCommentViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.Mode
                 parent.author, profile, Notification.Kind.COMMENT,
                 post=post, comment=comment,
             )
-
 
     @extend_schema(request=ReportPostSerializer, responses={200: PostReportResultSerializer, 201: PostReportResultSerializer})
     @action(detail=True, methods=['post'], url_path='report')

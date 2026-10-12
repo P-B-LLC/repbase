@@ -165,4 +165,3 @@ def set_review(videos, status_value, reviewer):
     return videos.update(
         status=status_value, reviewed_at=timezone.now(), reviewed_by=reviewer
     )
-

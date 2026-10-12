@@ -270,7 +270,7 @@ class FormSignInLimitTests(RepbaseAPITestMixin, APITestCase):
         bad attempts from anywhere locked every member of staff out."""
         rest = {**settings.REST_FRAMEWORK, "NUM_PROXIES": 1}
         with override_settings(REST_FRAMEWORK=rest, DJANGO_LOGIN_ATTEMPTS_PER_ADDRESS=3):
-            for attempt in range(4):
+            for _ in range(4):
                 self.post(self.ADMIN, "nobody", "wrong", HTTP_X_FORWARDED_FOR="203.0.113.9")
             other = self.post(
                 self.ADMIN, "operator", PASSWORD, HTTP_X_FORWARDED_FOR="198.51.100.4"

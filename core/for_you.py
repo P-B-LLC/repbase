@@ -26,28 +26,23 @@ from .serializers import (
     ImpressionBatchSerializer,
     ImpressionResultSerializer,
 )
-from .views import annotate_social_counts, posts_for_cards, profile_for, visible_posts_for
+from .views import (
+    FeedCursorPagination,
+    annotate_social_counts,
+    posts_for_cards,
+    profile_for,
+    visible_posts_for,
+)
 
 #: The same sizes the following feed pages in, and the same refusal past the
 #: maximum: a client that asked for 200 and got 50 could not tell that from a
-#: feed with 50 posts left in it.
-DEFAULT_PAGE_SIZE = 20
-MAX_PAGE_SIZE = 50
+#: feed with 50 posts left in it. Read from the following feed's paginator, so
+#: the two cannot drift apart.
+MAX_PAGE_SIZE = FeedCursorPagination.max_page_size
 
 
 def _page_size(request):
-    raw = request.query_params.get("page_size")
-    if raw is None:
-        return DEFAULT_PAGE_SIZE
-    try:
-        size = int(raw)
-    except (TypeError, ValueError):
-        raise ValidationError({"page_size": "Page size must be a whole number."})
-    if size < 1:
-        raise ValidationError({"page_size": "Page size must be at least 1."})
-    if size > MAX_PAGE_SIZE:
-        raise ValidationError({"page_size": f"Page size may not be more than {MAX_PAGE_SIZE}."})
-    return size
+    return FeedCursorPagination().get_page_size(request)
 
 
 class ForYouView(APIView):
