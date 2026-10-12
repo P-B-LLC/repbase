@@ -160,6 +160,74 @@ HTML injection sinks, relative URLs, strict CSP), and iOS token storage
 (Keychain, this device only) and transport (HTTPS required in Release, no
 arbitrary loads).
 
+## Third audit, October 2026
+
+Another pass over `main` in all three repositories, plus a read-only review of
+the unmerged `feat/video-processing` branch (below). Every fix has a test in
+`core/test_third_security_audit.py`, written as the attack and seen failing
+against the unmodified code. "Before" was measured against a throwaway server.
+
+| # | Severity | Finding | Before | Fix |
+| --- | --- | --- | --- | --- |
+| T1 | High | `POST sessions/{id}/route/` capped one upload at 20,000 points but not the session, and each upload re-read the whole track to summarise it. | Five uploads: 100,000 points, each slower (2.7 s, 4.1 s, 5.9 s, 7.2 s, 9.0 s); the per-user ceiling allowed 1,200 an hour. | At most 50,000 points a session (the app sends one track of at most 20,000); route uploads have their own limit (`route`, 30/h; reads are not limited); a retry that adds nothing does not recompute. |
+| T2 | Medium | A block left waiting follow requests standing. Approving one followed straight through the block, and opening a closed profile granted it automatically. | Both reproduced: the blocked person ended up following the blocker. | Blocking deletes requests both ways and their notifications; the request list, approval and opening a profile ignore any request across a block. |
+| T3 | Medium | Suspending an account (`is_active = False`) hid its posts and comments but not the account. | The suspended profile, bio included, was in search, served by id, and listed among followers, following, gym members, notifications and follow requests. | Gone from all of those until reinstated. Gym member counts still include everybody. |
+| T4 | Medium | Profile photos had only the per-user ceiling, though each is decoded in full and sent to the classifier, and concurrent uploads orphaned files: the old file was deleted and the new one saved with no lock. | Ten uploads at once: ten files kept, one referenced. | Own limit (`photo`, 30/h). Written through the same staging as post photos, under a row lock, with the old file queued for deletion after commit. On PostgreSQL, ten at once: all 200, one file. |
+| T5 | Low | Somebody blocked by a post's author could still edit their old comments under it: invisible to the blocker, shown to everyone else. | A stranger read the rewritten comment. | Editing needs the post (and the comment replied to) to still be visible to the comment's author. Deleting your own comment is always allowed. |
+| T6 | Low | Three filters used Django's `parse_date`, which raises on a date in the right shape that does not exist. | `?since=2026-02-30` on sessions and step counts, `?today=` on training stats: 500. | `core.params.date_param`: 400 naming the parameter. |
+| T7 | Low | A moderator could decide reports about their own posts and comments, dismissing complaints about themselves. | -- | Refused with 403 in the API and the access portal. The Django admin's report actions are staff-only and unchanged. |
+
+Checked and found sound this time: idempotency keys (scoped to account and
+path), the For You and impression endpoints, push registration, signed media
+(path normalisation, constant-time HMAC, takedowns checked after the
+signature), the administration API (actor re-read under a lock, protected
+tiers), the clip parser's streaming size limit, every notification path
+(deduplicated except comments), and the snapshot builder (no route points, no
+withheld weights).
+
+### The iOS app on `main` cannot read this API
+
+Found while reviewing the video work merged into iOS `main` on 2026-10-12. Its
+generated client was built from the `feat/video-processing` contract, which
+makes `community_label`, `community_badge` and `community_color` required on
+every user and four new fields required on a clip. Real responses decoded with
+the generated types (built with `swift build` here):
+
+- Against this backend's `main`: every user and every post fails with
+  `keyNotFound: community_label`. Feed, profiles, comments and search would all
+  fail to load.
+- Against `feat/video-processing` as pushed: every user and post fails with
+  `valueNotFound`. The branch sends `null` for those three fields whenever the
+  account has no AccountAccess row, which is almost every account (DRF answers
+  a missing one-to-one with None before `default` applies). The branch's own
+  `ForYouContractTests` fails on exactly this.
+
+Do not ship the iOS build from `main` until the backend it talks to sends those
+fields as strings. A three-file patch for the branch exists (null to declared
+default with the contract unchanged, plus the two branch issues below); with it the
+branch's 911 tests pass and the iOS types decode its responses.
+
+### `feat/video-processing`, reviewed, not modified
+
+The transcoder runs ffmpeg without a shell, with protocol and format
+whitelists, external references disabled, a timeout and one thread; playback
+tokens are signed, bound to the viewer and re-check visibility; local storage
+keys cannot leave their root; the browser-session sign-in is CSRF-protected and
+still counted by the per-username limit. Open on the branch:
+
+1. `community_*` sent as `null` (above), and a per-author query for reposted
+   authors' flair (`RepostFeedQueryCostTests` fails: 21 queries, not 17).
+2. Playback events share the `upload` limit, 20 an hour, and the app sends one
+   per clip played: watching twenty clips refuses the next real upload.
+3. The pipeline ignores `VIDEO_REVIEW_REQUIRED` and approves clips whenever
+   `VIDEO_MODERATION_BYPASS` is set, and the deploy check only warns about it.
+   With it set in production, unreviewed video is public.
+4. With local storage, ten jobs in flight block every upload. Ten accounts
+   (one address's registrations for a day) can keep the queue full.
+
+The third audit's fixes apply cleanly onto the branch, and its tests pass
+there.
+
 ## Remaining risks
 
 1. **The web client keeps its token in `localStorage`.** Any script injected
@@ -221,6 +289,11 @@ arbitrary loads).
 15. **Changing email does not notify the old address.** The password is now
     required, which is the protection that matters; a notice would also tell
     the owner if their password is known.
+16. **Nobody proves they own an email address.** Registration and email
+    changes take any unused address, so an account can claim somebody else's,
+    which then shows as taken when its owner registers, and that owner receives
+    the reset codes for an account that is not theirs. Fixing it needs a
+    confirmation step in both clients.
 
 ## Not verified here
 

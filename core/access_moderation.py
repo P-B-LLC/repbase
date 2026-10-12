@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 
 from .access import AccessConflict, require
 from .access_models import AccessAudit, AccessPolicyLock
@@ -41,6 +41,10 @@ def decide_report(actor, kind, report_id, decision, reason):
     if report.reviewed_at:
         raise AccessConflict('This report was already reviewed. Reload the queue.')
     content = getattr(report, kind)
+    if content.author.user_id == actor.pk:
+        # Otherwise a moderator could dismiss every complaint made about them,
+        # which also lifts the hold that open reports put on recommendations.
+        raise PermissionDenied('A report about your own post or comment is for another moderator to decide.')
     before = dict(is_hidden=content.is_hidden)
     hide = decision == 'hide'
     if hide:

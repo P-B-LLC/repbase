@@ -9,7 +9,6 @@ from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
 from django.db import models, transaction
-from django.utils.dateparse import parse_date
 from django.db.models import (
     Count,
     Exists,
@@ -48,7 +47,7 @@ from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
-from .post_publication import publication_media, PublicationMediaError
+from .post_publication import publication_media, PublicationMediaError, remove_profile_photo
 from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IdempotentCreateMixin
 from .serializers import SessionFinishSerializer
@@ -740,10 +739,13 @@ class MeView(RetrieveUpdateDestroyAPIView):
         profile = serializer.save()
         if was_closed and profile.is_profile_public:
             pending = FollowRequest.objects.filter(target=profile)
+            # Not a request from across a block: opening a profile is not
+            # unblocking anybody.
+            granted = without_blocked_authors(profile, pending, "requester")
             Follow.objects.bulk_create(
                 [
                     Follow(follower_id=row.requester_id, following=profile)
-                    for row in pending
+                    for row in granted
                 ],
                 ignore_conflicts=True,
             )
@@ -917,6 +919,11 @@ class MePhotoView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    @property
+    def throttle_scope(self):
+        # An upload is decoded in full and sent for review; removing one is not.
+        return "photo" if self.request.method == "PUT" else None
+
     @extend_schema(
         parameters=[MODERATION_CONSENT_PARAMETER],
         request=ProfilePhotoUploadSerializer,
@@ -926,7 +933,10 @@ class MePhotoView(APIView):
     def put(self, request):
         serializer = ProfilePhotoUploadSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
-        profile = serializer.save_to(profile_for(request.user))
+        try:
+            profile = serializer.save_to(profile_for(request.user))
+        except PublicationMediaError:
+            raise ServiceUnavailable("Your photo was not saved because storage is unavailable. Please retry.")
         return Response(
             RepbaseUserSerializer(profile, context={"request": request}).data
         )
@@ -936,8 +946,7 @@ class MePhotoView(APIView):
         description="Remove the profile photo.",
     )
     def delete(self, request):
-        profile = profile_for(request.user)
-        profile.profile_photo.delete(save=True)
+        profile = remove_profile_photo(profile_for(request.user))
         return Response(
             RepbaseUserSerializer(profile, context={"request": request}).data
         )
@@ -981,7 +990,11 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
     action_throttle_scopes = {"follow": "follow"}
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        # A suspended account is gone from every route, by id as well as from
+        # search. Suspension already hid its posts and comments, but its
+        # profile -- name, photo, bio, often the very thing it was suspended
+        # for -- was still listed and served. Reinstating brings it back.
+        queryset = super().get_queryset().filter(user__is_active=True)
         if self.action != "list":
             # Retrieval is by id and stays answerable. Hiding a blocked
             # person's row here would turn a profile the app can already
@@ -1161,7 +1174,7 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
         """
         target = self.get_object()
         follows = (
-            Follow.objects.filter(following=target)
+            Follow.objects.filter(following=target, follower__user__is_active=True)
             .select_related("follower__user", "follower__gym")
             .prefetch_related("follower__disciplines")
         )
@@ -1182,7 +1195,7 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
         """Who this user follows, most recently followed first."""
         target = self.get_object()
         follows = (
-            Follow.objects.filter(follower=target)
+            Follow.objects.filter(follower=target, following__user__is_active=True)
             .select_related("following__user", "following__gym")
             .prefetch_related("following__disciplines")
         )
@@ -1892,6 +1905,7 @@ class GymViewSet(viewsets.ModelViewSet):
         follows = Follow.objects.filter(follower=viewer, following=OuterRef("pk"))
         people = (
             gym.members.select_related("user")
+            .filter(user__is_active=True)
             .exclude(Exists(blocked_either_way))
             .filter(Q(pk=viewer.pk) | Q(is_profile_public=True) | Exists(follows))
             .order_by("user__username")
@@ -2253,6 +2267,11 @@ class WorkoutRecurrenceViewSet(
             instance.save(update_fields=["effective_until", "updated_at"])
 
 
+#: GPS fixes one session may hold: about fourteen hours at one a second. The
+#: app uploads a whole track in one request, which is capped at 20,000.
+MAX_ROUTE_POINTS_PER_SESSION = 50_000
+
+
 @extend_schema_view(
     list=extend_schema(
         parameters=[
@@ -2315,6 +2334,14 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
     permission_classes = [IsAuthenticated]
     owner_lookup = "repbase_user"
 
+    @property
+    def throttle_scope(self):
+        # Uploading a route writes up to 20,000 rows, so it has a limit of its
+        # own. Reading one does not: session history opens routes freely.
+        if self.action == "route" and self.request.method == "POST":
+            return "route"
+        return None
+
     def perform_destroy(self, instance):
         """Throwing the session away un-ticks the task it ticked.
 
@@ -2367,14 +2394,14 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
         # Bounded reads. Without this the only way to ask for the
         # sessions of one week was to page every session ever
         # recorded, which is what the dashboard used to do.
-        since = self.request.query_params.get("since")
+        # date_param, not parse_date: parse_date raises ValueError on a
+        # well-formed date that does not exist, so ?since=2026-02-30 was a 500.
+        since = date_param(self.request, "since")
         if since:
-            parsed = parse_date(since)
-            if parsed is not None:
-                queryset = queryset.filter(
-                    Q(ended_at__date__gte=parsed)
-                    | Q(ended_at__isnull=True, started_at__date__gte=parsed)
-                )
+            queryset = queryset.filter(
+                Q(ended_at__date__gte=since)
+                | Q(ended_at__isnull=True, started_at__date__gte=since)
+            )
         session_status = self.request.query_params.get("status")
         workout = id_param(self.request, "workout")
         workout_name = self.request.query_params.get("workout_name")
@@ -2579,6 +2606,20 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
                 if key not in known:
                     known.add(key)
                     new_points.append(SessionRoutePoint(session=session, **point))
+            if not new_points:
+                # A retry of a track already stored. Nothing changed, so the
+                # summary has not either, and re-reading every point to work
+                # it out again is the expensive half of this request.
+                return Response(self.get_serializer(session).data)
+            # The per-upload cap alone bounded nothing: a session took 20,000
+            # more points on every request, and each request re-read all of
+            # them, so uploads grew slower until they held a worker for
+            # minutes. The app sends a whole track once, so a real session
+            # never comes near this.
+            if session.route_points.count() + len(new_points) > MAX_ROUTE_POINTS_PER_SESSION:
+                raise ValidationError(
+                    {"points": "This session already has as long a route as one session can hold."}
+                )
             SessionRoutePoint.objects.bulk_create(new_points)
             # Everything the track implies, worked out here because this is
             # the only place points ever change. Serialising a session then
@@ -4143,10 +4184,24 @@ class PostCommentViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.Mode
 
     def get_queryset(self):
         profile = self.owner_profile()
-        if self.action in ("partial_update", "destroy"):
+        if self.action == "destroy":
             # A 404 rather than a 403 on someone else's comment, matching how
-            # posts scope editing: it was never in the set.
+            # posts scope editing: it was never in the set. Taking your own
+            # words back is always allowed, block or no block.
             return PostComment.objects.filter(author=profile)
+        if self.action == "partial_update":
+            # Editing is saying something again, so it needs what saying it
+            # needed: a post, and a comment being replied to, that the author
+            # can still see. Without this, somebody blocked by a post's author
+            # could rewrite their old comments under it -- invisible to the
+            # person who blocked them, in front of everyone else.
+            return PostComment.objects.filter(
+                author=profile,
+                post__in=visible_posts_for(profile, Post.objects.all()),
+            ).filter(
+                Q(parent__isnull=True)
+                | Q(parent__in=visible_comments_for(profile, PostComment.objects.all()))
+            )
 
         readable = visible_posts_for(profile, Post.objects.all())
         queryset = (
@@ -4246,7 +4301,8 @@ class NotificationViewSet(
     def get_queryset(self):
         viewer = profile_for(self.request.user)
         return without_blocked_authors(viewer, super().get_queryset().filter(recipient=viewer), 'actor').exclude(
-            comment__is_hidden=True).exclude(comment__parent__is_hidden=True).exclude(post__is_hidden=True)
+            comment__is_hidden=True).exclude(comment__parent__is_hidden=True).exclude(post__is_hidden=True).filter(
+            actor__user__is_active=True)
 
     @extend_schema(
         request=None,
@@ -4303,7 +4359,13 @@ class FollowRequestViewSet(
     )
 
     def get_queryset(self):
-        return super().get_queryset().filter(target=profile_for(self.request.user))
+        # Never one from across a block, nor from a suspended account. Making a
+        # block now deletes the request, but rows from before that still exist,
+        # and approving one would follow straight through the block.
+        viewer = profile_for(self.request.user)
+        return without_blocked_authors(
+            viewer, super().get_queryset().filter(target=viewer), "requester"
+        ).filter(requester__user__is_active=True)
 
     def perform_destroy(self, instance):
         # Declining answers the question too, so its line goes the same way an
@@ -4397,6 +4459,18 @@ class BlockViewSet(
                 Q(follower=blocker, following=blocked)
                 | Q(follower=blocked, following=blocker)
             ).delete()
+            # A request waiting either way goes too. Left behind, it kept the
+            # blocked person in the blocker's requests, where approving it --
+            # or opening the profile, which grants every waiting request --
+            # made the follow this block had just removed.
+            FollowRequest.objects.filter(
+                Q(requester=blocker, target=blocked)
+                | Q(requester=blocked, target=blocker)
+            ).delete()
+            Notification.objects.filter(
+                Q(recipient=blocker, actor=blocked) | Q(recipient=blocked, actor=blocker),
+                kind=Notification.Kind.FOLLOW_REQUEST,
+            ).delete()
 
 
 class DailyStepCountViewSet(
@@ -4428,11 +4502,9 @@ class DailyStepCountViewSet(
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
-        since = self.request.query_params.get("since")
+        since = date_param(self.request, "since")
         if since:
-            parsed = parse_date(since)
-            if parsed is not None:
-                queryset = queryset.filter(day__gte=parsed)
+            queryset = queryset.filter(day__gte=since)
         return queryset
 
     @extend_schema(
@@ -4665,7 +4737,7 @@ class TrainingStatsView(APIView):
     )
     def get(self, request):
         owner = profile_for(request.user)
-        today = parse_date(request.query_params.get("today") or "") or today_for(owner)
+        today = date_param(request, "today") or today_for(owner)
 
         # Only what the reduction needs. Reading whole session objects here
         # would repeat, on the server, the mistake this endpoint exists to fix.

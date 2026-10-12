@@ -318,6 +318,13 @@ REST_FRAMEWORK = {
         'upload': os.environ.get('REPBASE_THROTTLE_UPLOAD', '20/hour'),
         # View events arrive in batches from a scrolling feed.
         'impression': os.environ.get('REPBASE_THROTTLE_IMPRESSION', '600/hour'),
+        # A route upload writes up to 20,000 rows. The app sends one per
+        # session, plus a retry or two when the connection drops.
+        'route': os.environ.get('REPBASE_THROTTLE_ROUTE', '30/hour'),
+        # A profile photo is decoded in full and, where moderation is on, sent
+        # to the classifier: the same work a post's photo costs, which
+        # `post` bounds at sixty an hour. This had only the per-user ceiling.
+        'photo': os.environ.get('REPBASE_THROTTLE_PHOTO', '30/hour'),
     },
 }
 

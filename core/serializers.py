@@ -3,14 +3,12 @@ from datetime import timedelta
 import base64
 import io
 import binascii
-import uuid
 from decimal import Decimal
 from zoneinfo import available_timezones
 
 from django.contrib.auth import authenticate, get_user_model, password_validation
 from django.contrib.auth.validators import ASCIIUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -211,19 +209,16 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
         return attrs
 
     def save_to(self, profile):
+        from .post_publication import replace_profile_photo
+
         extension = (
             self.validated_data.get("extension")
             or ALLOWED_PHOTO_TYPES[self.validated_data["content_type"]]
         )
-        # Replaced, not accumulated: the previous file would otherwise sit on
-        # disk forever with nothing pointing at it.
-        profile.profile_photo.delete(save=False)
-        profile.profile_photo.save(
-            f"{uuid.uuid4().hex}{extension}",
-            ContentFile(self.validated_data["decoded"]),
-            save=True,
-        )
-        return profile
+        # Replaced, not accumulated: the previous file is queued for deletion
+        # once the new one is on the row. Raises PublicationMediaError when
+        # storage cannot take the file.
+        return replace_profile_photo(profile, self.validated_data["decoded"], extension)
 
 
 class NutritionGoalSerializer(serializers.ModelSerializer):
