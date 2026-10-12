@@ -2955,6 +2955,7 @@ def posts_for_cards():
         # card.
         "video",
         "repost_of__author__user",
+        "repost_of__author__user__accountaccess",
         "repost_of__author__gym",
         "repost_of__workout",
         "repost_of__meal",
