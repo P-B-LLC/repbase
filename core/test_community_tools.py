@@ -24,6 +24,36 @@ class CommunityToolsTests(RepbaseAPITestMixin, APITestCase):
     def spotlight(self, version=0):
         set_spotlight(self.owner, 'Welcome', self.post.pk, version, 'Community highlight')
 
+    def test_missing_access_record_has_nonnullable_flair_without_creating_roles(self):
+        from .serializers import PublicRepbaseUserSerializer
+        before = AccountAccess.objects.count()
+        data = PublicRepbaseUserSerializer(self.profile).data
+        self.assertEqual(data['community_label'], '')
+        self.assertEqual(data['community_badge'], '')
+        self.assertEqual(data['community_color'], '#F65A18')
+        self.assertEqual(AccountAccess.objects.count(), before)
+        self.assertFalse(AccountAccess.objects.filter(user=self.member).exists())
+
+    def test_discover_and_post_detail_preserve_nonnullable_author_contract(self):
+        for path in ['/api/v1/social/posts/', f'/api/v1/social/posts/{self.post.pk}/']:
+            response = self.client.get(path)
+            self.assertEqual(response.status_code, 200)
+            posts = response.data.get('results', [response.data])
+            self.assertTrue(posts)
+            for post in posts:
+                self.assertEqual(post['author']['community_label'], '')
+                self.assertEqual(post['author']['community_badge'], '')
+                self.assertEqual(post['author']['community_color'], '#F65A18')
+
+    def test_configured_flair_is_preserved(self):
+        from .serializers import PublicRepbaseUserSerializer
+        AccountAccess.objects.create(user=self.member, public_label='Runner',
+                                     public_badge='Founding member', label_color='#123456')
+        data = PublicRepbaseUserSerializer(self.profile).data
+        self.assertEqual(data['community_label'], 'Runner')
+        self.assertEqual(data['community_badge'], 'Founding member')
+        self.assertEqual(data['community_color'], '#123456')
+
     def test_cosmetics_do_not_grant_permissions_and_cannot_impersonate(self):
         set_flair(self.owner, self.member, 'Trail runner', 'Founding member', '#ff7700', 0, 'Welcome')
         self.assertFalse(any(capabilities(self.member).values()))

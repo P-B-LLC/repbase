@@ -871,10 +871,23 @@ PUBLIC_KILOGRAMS = serializers.DecimalField(max_digits=6, decimal_places=2)
 NUTRITION_DECIMAL = serializers.DecimalField(max_digits=10, decimal_places=2)
 
 
+class CommunityFlairField(serializers.CharField):
+    """Missing reverse one-to-one records must use the declared wire default.
+
+    DRF returns None for ObjectDoesNotExist before applying Field.default.
+    Ordinary members need no AccountAccess record; serializing their profile
+    must not create one or emit null for these non-nullable string fields.
+    """
+
+    def get_attribute(self, instance):
+        value = super().get_attribute(instance)
+        return self.get_default() if value is None else value
+
+
 class PublicRepbaseUserSerializer(serializers.ModelSerializer):
-    community_label = serializers.CharField(source='user.accountaccess.public_label', read_only=True, default='')
-    community_badge = serializers.CharField(source='user.accountaccess.public_badge', read_only=True, default='')
-    community_color = serializers.CharField(source='user.accountaccess.label_color', read_only=True, default='#F65A18')
+    community_label = CommunityFlairField(source='user.accountaccess.public_label', read_only=True, default='')
+    community_badge = CommunityFlairField(source='user.accountaccess.public_badge', read_only=True, default='')
+    community_color = CommunityFlairField(source='user.accountaccess.label_color', read_only=True, default='#F65A18')
     username = serializers.CharField(source="user.username", read_only=True)
     first_name = serializers.CharField(source="user.first_name", read_only=True)
     last_name = serializers.CharField(source="user.last_name", read_only=True)
