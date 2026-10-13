@@ -149,6 +149,39 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccessUser'
           description: ''
+  /api/v1/administration/users/{profile_id}/status/:
+    put:
+      operationId: user_status_update
+      parameters:
+      - in: path
+        name: profile_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - administration
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangeAccountStatusRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ChangeAccountStatusRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ChangeAccountStatusRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccessUser'
+          description: ''
   /api/v1/auth/login/:
     post:
       operationId: auth_login_create
@@ -5180,6 +5213,54 @@ paths:
               schema:
                 $ref: '#/components/schemas/Post'
           description: ''
+  /api/v1/social/posts/{post_id}/video-upload/:
+    post:
+      operationId: social_posts_video_upload_create
+      parameters:
+      - in: path
+        name: post_id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/UploadRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/UploadRequestRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+          description: ''
+  /api/v1/social/spotlight/:
+    get:
+      operationId: community_spotlight_retrieve
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CommunitySpotlight'
+          description: ''
   /api/v1/social/suggested-people/:
     get:
       operationId: social_suggested_people_list
@@ -5499,6 +5580,135 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ProfileHighlight'
+          description: ''
+  /api/v1/video-events/:
+    post:
+      operationId: video_events_create
+      tags:
+      - video-events
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlaybackEventRequestRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PlaybackEventRequestRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PlaybackEventRequestRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/video-uploads/{job_id}/complete/:
+    post:
+      operationId: video_uploads_complete_create
+      parameters:
+      - in: path
+        name: job_id
+        schema:
+          type: string
+          format: uuid
+        required: true
+      tags:
+      - video-uploads
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '202':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResponse'
+          description: ''
+  /api/v1/web/login/:
+    post:
+      operationId: web_login_create
+      tags:
+      - web
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSession'
+          description: ''
+  /api/v1/web/logout/:
+    post:
+      operationId: web_logout_create
+      tags:
+      - web
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSession'
+          description: ''
+  /api/v1/web/register/:
+    post:
+      operationId: web_register_create
+      tags:
+      - web
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+        required: true
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSession'
+          description: ''
+  /api/v1/web/session/:
+    get:
+      operationId: web_session_retrieve
+      tags:
+      - web
+      security:
+      - cookieAuth: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BrowserSession'
           description: ''
   /api/v1/workout-exercises/:
     get:
@@ -5835,7 +6045,16 @@ components:
           type: string
         editable:
           type: boolean
+        controllable:
+          type: boolean
+        active:
+          type: boolean
+        disabled_by_admin:
+          type: boolean
       required:
+      - active
+      - controllable
+      - disabled_by_admin
       - display_name
       - editable
       - id
@@ -6021,6 +6240,18 @@ components:
           maxLength: 300
       required:
       - weight_kg
+    BrowserSession:
+      type: object
+      properties:
+        user:
+          allOf:
+          - $ref: '#/components/schemas/RepbaseUser'
+          nullable: true
+        csrf_token:
+          type: string
+      required:
+      - csrf_token
+      - user
     Capabilities:
       type: object
       properties:
@@ -6108,6 +6339,27 @@ components:
       required:
       - roles
       - version
+    ChangeAccountStatusRequest:
+      type: object
+      properties:
+        active:
+          type: boolean
+        version:
+          type: integer
+          minimum: 0
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+        confirm_username:
+          type: string
+          minLength: 1
+          maxLength: 150
+      required:
+      - active
+      - confirm_username
+      - reason
+      - version
     ClearScheduleResult:
       type: object
       description: How many planned days were cleared.
@@ -6117,6 +6369,18 @@ components:
           readOnly: true
       required:
       - cleared
+    CommunitySpotlight:
+      type: object
+      properties:
+        announcement:
+          type: string
+        featured_post:
+          allOf:
+          - $ref: '#/components/schemas/Post'
+          nullable: true
+      required:
+      - announcement
+      - featured_post
     ContentTypeEnum:
       enum:
       - image/heic
@@ -6369,6 +6633,16 @@ components:
       description: |-
         * `sandbox` - sandbox
         * `production` - production
+    EventEnum:
+      enum:
+      - upload_failed
+      - playback_error
+      - playback_started
+      type: string
+      description: |-
+        * `upload_failed` - upload_failed
+        * `playback_error` - playback_error
+        * `playback_started` - playback_started
     Exercise:
       type: object
       properties:
@@ -8241,6 +8515,17 @@ components:
           maximum: 365
           minimum: 1
           writeOnly: true
+        repeat_on_weekdays:
+          type: array
+          items:
+            type: integer
+            maximum: 6
+            minimum: 0
+          writeOnly: true
+          description: 'Repeat weekly on selected days: Monday=0 through Sunday=6.
+            Exclusive with repeat_every_days. The first task is on or after scheduled_date.'
+          maxItems: 7
+          minItems: 1
         repeat_ends_on:
           type: string
           format: date
@@ -8690,6 +8975,13 @@ components:
         completed_subtask_count:
           type: integer
           readOnly: true
+        repeat_weekdays:
+          type: array
+          items:
+            type: integer
+            maximum: 6
+            minimum: 0
+          readOnly: true
         repeat_interval_days:
           type: integer
           nullable: true
@@ -8709,6 +9001,7 @@ components:
       - id
       - owner
       - repeat_interval_days
+      - repeat_weekdays
       - scheduled_date
       - subtask_count
       - subtasks
@@ -8772,6 +9065,17 @@ components:
           maximum: 365
           minimum: 1
           writeOnly: true
+        repeat_on_weekdays:
+          type: array
+          items:
+            type: integer
+            maximum: 6
+            minimum: 0
+          writeOnly: true
+          description: 'Repeat weekly on selected days: Monday=0 through Sunday=6.
+            Exclusive with repeat_every_days. The first task is on or after scheduled_date.'
+          maxItems: 7
+          minItems: 1
         repeat_ends_on:
           type: string
           format: date
@@ -8846,6 +9150,17 @@ components:
         * `youtube` - YouTube
         * `x` - X
         * `website` - Website
+    PlaybackEventRequestRequest:
+      type: object
+      properties:
+        post_id:
+          type: integer
+          minimum: 1
+        event:
+          $ref: '#/components/schemas/EventEnum'
+      required:
+      - event
+      - post_id
     Post:
       type: object
       description: |-
@@ -9283,6 +9598,7 @@ components:
       properties:
         url:
           type: string
+          nullable: true
           readOnly: true
         content_type:
           type: string
@@ -9302,13 +9618,32 @@ components:
         status:
           type: string
           readOnly: true
+        processing_state:
+          type: string
+          readOnly: true
+        processing_error:
+          type: string
+          readOnly: true
+        thumbnail_url:
+          type: string
+          nullable: true
+          readOnly: true
+        variants:
+          type: array
+          items:
+            $ref: '#/components/schemas/VideoVariant'
+          readOnly: true
       required:
       - content_type
       - duration_ms
       - has_audio
       - height
+      - processing_error
+      - processing_state
       - status
+      - thumbnail_url
       - url
+      - variants
       - width
     PostWorkout:
       type: object
@@ -9729,6 +10064,18 @@ components:
     PublicRepbaseUser:
       type: object
       properties:
+        community_label:
+          type: string
+          readOnly: true
+          default: ''
+        community_badge:
+          type: string
+          readOnly: true
+          default: ''
+        community_color:
+          type: string
+          readOnly: true
+          default: '#F65A18'
         id:
           type: integer
           readOnly: true
@@ -9812,6 +10159,9 @@ components:
           format: date-time
           readOnly: true
       required:
+      - community_badge
+      - community_color
+      - community_label
       - created_at
       - disciplines
       - first_name
@@ -10845,6 +11195,63 @@ components:
           readOnly: true
       required:
       - unread
+    UploadRequestRequest:
+      type: object
+      properties:
+        size_bytes:
+          type: integer
+          maximum: 104857600
+          minimum: 1
+        content_type:
+          $ref: '#/components/schemas/VideoUploadContentTypeEnum'
+      required:
+      - content_type
+      - size_bytes
+    UploadResponse:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        state:
+          type: string
+        upload_url:
+          type: string
+          format: uri
+        fields:
+          type: object
+          additionalProperties:
+            type: string
+      required:
+      - id
+      - state
+    VideoUploadContentTypeEnum:
+      enum:
+      - video/mp4
+      - video/quicktime
+      - video/x-m4v
+      type: string
+      description: |-
+        * `video/mp4` - video/mp4
+        * `video/quicktime` - video/quicktime
+        * `video/x-m4v` - video/x-m4v
+    VideoVariant:
+      type: object
+      properties:
+        width:
+          type: integer
+        height:
+          type: integer
+        size_bytes:
+          type: integer
+        url:
+          type: string
+          nullable: true
+      required:
+      - height
+      - size_bytes
+      - url
+      - width
     VisibilityEnum:
       enum:
       - public

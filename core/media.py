@@ -220,7 +220,7 @@ def serve_media(request, path):
 _BYTE_RANGE = re.compile(r"bytes=(\d*)-(\d*)")
 
 
-def _video_response(request, name):
+def _video_response(request, name, storage=None):
     """A clip, whole or in the byte range asked for.
 
     AVPlayer and Safari will not play an MP4 from a server that cannot answer
@@ -231,11 +231,12 @@ def _video_response(request, name):
     One range only. A request for several is answered with the whole file,
     which the specification allows and no player relies on.
     """
-    size = default_storage.size(name)
+    storage = storage if storage is not None else default_storage
+    size = storage.size(name)
     content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
     match = _BYTE_RANGE.fullmatch(request.headers.get("Range", "").strip())
     if match is None or match.groups() == ("", ""):
-        response = FileResponse(default_storage.open(name, "rb"), content_type=content_type)
+        response = FileResponse(storage.open(name, "rb"), content_type=content_type)
         response["Accept-Ranges"] = "bytes"
         return response
 
@@ -251,7 +252,7 @@ def _video_response(request, name):
         refused["Content-Range"] = f"bytes */{size}"
         return refused
 
-    handle = default_storage.open(name, "rb")
+    handle = storage.open(name, "rb")
     handle.seek(start)
     response = StreamingHttpResponse(
         _read_span(handle, end - start + 1), status=206, content_type=content_type

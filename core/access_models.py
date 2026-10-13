@@ -10,11 +10,23 @@ class AccountAccess(models.Model):
     analytics = models.BooleanField(default=False)
     moderator = models.BooleanField(default=False)
     version = models.PositiveIntegerField(default=0)
+    disabled_by_admin = models.BooleanField(default=False)
+    session_epoch = models.PositiveIntegerField(default=0)
+    public_label = models.CharField(max_length=32, blank=True)
+    label_color = models.CharField(max_length=7, default='#F65A18')
+    public_badge = models.CharField(max_length=32, blank=True)
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['superowner'], condition=models.Q(superowner=True),
                                                name='one_app_superowner')]
 
+
+class CommunitySpotlight(models.Model):
+    """One small community notice and one featured post, never a privacy bypass."""
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    announcement = models.CharField(max_length=500, blank=True)
+    featured_post = models.ForeignKey('core.Post', null=True, blank=True, on_delete=models.SET_NULL)
+    version = models.PositiveIntegerField(default=0)
 
 class AccessPolicyLock(models.Model):
     """One seeded row serializes grants/revocations and moderation decisions."""

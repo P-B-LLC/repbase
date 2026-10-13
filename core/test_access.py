@@ -48,7 +48,8 @@ class AccessTests(RepbaseAPITestMixin, APITestCase):
                 AccountAccess.objects.create(user=self.member, **{role: True})
             self.as_member()
             self.assertEqual(self.change(['owner']).status_code, 403)
-            self.assertEqual(self.client.get('/api/v1/administration/users/', {'search': 'member'}).status_code, 403)
+            self.assertEqual(self.client.get('/api/v1/administration/users/', {'search': 'member'}).status_code,
+                             200 if role == 'moderator' else 403)
         self.assertFalse(AccessAudit.objects.exists())
 
     def test_owner_inherits_capabilities_and_can_assign_others(self):
@@ -158,7 +159,7 @@ class AccessTests(RepbaseAPITestMixin, APITestCase):
         browser.force_login(self.admin)
         response = browser.get('/access/?search=member')
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Manage access')
+        self.assertContains(response, 'Manage roles')
         self.assertIn('no-store', response['Cache-Control'])
         self.assertIn("frame-ancestors 'none'", response['Content-Security-Policy'])
         self.assertEqual(browser.post(f'/access/users/{self.profile.pk}/', dict(roles=['owner'], version=0)).status_code, 403)
@@ -182,7 +183,8 @@ class AccessTests(RepbaseAPITestMixin, APITestCase):
         browser.force_login(self.member)
         response = browser.get('/access/')
         self.assertContains(response, 'Review reports')
-        self.assertNotContains(response, 'People &amp; access')
+        self.assertContains(response, 'People &amp; access')
+        self.assertNotContains(response, 'Manage roles')
         self.assertEqual(browser.get('/access/reports/').status_code, 200)
         self.assertEqual(browser.get('/access/reports/?kind=invalid').status_code, 400)
 

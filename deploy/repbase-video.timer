@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll the Rytivo video processing queue
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=10
+Unit=repbase-video.service
+
+[Install]
+WantedBy=timers.target

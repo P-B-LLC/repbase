@@ -867,7 +867,23 @@ PUBLIC_KILOGRAMS = serializers.DecimalField(max_digits=6, decimal_places=2)
 NUTRITION_DECIMAL = serializers.DecimalField(max_digits=10, decimal_places=2)
 
 
+class CommunityFlairField(serializers.CharField):
+    """Missing reverse one-to-one records must use the declared wire default.
+
+    DRF returns None for ObjectDoesNotExist before applying Field.default.
+    Ordinary members need no AccountAccess record; serializing their profile
+    must not create one or emit null for these non-nullable string fields.
+    """
+
+    def get_attribute(self, instance):
+        value = super().get_attribute(instance)
+        return self.get_default() if value is None else value
+
+
 class PublicRepbaseUserSerializer(serializers.ModelSerializer):
+    community_label = CommunityFlairField(source='user.accountaccess.public_label', read_only=True, default='')
+    community_badge = CommunityFlairField(source='user.accountaccess.public_badge', read_only=True, default='')
+    community_color = CommunityFlairField(source='user.accountaccess.label_color', read_only=True, default='#F65A18')
     username = serializers.CharField(source="user.username", read_only=True)
     first_name = serializers.CharField(source="user.first_name", read_only=True)
     last_name = serializers.CharField(source="user.last_name", read_only=True)
@@ -891,6 +907,7 @@ class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     class Meta:
         model = RepbaseUser
         fields = [
+            'community_label', 'community_badge', 'community_color',
             "id",
             "username",
             "first_name",
@@ -1733,6 +1750,19 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
     repeat_every_days = serializers.IntegerField(
         required=False, write_only=True, min_value=1, max_value=365
     )
+    repeat_on_weekdays = serializers.ListField(
+        child=serializers.IntegerField(min_value=0, max_value=6),
+        min_length=1, max_length=7, required=False, write_only=True,
+        help_text="Repeat weekly on selected days: Monday=0 through Sunday=6. Exclusive with repeat_every_days. The first task is on or after scheduled_date.",
+    )
+    repeat_weekdays = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.ListField(child=serializers.IntegerField(min_value=0, max_value=6)))
+    def get_repeat_weekdays(self, entry):
+        return entry.recurrence.weekdays if entry.recurrence_id else []
+
+    def validate_repeat_on_weekdays(self, value):
+        return sorted(set(value))
     #: The first day the repeat no longer applies. Absent or null means it
     #: runs until it is stopped, which is the ordinary case for a habit.
     repeat_ends_on = serializers.DateField(
@@ -1745,7 +1775,7 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
 
     @extend_schema_field(serializers.IntegerField(allow_null=True))
     def get_repeat_interval_days(self, entry):
-        return entry.recurrence.interval_days if entry.recurrence_id else None
+        return entry.recurrence.interval_days if entry.recurrence_id and not entry.recurrence.weekdays else None
 
     @extend_schema_field(serializers.IntegerField())
     def get_subtask_count(self, entry):
@@ -1777,6 +1807,8 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "subtask_count",
             "completed_subtask_count",
             "repeat_every_days",
+            "repeat_on_weekdays",
+            "repeat_weekdays",
             "repeat_ends_on",
             "repeat_interval_days",
             "created_at",
@@ -1911,7 +1943,12 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         # once by definition, and a step repeating independently of the task
         # it belongs to describes nothing.
         interval = attrs.get("repeat_every_days")
-        if interval is not None:
+        weekdays = attrs.get("repeat_on_weekdays")
+        if interval is not None and weekdays is not None:
+            raise serializers.ValidationError({"repeat_on_weekdays": "Choose weekdays or an interval, not both."})
+        if self.instance is not None and any(key in attrs for key in ("repeat_every_days", "repeat_on_weekdays", "repeat_ends_on")):
+            raise serializers.ValidationError({"repeat_on_weekdays": "Stop the existing repeat and create a new task to change its schedule."})
+        if interval is not None or weekdays is not None:
             if kind == PlannerEntry.Kind.EVENT:
                 raise serializers.ValidationError(
                     {"repeat_every_days": "An event happens once. Use a task to repeat."}
@@ -1922,6 +1959,12 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
                 )
             ends = attrs.get("repeat_ends_on")
             start = attrs.get("scheduled_date", getattr(self.instance, "scheduled_date", None))
+            repeater = getattr(self.instance, "owner", None) or self.context["request"].user.repbase_profile
+            if start is not None and start > plan_ahead_limit(repeater):
+                raise serializers.ValidationError({"repeat_every_days": "A repeat can start at most a year from today."})
+            if weekdays and start is not None:
+                start += timedelta(days=min((weekday - start.weekday()) % 7 for weekday in weekdays))
+                attrs["scheduled_date"] = start
             if ends is not None and start is not None and ends <= start:
                 raise serializers.ValidationError(
                     {"repeat_ends_on": "The repeat has to end after the day it starts."}
@@ -2679,6 +2722,13 @@ class PostPlannerEntrySerializer(serializers.ModelSerializer):
         read_only_fields = ["title", "scheduled_date", "is_complete"]
 
 
+class VideoVariantSerializer(serializers.Serializer):
+    width = serializers.IntegerField()
+    height = serializers.IntegerField()
+    size_bytes = serializers.IntegerField()
+    url = serializers.CharField(allow_null=True)
+
+
 class PostVideoSerializer(serializers.ModelSerializer):
     """A post's clip, as its reader may see it.
 
@@ -2690,6 +2740,8 @@ class PostVideoSerializer(serializers.ModelSerializer):
     """
 
     url = serializers.SerializerMethodField()
+    thumbnail_url = serializers.SerializerMethodField()
+    variants = serializers.SerializerMethodField()
     status = serializers.CharField(read_only=True)
     content_type = serializers.CharField(read_only=True)
 
@@ -2703,13 +2755,39 @@ class PostVideoSerializer(serializers.ModelSerializer):
             "height",
             "has_audio",
             "status",
+            "processing_state",
+            "processing_error",
+            "thumbnail_url",
+            "variants",
         ]
         read_only_fields = fields
 
-    @extend_schema_field(serializers.CharField())
+    @extend_schema_field(serializers.CharField(allow_null=True))
     def get_url(self, video):
         """Signed, like a photo's: the link is the authorisation."""
+        if video.processing_state != 'ready':
+            return None
+        if video.variants:
+            if video.status != 'approved':
+                return None
+            from .video_pipeline_views import asset_url
+            return asset_url(video, video.variants[0]['key'], self.context.get('request'))
         return signed_media_url(video.file, self.context.get("request"))
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_thumbnail_url(self, video):
+        if video.processing_state != 'ready' or video.status != 'approved' or not video.thumbnail_key:
+            return None
+        from .video_pipeline_views import asset_url
+        return asset_url(video, video.thumbnail_key, self.context.get('request'))
+
+    @extend_schema_field(VideoVariantSerializer(many=True))
+    def get_variants(self, video):
+        if video.processing_state != 'ready' or video.status != 'approved':
+            return []
+        from .video_pipeline_views import asset_url
+        return [{'width': v['width'], 'height': v['height'], 'size_bytes': v['size_bytes'],
+            'url': asset_url(video, v['key'], self.context.get('request'))} for v in video.variants]
 
 
 def video_for(post, context):

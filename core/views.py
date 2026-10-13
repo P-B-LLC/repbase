@@ -295,6 +295,7 @@ class LoginView(APIView):
     throttle_classes = [ScopedRateThrottle]
 
     @extend_schema(request=LoginSerializer, responses={200: AuthResponseSerializer})
+    @transaction.atomic
     def post(self, request):
         # Read defensively: a JSON array body has no .get, and a username
         # that is not a string is not a username anyone can be locked out by.
@@ -312,6 +313,9 @@ class LoginView(APIView):
         if not serializer.is_valid():
             raise ValidationError(serializer.errors)
         user = serializer.validated_data["user"]
+        user = User.objects.select_for_update().get(pk=user.pk)
+        if not user.is_active:
+            raise AuthenticationFailed()
         profile = profile_for(user)
         token, _ = Token.objects.get_or_create(user=user)
         response = AuthResponseSerializer({"token": token.key, "user": profile})
@@ -632,6 +636,9 @@ class PasswordResetConfirmView(APIView):
             raise invalid
 
         with transaction.atomic():
+            user = User.objects.select_for_update().get(pk=user.pk)
+            if not user.is_active:
+                raise invalid
             entry = (
                 PasswordResetCode.objects.select_for_update()
                 .filter(user=user, used_at__isnull=True)
@@ -687,6 +694,9 @@ class RotateTokenView(APIView):
     @extend_schema(request=None, responses={200: AuthResponseSerializer})
     @transaction.atomic
     def post(self, request):
+        fresh_user = User.objects.select_for_update().get(pk=request.user.pk)
+        if not fresh_user.is_active:
+            raise AuthenticationFailed()
         if isinstance(request.auth, Token):
             current = Token.objects.select_for_update().filter(pk=request.auth.pk).first()
             if current is None:
@@ -2046,14 +2056,16 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
     def perform_create(self, serializer):
         # Write-only, so they are not fields of the row being saved.
         interval = serializer.validated_data.pop("repeat_every_days", None)
+        weekdays = serializer.validated_data.pop("repeat_on_weekdays", None)
         ends_on = serializer.validated_data.pop("repeat_ends_on", None)
         owner = self.owner_profile()
         entry = serializer.save(owner=owner)
 
-        if interval is not None:
+        if interval is not None or weekdays is not None:
             rule = PlannerRecurrence.objects.create(
                 owner=owner,
-                interval_days=interval,
+                interval_days=interval or 1,
+                weekdays=weekdays or [],
                 starts_on=entry.scheduled_date,
                 ends_on=ends_on,
                 title=entry.title,
@@ -2962,6 +2974,7 @@ def posts_for_cards():
     """
     return Post.objects.select_related(
         "author__user",
+        "author__user__accountaccess",
         "author__gym",
         "workout",
         "meal",
@@ -2971,6 +2984,7 @@ def posts_for_cards():
         # card.
         "video",
         "repost_of__author__user",
+        "repost_of__author__user__accountaccess",
         "repost_of__author__gym",
         "repost_of__workout",
         "repost_of__meal",
@@ -3997,13 +4011,20 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             remove_video(post)
             return Response(self._card(post.pk))
 
+        if settings.VIDEO_PIPELINE_ENABLED and settings.VIDEO_STORAGE_BACKEND != 'local':
+            raise ValidationError({'video': 'Use direct video-upload initiation and completion endpoints.'})
+
         received = request.data
         if not isinstance(received, ReceivedVideo):
             raise ValidationError(
                 {"video": "Send the video file as the request body, with a video Content-Type."}
             )
         try:
-            attach_video(post, received)
+            if settings.VIDEO_PIPELINE_ENABLED:
+                from .video_pipeline import queue_local
+                queue_local(post, received)
+            else:
+                attach_video(post, received)
         except PublicationMediaError:
             raise ServiceUnavailable(
                 "Your video was not saved because storage is unavailable. Please retry."
