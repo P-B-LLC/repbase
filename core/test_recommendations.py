@@ -56,6 +56,7 @@ from .models import (
     PostVideo,
     PostView,
     RecommendationPreferences,
+    RepbaseUser,
     SavedFoodMeal,
     SuggestionDismissal,
     UserDiscipline,
@@ -82,8 +83,8 @@ PREFERENCES = "/api/v1/social/for-you/preferences/"
 HISTORY = "/api/v1/social/for-you/history/"
 
 EVERY_PART = {
-    "topic", "momentum", "author", "follows", "similar", "quality", "popularity", "recency",
-    "watch", "newcomer", "seen", "reported",
+    "topic", "momentum", "detail", "author", "follows", "similar", "quality", "popularity",
+    "recency", "watch", "newcomer", "skip_rate", "hide_rate", "seen", "fatigue", "reported", "bait",
 }
 
 
@@ -95,6 +96,10 @@ def candidate(pk, author_id, topics, score_value=1.0, **counts):
     )
     for name, value in counts.items():
         setattr(item, name, value)
+        if name in ("likes", "comments", "shares", "saves") and f"trusted_{name}" not in counts:
+            # Engagement from accounts that can be trusted, unless a test
+            # says otherwise.
+            setattr(item, f"trusted_{name}", value)
     item.score = score_value
     return item
 
@@ -416,6 +421,13 @@ class ForYouTestCase(RepbaseAPITestMixin, APITestCase):
         cls.runners = [make_account(f"runner{n}")[1] for n in range(4)]
         cls.lifters = [make_account(f"lifter{n}")[1] for n in range(4)]
         cls.cooks = [make_account(f"cook{n}")[1] for n in range(4)]
+        # The community has been here a few days: past the two days in
+        # which a brand-new account's likes count for half
+        # (core.feed_integrity), and still well inside the sixty that make
+        # somebody a new creator. Readers made in a test are brand new.
+        RepbaseUser.objects.filter(
+            pk__in=[person.pk for person in cls.runners + cls.lifters + cls.cooks]
+        ).update(created_at=timezone.now() - timedelta(days=3))
         cls.running, cls.lifting, cls.meals = [], [], []
         for index in range(4):
             for round_ in range(2):
@@ -531,6 +543,11 @@ class PersonalisationTests(ForYouTestCase):
         food."""
         reader, token = self.reader("lifts_only", [])
         twins = [self.reader(f"twin{n}", [])[0] for n in range(2)]
+        # Established members: a brand-new account is nobody's taste twin
+        # (core.feed_integrity.Trust.as_neighbour).
+        RepbaseUser.objects.filter(pk__in=[twin.pk for twin in twins]).update(
+            created_at=timezone.now() - timedelta(days=10)
+        )
         for person in [reader, *twins]:
             for post in self.lifting[:3]:
                 PostLike.objects.create(post=post, user=person)
@@ -1120,6 +1137,7 @@ class ImpressionTests(ForYouTestCase):
 
     def test_views_are_folded_into_one_row_per_post(self):
         post = self.meals[0]
+        video(post)
         self.assertEqual(self.send({"post": post.pk, "dwell_ms": 300}).status_code, 202)
         row = PostView.objects.get(viewer=self.profile, post=post)
         self.assertTrue(row.skipped)
@@ -1134,6 +1152,7 @@ class ImpressionTests(ForYouTestCase):
 
     def test_a_later_batch_keeps_the_furthest_watch_and_the_first_surface(self):
         post = self.meals[0]
+        video(post)
         self.send({"post": post.pk, "dwell_ms": 5000, "watch_ms": 8000, "surface": "for_you"})
         self.send({"post": post.pk, "dwell_ms": 200, "watch_ms": 1000, "surface": "profile"},
                   {"post": self.meals[1].pk, "dwell_ms": 4000})
