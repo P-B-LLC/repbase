@@ -20,7 +20,7 @@ from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 
 from . import feed_integrity, recommendations
-from .feed_integrity import Trust, account_trust, caption_flags, focus_factor
+from .feed_integrity import Trust, caption_flags, focus_factor, trust_by_id
 from .fixtures_for_tests import aged, make_account, meal_post, workout_post
 from .models import (
     Block,
@@ -126,15 +126,26 @@ class AccountTrustTests(ForYouTestCase):
         cache.clear()
 
     def test_an_established_account_counts_in_full(self):
-        self.assertEqual(account_trust([self.runners[0].pk])[self.runners[0].pk].base, 1.0)
+        self.assertEqual(trust_by_id([self.runners[0].pk])[self.runners[0].pk].base, 1.0)
 
     def test_a_suspended_account_counts_for_nothing(self):
         suspend(self.runners[0])
-        self.assertEqual(account_trust([self.runners[0].pk])[self.runners[0].pk].base, 0.0)
+        self.assertEqual(trust_by_id([self.runners[0].pk])[self.runners[0].pk].base, 0.0)
 
     def test_a_brand_new_account_counts_for_half(self):
+        # Whatever was worked out a moment ago: an account made after the
+        # shared lists were cached is still known to be new.
+        trust_by_id([self.runners[0].pk])
         fresh = make_account("fresh_face")[1]
-        self.assertEqual(account_trust([fresh.pk])[fresh.pk].base, feed_integrity.NEW_ACCOUNT_TRUST)
+        self.assertEqual(trust_by_id([fresh.pk])[fresh.pk].base, feed_integrity.NEW_ACCOUNT_TRUST)
+
+    def test_likes_made_right_after_signing_up_count_for_half_too(self):
+        post = self.meals[2]
+        engagement_for([post.pk])
+        cache.delete(f"for-you:stats4:{post.pk}")
+        fresh = make_account("instant_liker")[1]
+        PostLike.objects.create(post=post, user=fresh)
+        self.assertEqual(engagement_for([post.pk])[post.pk].trusted_likes, feed_integrity.NEW_ACCOUNT_TRUST)
 
     def test_a_burst_of_likes_counts_for_less(self):
         bot = self.lifters[0]
@@ -144,7 +155,7 @@ class AccountTrustTests(ForYouTestCase):
             posts += [meal_post(author) for _ in range(12)]
         PostLike.objects.bulk_create([PostLike(post=post, user=bot) for post in posts[:120]])
         self.assertAlmostEqual(
-            account_trust([bot.pk])[bot.pk].base, feed_integrity.LIKE_BURST / 120, places=3
+            trust_by_id([bot.pk])[bot.pk].base, feed_integrity.LIKE_BURST / 120, places=3
         )
 
     def test_an_account_that_only_likes_one_author_is_single_minded_about_them(self):
@@ -152,7 +163,7 @@ class AccountTrustTests(ForYouTestCase):
         target = self.runners[2]
         for post in [workout_post(target, "running") for _ in range(6)]:
             PostLike.objects.create(post=post, user=puppet)
-        trust = account_trust([puppet.pk])[puppet.pk]
+        trust = trust_by_id([puppet.pk])[puppet.pk]
         self.assertEqual(trust.focus_author, target.pk)
         self.assertAlmostEqual(trust.for_author(target.pk), feed_integrity.FOCUS_FLOOR)
         self.assertEqual(trust.for_author(self.lifters[0].pk), 1.0)
@@ -164,13 +175,13 @@ class AccountTrustTests(ForYouTestCase):
             PostLike.objects.create(post=post, user=fan)
         for post in self.lifting[:6]:
             PostLike.objects.create(post=post, user=fan)
-        self.assertIsNone(account_trust([fan.pk])[fan.pk].focus_author)
+        self.assertIsNone(trust_by_id([fan.pk])[fan.pk].focus_author)
 
     def test_liking_your_own_posts_does_not_make_you_single_minded(self):
         author = self.runners[1]
         for post in [workout_post(author, "running") for _ in range(6)]:
             PostLike.objects.create(post=post, user=author)
-        self.assertIsNone(account_trust([author.pk])[author.pk].focus_author)
+        self.assertIsNone(trust_by_id([author.pk])[author.pk].focus_author)
 
 
 # --------------------------------------------------------- what is counted
@@ -239,8 +250,25 @@ class TrustedCountTests(ForYouTestCase):
         counts = self.counts()
         self.assertEqual((counts.impressions, counts.skips, counts.dismissals), (2, 1, 1))
 
+    def test_fresh_accounts_cannot_bury_a_post(self):
+        """Twenty accounts made a minute ago, each viewing and dismissing a
+        post: none of it counts toward how others see it."""
+        crowd = [make_account(f"burier{n}")[1] for n in range(20)]
+        for person in crowd:
+            PostView.objects.create(viewer=person, post=self.post, view_count=1, skipped=True)
+            PostFeedback.objects.create(viewer=person, post=self.post)
+        counts = self.counts()
+        self.assertEqual((counts.impressions, counts.skips, counts.dismissals), (0, 0, 0))
+
+    def test_not_interested_counts_only_from_somebody_who_was_shown_it(self):
+        PostFeedback.objects.create(viewer=self.runners[0], post=self.post)
+        self.assertEqual(self.counts().dismissals, 0)
+        PostView.objects.create(viewer=self.runners[0], post=self.post, view_count=1)
+        self.assertEqual(self.counts().dismissals, 1)
+
     def test_counts_cached_by_an_earlier_version_are_never_read(self):
-        cache.set(f"for-you:stats:{self.post.pk}", "an older shape", 600)
+        for older in ("stats", "stats3"):
+            cache.set(f"for-you:{older}:{self.post.pk}", "an older shape", 600)
         self.assertEqual(engagement_for([self.post.pk])[self.post.pk].likes, 0)
 
 
@@ -358,6 +386,38 @@ class ModerationCooldownTests(ForYouTestCase):
         eligible = self.eligible(stranger)
         self.assertFalse({post.pk for post in self.running if post.author == clip_author} & eligible)
         self.assertIn(self.other_post.pk, eligible)
+
+    def test_deleting_the_hidden_post_does_not_end_a_portal_decision(self):
+        from .access_models import AccessAudit
+
+        AccessAudit.objects.create(
+            target=self.offender.user, action="moderation_hide", subject=f"post:{self.taken_down.pk}",
+        )
+        self.taken_down.delete()
+        cache.clear()
+        stranger, _ = self.reader("still_careful")
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger))
+
+    def test_a_portal_decision_that_was_undone_does_not_count(self):
+        from .access_models import AccessAudit
+
+        AccessAudit.objects.create(
+            target=self.offender.user, action="moderation_hide", subject=f"post:{self.taken_down.pk}",
+        )
+        Post.objects.filter(pk=self.taken_down.pk).update(is_hidden=False, hidden_at=None)
+        cache.clear()
+        stranger, _ = self.reader("trusting")
+        self.assertIn(self.other_post.pk, self.eligible(stranger))
+
+    def test_a_decision_reaches_the_page_within_the_minute(self):
+        stranger, _ = self.reader("timely")
+        Post.objects.filter(pk=self.taken_down.pk).update(is_hidden=False, hidden_at=None)
+        self.assertIn(self.other_post.pk, self.eligible(stranger))
+        Post.objects.filter(pk=self.taken_down.pk).update(is_hidden=True, hidden_at=timezone.now())
+        # Cached for MODERATED_TTL_SECONDS, then read again.
+        self.assertIn(self.other_post.pk, self.eligible(stranger))
+        cache.delete("for-you:moderated")
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger))
 
     def test_it_reaches_the_page_itself(self):
         _, token = self.reader("scroller")

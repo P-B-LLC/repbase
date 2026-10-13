@@ -95,6 +95,15 @@ class ValueTests(SimpleTestCase):
         _, parts = score(candidate(1, 5, {"kind:meal": 1}, impressions=100, dismissals=5), InterestProfile(), self.weights, now)
         self.assertLess(parts["hide_rate"], -0.3)
 
+    def test_rejection_can_bury_a_post_only_so_far(self):
+        """However many dismissals arrive, they never count for more than
+        the views behind them, nor past the ceiling."""
+        now = timezone.now()
+        _, flood = score(candidate(1, 5, {"kind:meal": 1}, impressions=4, dismissals=1000), InterestProfile(), self.weights, now)
+        _, all_of_them = score(candidate(2, 5, {"kind:meal": 1}, impressions=4, dismissals=4), InterestProfile(), self.weights, now)
+        self.assertEqual(flood["hide_rate"], all_of_them["hide_rate"])
+        self.assertGreaterEqual(flood["hide_rate"], -self.weights.hide_rate * recommendations.HIDE_RATE_CEILING)
+
     def test_fatigue_and_detail_are_read_from_the_profile(self):
         profile = InterestProfile(
             topics={"exercise:deadlift": 0.8}, fatigue={9: 0.5},
@@ -154,10 +163,18 @@ class ReRankingTests(SimpleTestCase):
         self.assertLess(first_page(FeedWeights(discovery_every=0)), first_page(FeedWeights(discovery_every=0, cold_variety=0)))
 
     def test_a_rank_state_saved_before_followed_slots_were_tracked_still_loads(self):
-        state = RankState.load([7, {"3": 1}, [3], ["kind:meal"]])
-        self.assertEqual((state.position, state.authors_used[3], state.recent_followed), (7, 1, []))
-        again = RankState.load(state.dump())
-        self.assertEqual(again.dump(), state.dump())
+        for used in ({3: 1}, {"3": 1}):
+            state = RankState.load([7, used, [3], ["kind:meal"]])
+            self.assertEqual((state.position, state.authors_used[3], state.recent_followed), (7, 1, []))
+            again = RankState.load(state.dump())
+            self.assertEqual(again.dump(), state.dump())
+
+    def test_the_other_version_never_reads_a_session(self):
+        """Sessions are kept under a versioned key, so during a rolling
+        deploy or a rollback a cursor from the other version opens nothing
+        and ranks afresh, rather than meeting a state it cannot read."""
+        self.assertIn(":v3:", recommendations._session_key(1, "abc"))
+        self.assertNotEqual(recommendations._session_key(1, "abc"), "for-you:1:abc")
 
 
 # ------------------------------------------------------------- end to end
@@ -247,6 +264,25 @@ class ExerciseInterestTests(ForYouTestCase):
             results = self.feed(token, page_size=30).data["results"]
         reasons = {item["id"]: item["recommendation"]["label"] for item in results}
         self.assertIn("Because you like deadlift", {reasons.get(post.pk) for post in self.deadlifts[2:]})
+
+    def test_one_person_spelling_a_name_three_ways_is_still_one_person(self):
+        for spelling in ("Zercher Squat", "zercher squat", "ZERCHER SQUAT"):
+            lifting_with(self.lifters[1], spelling)
+        cache.clear()
+        self.assertNotIn("zercher squat", recommendations.exercise_vocabulary())
+        for lifter in self.lifters[2:]:
+            lifting_with(lifter, "Zercher squat")
+        cache.clear()
+        self.assertIn("zercher squat", recommendations.exercise_vocabulary())
+
+    def test_favourite_lifts_never_push_other_interests_out(self):
+        reader, _ = self.reader("lifts_and_eats", [], emphasis="Nutrition")
+        for post in self.deadlifts + self.presses:
+            PostLike.objects.create(post=post, user=reader)
+        profile = build_profile(reader)
+        self.assertIn("kind:meal", profile.top_topics(5))
+        self.assertTrue(all(not topic.startswith("exercise:") for topic in profile.top_topics(5)))
+        self.assertTrue(profile.top_topics(3, exercises=True))
 
     def test_the_exercise_shows_among_what_the_page_picked_up(self):
         reader, token = self.reader("puller_interests", [])

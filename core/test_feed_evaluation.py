@@ -25,10 +25,12 @@ and come back for a second visit.
 
 Two arms, on the same world and the same dice:
 
-- **baseline**: the ranking as it was before `App-Algorithm` -- raw counts,
-  no rejection rates, no bait, exercise, fatigue, rewatch, followed-share or
-  cold-start variety, the previous action values, and no moderation
-  cooldown;
+- **baseline**: every new part switched off -- raw counts, no rejection
+  rates, no bait, exercise, fatigue, rewatch, followed-share or cold-start
+  variety, the previous action values, and no moderation cooldown. Close to
+  the ranking before `App-Algorithm`, not identical: the rules that are not
+  weights (new accounts in trending and taste, rates from established viewers
+  only, cleaned impressions, the separate exercise source) stay on;
 - **current**: the defaults.
 
 Run with `FEED_EVAL_REPORT=1` to print every figure for both arms, and with

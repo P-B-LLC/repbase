@@ -72,10 +72,9 @@ TRUST_TTL_SECONDS = 15 * 60
 #: Accounts looked up per query, so a very long list never meets a
 #: database's limit on parameters.
 TRUST_CHUNK = 5000
-#: The shared lists of suspended and recently made accounts are worked out
-#: once for everybody this often. Suspending an account reaches the counts
-#: within this long; everything it posted leaves every feed at once, as it
-#: always has.
+#: The shared list of suspended accounts is worked out once for everybody
+#: this often. Suspending an account reaches the counts within this long;
+#: everything it posted leaves every feed at once, as it always has.
 INACTIVE_TTL_SECONDS = 5 * 60
 
 
@@ -128,15 +127,34 @@ def _chunks(ids):
         yield ids[start:start + TRUST_CHUNK]
 
 
+def young_since(now):
+    """Accounts that joined after this are young enough to be looked at
+    (FOCUS_YOUNG_DAYS, and never less than NEW_ACCOUNT_HOURS)."""
+    return now - max(timedelta(days=FOCUS_YOUNG_DAYS), timedelta(hours=NEW_ACCOUNT_HOURS))
+
+
+def new_since(now):
+    """Accounts that joined after this are brand new (NEW_ACCOUNT_HOURS)."""
+    return now - timedelta(hours=NEW_ACCOUNT_HOURS)
+
+
 def bursting_accounts(now=None):
     """{account id: likes in the last hour} for every account over
-    LIKE_BURST, worked out once for everybody. One query over the last hour
-    of likes, rather than one lookup per liker per ranking."""
+    LIKE_BURST, worked out once for everybody.
+
+    Likes are numbered in the order they were made, so the last hour of them
+    is the newest stretch of ids: the boundary is found by walking back from
+    the newest like to the first one older than an hour, and only the likes
+    after it are counted. The work is the last hour's likes, not the table."""
     found = cache.get("for-you:bursting")
     if found is None:
         now = now or timezone.now()
+        cutoff = now - timedelta(hours=1)
+        boundary = (
+            PostLike.objects.filter(created_at__lt=cutoff).order_by("-pk").values_list("pk", flat=True).first()
+        ) or 0
         found = dict(
-            PostLike.objects.filter(created_at__gte=now - timedelta(hours=1))
+            PostLike.objects.filter(pk__gt=boundary, created_at__gte=cutoff)
             .order_by().values("user_id").annotate(n=Count("pk")).filter(n__gt=LIKE_BURST)
             .values_list("user_id", "n")
         )
@@ -153,26 +171,6 @@ def inactive_accounts():
         found = sorted(RepbaseUser.objects.filter(user__is_active=False).values_list("pk", flat=True))
         cache.set("for-you:inactive", found, INACTIVE_TTL_SECONDS)
     return found
-
-
-def recent_accounts(now=None):
-    """{account id: when it joined} for every account younger than
-    FOCUS_YOUNG_DAYS, worked out once for everybody. Everything trust needs
-    to know about an account's age, without looking each one up."""
-    found = cache.get("for-you:recent-accounts")
-    if found is None:
-        now = now or timezone.now()
-        since = now - max(timedelta(days=FOCUS_YOUNG_DAYS), timedelta(hours=NEW_ACCOUNT_HOURS))
-        found = dict(RepbaseUser.objects.filter(created_at__gt=since).values_list("pk", "created_at"))
-        cache.set("for-you:recent-accounts", found, INACTIVE_TTL_SECONDS)
-    return found
-
-
-def new_accounts(now=None):
-    """The ids of accounts younger than NEW_ACCOUNT_HOURS."""
-    now = now or timezone.now()
-    young = now - timedelta(hours=NEW_ACCOUNT_HOURS)
-    return sorted(pk for pk, joined in recent_accounts(now).items() if joined > young)
 
 
 def _compute_focus(account_ids, now):
@@ -200,31 +198,34 @@ def _compute_focus(account_ids, now):
     return found
 
 
-def account_trust(account_ids, now=None):
-    """{account id: Trust}.
+def account_trust(joined, now=None):
+    """{account id: Trust} for {account id: when it joined}.
 
-    Made from lists shared by everybody -- who is suspended, who joined
-    lately, who is bursting -- and, for the young accounts among these, how
-    single-minded each is, which is cached per account for
-    TRUST_TTL_SECONDS. Nothing is looked up per account otherwise: an
+    The caller passes when each account joined, read with the rows it is
+    counting, so an account made a minute ago is known to be new however
+    recently anything was cached. From that, the shared lists of suspended
+    and bursting accounts, and -- for young accounts only -- how
+    single-minded each is (cached per account for TRUST_TTL_SECONDS). An
     established account that is not bursting is simply trusted, which is
     what nearly every account is."""
     from .recommendations import _cached_many
 
     now = now or timezone.now()
-    young = now - timedelta(hours=NEW_ACCOUNT_HOURS)
+    brand_new, young = new_since(now), young_since(now)
     inactive = set(inactive_accounts())
-    recent = recent_accounts(now)
     bursts = bursting_accounts(now)
-    asked = [pk for pk in account_ids if pk in recent and pk not in inactive]
-    focus = _cached_many("focus", asked, lambda ids: _compute_focus(ids, now), TRUST_TTL_SECONDS) if asked else {}
+    asked = sorted(
+        pk for pk, when in joined.items() if when is not None and when > young and pk not in inactive
+    )
+    focus = (
+        _cached_many("focus", asked, lambda ids: _compute_focus(ids, now), TRUST_TTL_SECONDS) if asked else {}
+    )
     found = {}
-    for pk in account_ids:
+    for pk, when in joined.items():
         if pk in inactive:
             found[pk] = Trust(base=0.0)
             continue
-        joined = recent.get(pk)
-        new = joined is not None and joined > young
+        new = when is not None and when > brand_new
         base = NEW_ACCOUNT_TRUST if new else 1.0
         burst = bursts.get(pk, 0)
         if burst > LIKE_BURST:
@@ -240,15 +241,21 @@ def account_trust(account_ids, now=None):
     return found
 
 
+def trust_by_id(account_ids, now=None):
+    """`account_trust` for accounts the caller has only the ids of. One
+    query for when they joined."""
+    joined = dict(RepbaseUser.objects.filter(pk__in=list(account_ids)).values_list("pk", "created_at"))
+    return account_trust({pk: joined.get(pk) for pk in account_ids}, now)
+
+
 # -------------------------------------------------------- recent moderation
 
 #: An author with a post taken down, or a clip rejected, by a moderator this
 #: recently is not recommended to people who do not follow them. Their
-#: followers chose them and still see them. Undoing the takedown restores
-#: them, because `hidden_at` is cleared with it. Worked out once for
-#: everybody every MODERATED_TTL_SECONDS, so a decision reaches For You
-#: within a minute; the post a moderator took down leaves every feed at
-#: once, as it always has.
+#: followers chose them and still see them. Worked out once for everybody
+#: every MODERATED_TTL_SECONDS, so a decision reaches For You within a
+#: minute; the post a moderator took down leaves every feed at once, as it
+#: always has.
 MODERATION_COOLDOWN_DAYS = 30
 MODERATED_TTL_SECONDS = 60
 
@@ -256,18 +263,49 @@ MODERATED_TTL_SECONDS = 60
 def recently_moderated_authors(now=None):
     """The ids of authors a moderator acted against within
     MODERATION_COOLDOWN_DAYS. A short list, so the ranking can leave them out
-    with a plain IN rather than a correlated subquery on every candidate."""
+    with a plain IN rather than a correlated subquery on every candidate.
+
+    Read from three places:
+
+    - posts still hidden by a moderator (`hidden_at` is cleared by undoing
+      it, which lifts the cooldown);
+    - clips still rejected;
+    - the access portal's audit of hide decisions, which outlives the post:
+      an author who deletes the post a moderator hid does not delete the
+      decision with it. A decision whose post is still there and no longer
+      hidden was undone, and does not count.
+
+    A takedown made in the Django admin, or a rejected clip the author then
+    deletes, leaves no record that outlives the post, so deleting it ends
+    the cooldown early (see RECOMMENDATIONS.md, "Known limits")."""
+    from .access_models import AccessAudit
+
     found = cache.get("for-you:moderated")
     if found is None:
         now = now or timezone.now()
         since = now - timedelta(days=MODERATION_COOLDOWN_DAYS)
-        found = sorted(
-            set(Post.objects.filter(is_hidden=True, hidden_at__gte=since).values_list("author_id", flat=True))
-            | set(
-                PostVideo.objects.filter(status=PostVideo.Status.REJECTED, reviewed_at__gte=since)
-                .values_list("post__author_id", flat=True)
-            )
+        authors = set(
+            Post.objects.filter(is_hidden=True, hidden_at__gte=since).values_list("author_id", flat=True)
         )
+        authors |= set(
+            PostVideo.objects.filter(status=PostVideo.Status.REJECTED, reviewed_at__gte=since)
+            .values_list("post__author_id", flat=True)
+        )
+        decisions = {}
+        for subject, target in AccessAudit.objects.filter(
+            action="moderation_hide", created_at__gte=since, subject__startswith="post:", target__isnull=False,
+        ).values_list("subject", "target_id"):
+            try:
+                decisions[int(subject.split(":", 1)[1])] = target
+            except ValueError:
+                continue
+        if decisions:
+            undone = set(
+                Post.objects.filter(pk__in=list(decisions), is_hidden=False).values_list("pk", flat=True)
+            )
+            users = {target for post_id, target in decisions.items() if post_id not in undone}
+            authors |= set(RepbaseUser.objects.filter(user_id__in=users).values_list("pk", flat=True))
+        found = sorted(authors)
         cache.set("for-you:moderated", found, MODERATED_TTL_SECONDS)
     return found
 
@@ -284,14 +322,19 @@ def recently_moderated_authors(now=None):
 
 _BAIT = re.compile(
     r"\b("
-    r"like\s+(this\s+)?if|double[\s-]?tap\s+if|smash\s+(that\s+)?like|"
-    r"like\s+for\s+like|l4l|follow\s+for\s+follow|f4f|follow\s+back|"
+    # Asking for the like itself -- but not "I would like if...".
+    r"(?<!would )(?<!'d )(?<!to )like\s+(this\s+(post\s+)?)?if\s+you\b|"
+    r"double[\s-]?tap\s+if|smash\s+(that\s+)?like|like\s+and\s+(follow|share)|"
+    r"like\s+for\s+like|l4l|follow\s+for\s+follow|f4f|"
+    r"follow\s+back(?=\s*(?:[!?.,]|$))|follow\s+(me\s+)?for\s+more|"
     r"tag\s+(a|\d+|your)\s+(friends?|mates?|buddy|buddies|bros?|people)|"
-    r"share\s+(this\s+)?if|comment\s+(yes|\S+)\s+if|"
-    r"type\s+[\"']?\S+[\"']?\s+(below|in\s+the\s+comments)|"
-    r"follow\s+(me\s+)?for\s+more|like\s+and\s+follow"
-    r")\b",
-    re.IGNORECASE,
+    r"share\s+(this\s+)?(with|to)\s+(a|your)\s+(friends?|mates?)\s+(who|that)|"
+    r"share\s+this\s+if\s+you\b|"
+    r"comment\s+[\"']?(yes|no|me|done|amen|\d+)[\"']?\s+(if|for|to)\b|"
+    r"drop\s+an?\s+\S+\s+if\s+you\b|"
+    r"type\s+[\"']?(yes|me|done|amen|\d+)[\"']?\s+(below|in\s+the\s+comments)"
+    r")",
+    re.IGNORECASE | re.MULTILINE,
 )
 _PITCH = re.compile(
     r"\b("

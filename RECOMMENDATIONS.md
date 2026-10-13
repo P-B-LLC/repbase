@@ -130,11 +130,11 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
    | popularity | log-scaled trusted engagement | 0.6 |
    | watch | share of views that stayed (or finished the clip), smoothed | 0.6 |
    | skip_rate | −(share of viewers who scrolled straight past, smoothed toward 0.3 over 20 views, minus 0.3) | 1.0 |
-   | hide_rate | −(share of viewers who said "not interested", smoothed toward 0.005 over 50 views, minus 0.005) | 12.0 |
+   | hide_rate | −(share of viewers who said "not interested", smoothed toward 0.005 over 50 views, minus 0.005; at most 0.25) | 12.0 |
    | recency | halves every 36 hours | 1.2 |
    | newcomer | author joined in the last 60 days, fading as followers arrive (0 at 30) | 0.4 |
    | seen | how much having seen it counts (below) | −3.0 |
-   | fatigue | the author keeps being shown to this reader to no effect (above) | −0.8 |
+   | fatigue | the author keeps being shown to this reader to no effect (above) | −0.4 |
    | reported | open reports below the exclusion threshold | −1.0 |
    | bait | the caption farms likes (×1.0) or sells something (×0.7) | −1.5 |
    | jitter | tiny noise, so ties do not always break the same way | 0.02 |
@@ -146,7 +146,10 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
    and because both are what Instagram says matters most for reaching people
    who do not follow the author. A post with no views yet gets the priors for
    skip and hide rates, so those two parts are exactly 0 for it: neither
-   helped nor hurt until there is a record.
+   helped nor hurt until there is a record. Dismissals never count for more
+   than the views behind them, and the hide part is capped at −3.0, so no
+   amount of "not interested" can push a post below what a quarter of its
+   viewers turning it down would.
 
    **Exploration.** Quality is not pinned to a post's average: it is drawn
    from the gamma posterior its likes and views allow (Thompson sampling), and
@@ -170,9 +173,10 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
    best few posts by an author the reader has never interacted with, on a topic
    outside their top three, never one they have signalled against. For a
    reader who has said nothing yet -- no history, no onboarding answers, no
-   follows -- the topic cost is up to twice as high (`cold_variety`), falling
-   back to normal by 30 signals: a wider first page is how the page finds out
-   what they like. These rules carry across page boundaries (`RankState`).
+   follows -- and for a reader who turned personalisation off, the topic cost
+   is up to twice as high (`cold_variety`), falling back to normal by 30
+   signals: a wider first page is how the page finds out what they like. These
+   rules carry across page boundaries (`RankState`).
 6. **Explain** (`_reason`), most personal first:
 
    | Reason | Label |
@@ -197,7 +201,12 @@ API, or logged with an identity.
 
 **Whose engagement counts** (`account_trust`, and the counts in
 `_count_engagement`). Every like, comment, repost and save counts once per
-person and post, as much as that person can be trusted:
+person and post, as much as that person can be trusted. The database counts
+distinct people, leaving out the author and suspended accounts; only the
+engagement of the few people who count for less than one -- accounts younger
+than 30 days, and accounts bursting this hour -- is read row by row, with when
+each joined read from the same rows, so an account made a minute ago is known
+to be new however recently anything was cached:
 
 | | Counts for |
 | --- | --- |
@@ -212,19 +221,28 @@ person and post, as much as that person can be trusted:
 The last is the sockpuppet rule: a real fan likes other people too. Only young
 accounts are asked, because an account that has been around a month and likes
 one person is a superfan, and a ring that has to age its accounts first is a
-far more expensive ring. Views, skips and "not interested" from suspended
-accounts are left out of every rate. The rows as they stand are counted too,
-and `trust` blends between the two (1 = trusted, the default; 0 = rows as
-before), so the whole rule set can be run as an experiment.
+far more expensive ring.
+
+The other side matters as much: a crowd must not be able to *bury* a post
+either. Views, scroll-pasts and "not interested" count toward a post's rates
+only from accounts past their first two days that are not suspended, and "not
+interested" only from somebody who was actually shown the post (a `PostView`
+of it).
+
+The rows as they stand are counted too, and `trust` blends between the two (1
+= trusted, the default; 0 = rows as before), so the likes, comments, reposts
+and saves rules can be run as an experiment.
 
 **What is not recommended**, however it is engaged with:
 
 - **Recent moderation.** An author a moderator took a post down from, or
   rejected a clip of, in the last 30 days is not shown to anybody who does not
   follow them (`MODERATION_COOLDOWN_DAYS`). Their followers chose them and
-  still see them. Undoing the takedown clears `hidden_at`, which lifts it. The
-  list of such authors is worked out once a minute for everyone; the post that
-  was taken down leaves every feed at once, as it always has.
+  still see them. The list is read from posts still hidden, clips still
+  rejected, and the access portal's audit of hide decisions -- which outlives
+  the post, so deleting a post the portal hid does not end the cooldown. Undoing
+  a takedown lifts it. The list is worked out once a minute for everyone; the
+  post that was taken down leaves every feed at once, as it always has.
 - **Bait and pitches.** A caption that asks for likes, follows, shares or tags
   ("like this if…", "tag a friend who…", "f4f", "follow for more") costs the
   full `bait` weight; one that sells ("DM me for coaching plans", "use my
@@ -384,14 +402,14 @@ Measured on PostgreSQL 16 with 20,000 accounts, 90,000 posts (30,000 inside
 the window), 960,000 likes, 3.4 million view rows, 420,000 follows and 120,000
 comments, over 30 readers, the ranking before `App-Algorithm` against this one
 on the same data and the same machine (two vCPUs, the database on the same
-box; run alternately to cancel out noise):
+box; each run twice, alternately, and averaged):
 
 | | before p50 | before p95 | after p50 | after p95 | queries before → after |
 | --- | --- | --- | --- | --- | --- |
-| first page, shared counts cached (normal) | 136 ms | 162 ms | 175 ms | 241 ms | 22 → 23 |
-| first page, cache empty (after a restart) | 438 ms | 506 ms | 798 ms | 872 ms | 30 → 43 |
-| later page, re-ranked | 52 ms | 61 ms | 62 ms | 83 ms | 15 → 15 |
-| people suggestions | 80 ms | 107 ms | 82 ms | 106 ms | 29 → 29 |
+| first page, shared counts cached (normal) | 137 ms | 165 ms | 182 ms | 216 ms | 22 → 24 |
+| first page, cache empty (after a restart) | 417 ms | 494 ms | 870 ms | 1,017 ms | 30 → 50 |
+| later page, re-ranked | 52 ms | 63 ms | 62 ms | 75 ms | 15 → 15 |
+| people suggestions | 84 ms | 110 ms | 85 ms | 109 ms | 29 → 30 |
 
 The cost of counting only trusted engagement is paid when per-post counts are
 worked out, which with a shared cache is once per post per ten minutes, not
@@ -402,9 +420,13 @@ Indexes it relies on: `PostLike(user, -created_at)`, `PostComment(author,
 -created_at)`, `PostView(viewer, -last_seen_at)`, `PostView(surface,
 first_seen_at)`, `PostFeedback(viewer, -created_at)`, the unique pairs on the
 like, view and feedback tables, the foreign-key indexes the counts read, and
-`Post(-created_at, -id)`, which the fresh source walks. No new index or
-migration was needed. A later page re-checks up to 400 remaining candidates;
-that is most of its cost.
+`Post(-created_at, -id)`, which the fresh source walks. No migration was
+needed. Two shared lists are refreshed by scans worth knowing about: the
+moderation cooldown reads hidden posts once a minute (there is no index on
+`is_hidden`; a partial index is the fix if posts reach the millions), and the
+bursting list reads the last hour of likes every five minutes, found by
+walking back the primary key rather than scanning the table. A later page
+re-checks up to 400 remaining candidates; that is most of its cost.
 
 When the community outgrows this -- hundreds of thousands of posts a month --
 the next step is a table of per-post counts (raw and trusted) kept up to date
@@ -458,30 +480,38 @@ FEED_EVAL_REPORT=1 python manage.py test core.test_feed_evaluation    # both arm
 FEED_EVAL_ABLATION=1 python manage.py test core.test_feed_evaluation  # each new part off in turn
 ```
 
-The ranking before `App-Algorithm` against this one:
+Every new part switched off (the weights below, and no moderation cooldown)
+against the defaults. "Off" is close to the ranking before `App-Algorithm` but
+not identical to it: the rules that are not weights -- the trending and
+neighbour rules for new accounts, trusted views, cleaned impressions, the
+separate exercise source -- are on in both arms.
 
-| | before | after |
+| | all new parts off | defaults |
 | --- | --- | --- |
-| mean utility of what was served (0–1, what readers actually wanted) | 0.505 | 0.522 |
+| mean utility of what was served (0–1, what readers actually wanted) | 0.505 | 0.515 |
 | utility of the first page for readers with no history | 0.303 | 0.362 |
-| share of the first page in a reader's favourite topics | 0.608 | 0.613 |
-| served from the ring, bait or the moderated author | 10.1% | 2.2% |
+| share of the first page in a reader's favourite topics | 0.600 | 0.604 |
+| served from the ring, bait or the moderated author | 9.7% | 2.2% |
 | …of those in anybody's top three | 14 | 0 |
-| served from the moderated author | 2.5% | 0% |
-| served on a topic the reader dislikes | 4.7% | 3.3% |
-| served from new creators | 9.3% | 11.0% |
-| from people the reader does not follow | 93.6% | 93.3% |
-| distinct authors per 30 posts | 22.7 | 21.9 |
-| largest single author's share | 8.9% | 9.3% |
-| simulated likes | 554 | 570 |
+| served from the moderated author | 2.4% | 0% |
+| served on a topic the reader dislikes | 4.7% | 4.0% |
+| served from new creators | 9.3% | 11.4% |
+| from people the reader does not follow | 93.3% | 93.3% |
+| distinct authors per 30 posts | 22.7 | 22.3 |
+| largest single author's share | 9.2% | 9.0% |
 
-What each new part is worth, by switching it off (mean utility, integrity
-exposure): trust 0.522 → 0.496 and 2.2% → 3.9%; rejection rates → 0.509 and
-3.5%; bait → 0.507 and 5.1%; the new action values → 0.513 and 2.9%;
-fatigue → 0.515. `detail` at full weight narrowed pages onto the few creators
-of one lift without raising utility, which is why it ships at half; it is the
-first thing to run as an experiment. The slight loss of author spread is the
-cost of ranking better posts higher; `author_repeat` is the weight to raise
+What each new part is worth, by switching it off (mean utility; share served
+from the ring, bait or the moderated author): trust 0.515 → 0.497 and 2.2% →
+3.8%; rejection rates → 0.508 and 3.1%; bait → 0.504 and 5.4%; the new action
+values → 0.510 and 2.9%. Two parts measure slightly *negative* here, inside
+what this small world can tell apart: `detail` (0.518 without it) and
+`fatigue` (0.521 without it). The simulation treats "did not like it" as a coin
+that came up tails, which is weaker evidence than a person ignoring somebody
+again and again, and it gives a favourite exercise only a small bonus. Both
+ship at modest weights -- fatigue exists to stop the same ignored creator
+coming back, which this utility does not score -- and both are the first
+things to run as an experiment (below). The slight loss of author spread is
+the cost of ranking better posts higher; `author_repeat` is the weight to raise
 if it matters more.
 
 The test asserts the claims that should hold whatever the weights: the ring
@@ -508,8 +538,7 @@ creators; a falling engagement rate with stable coverage usually means recency
 is outweighing quality. Do not tune for time spent alone: a page can hold
 people longer by being worse for them.
 
-Every part added in `App-Algorithm` has a weight that turns it off, so the
-ranking before it is one setting away:
+Every scored part added in `App-Algorithm` has a weight that turns it off:
 
 ```python
 FOR_YOU_WEIGHTS = {
@@ -519,8 +548,22 @@ FOR_YOU_WEIGHTS = {
 }
 ```
 
-The moderation cooldown is a rule, not a weight: `MODERATION_COOLDOWN_DAYS`
-in `core/feed_integrity.py`.
+That is most of the ranking before it, but not all: the eligibility and
+counting rules are rules, not weights -- the moderation cooldown
+(`MODERATION_COOLDOWN_DAYS` in `core/feed_integrity.py`), trending and taste
+neighbours leaving out new accounts, rates counted only from established
+viewers, watching believed only of real clips, and the separate exercise
+source.
+
+The first experiment worth running is the two parts the simulation could not
+settle:
+
+```python
+FOR_YOU_EXPERIMENT = {
+    "name": "detail-fatigue-2026-11",
+    "variants": {"control": {}, "without": {"detail": 0, "fatigue": 0}},
+}
+```
 
 ## Experiments
 
@@ -575,6 +618,29 @@ Sources: [Instagram Ranking Explained (2023)](https://about.instagram.com/blog/a
 [A new ranking framework for notification quality on Instagram (2025)](https://engineering.fb.com/2025/09/02/ml-applications/a-new-ranking-framework-for-better-notification-quality-on-instagram/),
 [Reshape your Instagram with a recommendations reset (2024)](https://about.fb.com/news/2024/11/introducing-recommendations-reset-instagram/),
 [Instagram shares algorithm insights (Social Media Today, 2025)](https://www.socialmediatoday.com/news/instagram-shares-algorithm-insights-2025/738034/).
+
+## Known limits
+
+- **Not every takedown outlives its post.** A post hidden in the Django admin,
+  or a clip rejected there, leaves no record that survives the post being
+  deleted, so an author who deletes it ends their cooldown early. The access
+  portal's decisions are audited and do not have this gap. The fix is for every
+  moderation path to write the same audit row (or a `moderated_at` on the
+  account); it touches the moderation code, so it is proposed separately.
+- **Reports are counted from anybody.** Three open reports from different
+  accounts -- fresh ones included -- take a post out of For You until a
+  moderator looks. That predates this branch and is deliberately safety-first;
+  weighting reports by trust would trade some of that safety for resistance to
+  report-bombing, which is a moderation decision.
+- **Suspensions reach the counts within five minutes** (the shared list of
+  suspended accounts), and moderation decisions the cooldown within a minute.
+- **Exercise names come from posts.** A name three different people used in
+  the last month is a topic, and can appear in a reader's own interests and
+  reasons. Only the reader ever sees their interests.
+- **The simulation is a small world.** Differences in utility under about
+  0.01 are within what it can tell apart; it is for catching regressions and
+  manipulation, not for fine-tuning weights. `feed_report` and experiments on
+  real traffic are.
 
 ## API for clients
 
