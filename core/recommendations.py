@@ -28,11 +28,11 @@ what it does, and `FOR_YOU_WEIGHTS` in settings can move any of them.
    hid, not carrying a clip still waiting for review, not something
    enough people have reported that a moderator should look first, and not
    -- unless they follow them -- by somebody a moderator acted against in
-   the last month (`core.feed_integrity`). Drawn
-   from five places at once -- the newest posts, people they follow, their
-   best topics, what people with similar taste liked, and what the whole
-   community has been liking this week -- each capped, so the work stays the
-   same size however much is posted.
+   the last month (`core.feed_integrity`). Drawn from up to six places at
+   once -- the newest posts, people they follow, their best topics, the
+   exercises they go for, what people with similar taste liked, and what the
+   whole community has been liking this week -- each capped, so the work
+   stays the same size however much is posted.
 
 3. **How good a match each one is** (`score`). How well it suits the
    reader -- topic, exercises, momentum, author, following, similar taste --
@@ -91,16 +91,17 @@ from django.core.cache import cache
 from django.core.exceptions import ImproperlyConfigured
 from django.db import connection
 from django.db.models import Count, Exists, F, OuterRef, Q, Subquery, Value
-from django.db.models.functions import Coalesce, Lower, Trim
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from .feed_integrity import (
     FULL_TRUST,
-    NEW_ACCOUNT_HOURS,
     account_trust,
     blend,
     caption_flags,
-    recently_moderated,
+    inactive_accounts,
+    new_accounts,
+    recently_moderated_authors,
 )
 from .models import (
     Block,
@@ -183,7 +184,10 @@ class FeedWeights:
     bait: float = 1.5
     #: Match between the exercises in a workout and the ones the reader
     #: goes for -- the detail under the topic: deadlifts, not just lifting.
-    detail: float = 1.0
+    #: Half the weight of the topic it refines: on the simulated community
+    #: (`core.test_feed_evaluation`) a full weight narrowed pages onto the
+    #: few creators of one lift without making them any better liked.
+    detail: float = 0.5
     #: Penalty for an author the reader keeps being shown lately and has
     #: never once engaged with. Does not apply to people they follow.
     fatigue: float = 0.8
@@ -426,6 +430,9 @@ DETAIL_SHARE = 0.5
 #: even when it is not in the shared catalogue.
 VOCABULARY_AUTHORS = 3
 VOCABULARY_TTL_SECONDS = 60 * 60
+#: A posted workout's exercises are frozen when it is posted, so they are
+#: kept for as long as a post is likely to be a candidate on any page.
+EXERCISES_TTL_SECONDS = 6 * 60 * 60
 
 
 # -------------------------------------------------------------------- topics
@@ -537,58 +544,79 @@ def _exercise_key(name):
 
 
 def exercise_vocabulary(now=None):
-    """The exercise names that can be topics, lowercased: the shared
-    catalogue, and any name at least VOCABULARY_AUTHORS different people
-    posted workouts with lately. Worked out once an hour for everybody.
+    """{lowercased exercise name: [the names as written]} for every exercise
+    that can be a topic: the shared catalogue, and any name at least
+    VOCABULARY_AUTHORS different people posted workouts with in the last
+    WINDOW_DAYS -- the posts that can be recommended at all. Worked out once
+    an hour for everybody.
 
     A known vocabulary rather than whatever anybody typed, because what the
     page learns is shown back to the reader as their interests: a name only
     one person uses is that person's, not a topic, and would never match
-    anybody else's posts anyway."""
-    found = cache.get("for-you:vocabulary")
+    anybody else's posts anyway. The names as written are kept so a
+    candidate source can match them exactly, which an index can help with
+    and a lowercased comparison cannot."""
+    found = cache.get("for-you:exercises")
     if found is None:
         now = now or timezone.now()
-        found = {
-            _exercise_key(name)
-            for name in Exercise.objects.filter(created_by__isnull=True).values_list("name", flat=True)
-        }
-        found.update(
+        spellings, people = {}, Counter()
+        for name, n in (
             PostWorkoutExercise.objects.filter(
-                post_workout__post__created_at__gte=now - timedelta(days=HISTORY_DAYS)
+                post_workout__post__created_at__gte=now - timedelta(days=WINDOW_DAYS)
             )
-            .annotate(key=Lower(Trim("name"))).order_by().values("key")
+            .order_by().values("name")
             .annotate(people=Count("post_workout__post__author", distinct=True))
-            .filter(people__gte=VOCABULARY_AUTHORS).values_list("key", flat=True)
-        )
-        found.discard("")
-        found = sorted(found)
-        cache.set("for-you:vocabulary", found, VOCABULARY_TTL_SECONDS)
-    return set(found)
+            .values_list("name", "people")
+        ):
+            key = _exercise_key(name)
+            if key:
+                spellings.setdefault(key, set()).add(name)
+                people[key] += n
+        found = {key: sorted(names) for key, names in spellings.items() if people[key] >= VOCABULARY_AUTHORS}
+        for name in Exercise.objects.filter(created_by__isnull=True).values_list("name", flat=True):
+            key = _exercise_key(name)
+            if key:
+                found[key] = sorted(set(found.get(key, ())) | set(spellings.get(key, ())) | {name})
+        cache.set("for-you:exercises", found, VOCABULARY_TTL_SECONDS)
+    return found
 
 
 def exercise_topic(name):
     return "exercise:" + _exercise_key(name)
 
 
-def details_by_post(post_ids):
-    """{post id: {exercise topic: share}} for the workouts among these
-    posts: their most-performed exercises from the vocabulary, at most
-    DETAIL_LIMIT. One query for any number of posts."""
-    if not post_ids:
-        return {}
-    vocabulary = exercise_vocabulary()
-    rows = {}
+def _count_exercises(post_ids):
+    """{post id: [exercise names, most-performed first]}. What a posted
+    workout contains never changes, so this is shared for a long time."""
+    found = {pk: [] for pk in post_ids}
     for post_id, name in PostWorkoutExercise.objects.filter(
         post_workout__post_id__in=list(post_ids)
     ).order_by("post_workout__post_id", "-set_count", "order", "id").values_list(
         "post_workout__post_id", "name"
     ):
-        if _exercise_key(name) not in vocabulary:
-            continue
-        found = rows.setdefault(post_id, {})
-        topic = exercise_topic(name)
-        if len(found) < DETAIL_LIMIT and topic not in found:
-            found[topic] = 1.0
+        found[post_id].append(name)
+    return found
+
+
+def details_by_post(post_ids):
+    """{post id: {exercise topic: share}} for the workouts among these
+    posts: their most-performed exercises from the vocabulary, at most
+    DETAIL_LIMIT. At most one query for any number of posts, and none for
+    posts looked at in the last EXERCISES_TTL_SECONDS."""
+    if not post_ids:
+        return {}
+    vocabulary = exercise_vocabulary()
+    rows = {}
+    for post_id, names in _cached_many(
+        "exercises", sorted(post_ids), _count_exercises, EXERCISES_TTL_SECONDS
+    ).items():
+        for name in names:
+            if _exercise_key(name) not in vocabulary:
+                continue
+            found = rows.setdefault(post_id, {})
+            topic = exercise_topic(name)
+            if len(found) < DETAIL_LIMIT and topic not in found:
+                found[topic] = 1.0
     return rows
 
 
@@ -619,10 +647,12 @@ def _topic_filter(topics):
         match |= Exists(PostVideo.objects.filter(post=OuterRef("pk")))
     exercises = [topic.split(":", 1)[1] for topic in topics if topic.startswith("exercise:")]
     if exercises:
-        match |= Exists(
-            PostWorkoutExercise.objects.annotate(key=Lower(Trim("name")))
-            .filter(post_workout__post=OuterRef("pk"), key__in=exercises)
-        )
+        vocabulary = exercise_vocabulary()
+        names = sorted({name for key in exercises for name in vocabulary.get(key, ())})
+        if names:
+            match |= Exists(PostWorkoutExercise.objects.filter(
+                post_workout__post=OuterRef("pk"), name__in=names
+            ))
     return match or None
 
 
@@ -1037,81 +1067,78 @@ def _grouped(queryset, field_name, **counts):
     return {row[field_name]: row for row in rows}
 
 
-def _people(queryset, post_field, person, now, also=None):
-    """{post id: {rows, people, new_people}} in one query: every row, and
-    the distinct people behind them who are neither the post's author nor
-    suspended (and meet `also`), and how many of those are brand new. What a
-    comment, a repost or a save counts for: one per person, however many
-    times they did it."""
-    young = now - timedelta(hours=NEW_ACCOUNT_HOURS)
-    counted = (
-        Q(**{f"{person}__user__is_active": True})
-        & ~Q(**{f"{person}_id": F(f"{post_field}__author_id")})
+def _pairs(queryset, post_field, person):
+    """[(post id, person id, author id, rows)] in one query: who did this to
+    which post, and how many times."""
+    return list(
+        queryset.order_by().values(f"{post_field}_id", f"{person}_id", f"{post_field}__author_id")
+        .annotate(n=Count("pk"))
+        .values_list(f"{post_field}_id", f"{person}_id", f"{post_field}__author_id", "n")
     )
-    if also is not None:
-        counted &= also
-    return _grouped(
-        queryset, f"{post_field}_id",
-        rows=Count("pk"),
-        people=Count(f"{person}_id", distinct=True, filter=counted),
-        new_people=Count(
-            f"{person}_id", distinct=True,
-            filter=counted & Q(**{f"{person}__created_at__gt": young}),
-        ),
-    )
-
-
-def _trusted_people(table, pk):
-    """People, with the brand new ones counted at NEW_ACCOUNT_TRUST."""
-    from .feed_integrity import NEW_ACCOUNT_TRUST
-
-    row = table.get(pk)
-    if not row:
-        return 0.0
-    return row["people"] - (1 - NEW_ACCOUNT_TRUST) * row["new_people"]
 
 
 def _count_engagement(post_ids, now=None):
-    now = now or timezone.now()
-    # Likes row by row, because how much one counts depends on who gave it
-    # and on whose post (core.feed_integrity.Trust). One like per person and
-    # post is already a constraint.
-    like_rows = list(
-        PostLike.objects.filter(post_id__in=post_ids)
-        .values_list("post_id", "user_id", "post__author_id")
-    )
-    trust = account_trust({user for _, user, _ in like_rows}, now)
-    likes, trusted_likes = Counter(), Counter()
-    for post_id, user_id, author_id in like_rows:
-        likes[post_id] += 1
-        if user_id != author_id:
-            trusted_likes[post_id] += trust.get(user_id, FULL_TRUST).for_author(author_id)
+    """Every post's counts, as the rows stand and from trusted accounts.
 
-    # A comment a moderator hid is not counted at all. One from somebody
-    # the author has blocked, or the author's own reply, is not engagement
-    # to reward either, though it is still a row.
-    comments = _people(
-        PostComment.objects.filter(post_id__in=post_ids, is_hidden=False),
-        "post", "author", now,
-        also=~Exists(Block.objects.filter(blocker=OuterRef("post__author"), blocked=OuterRef("author"))),
-    )
-    shares = _people(Post.objects.filter(repost_of_id__in=post_ids), "repost_of", "author", now)
-    workout_saves = _people(
-        WorkoutTemplate.objects.filter(source_post_id__in=post_ids), "source_post", "owner", now
-    )
-    meal_saves = _people(
-        SavedFoodMeal.objects.filter(source_post_id__in=post_ids), "source_post", "owner", now
-    )
-    active_viewer = Q(viewer__user__is_active=True)
+    Who did what to which post, a row per person and post, so that each
+    action counts once per person and as much as that person can be trusted
+    (`core.feed_integrity.Trust`): never the author's own, nothing from a
+    suspended account, less from brand-new, bursting or single-minded ones.
+    A fixed number of queries for any number of posts."""
+    now = now or timezone.now()
+    actions = {
+        # One like per person and post is already a constraint, so the rows
+        # are the pairs.
+        "likes": [
+            (post_id, user_id, author_id, 1)
+            for post_id, user_id, author_id in PostLike.objects.filter(post_id__in=post_ids)
+            .values_list("post_id", "user_id", "post__author_id")
+        ],
+        # A comment a moderator hid is not counted at all.
+        "comments": _pairs(
+            PostComment.objects.filter(post_id__in=post_ids, is_hidden=False), "post", "author"
+        ),
+        "shares": _pairs(Post.objects.filter(repost_of_id__in=post_ids), "repost_of", "author"),
+        "saves": _pairs(WorkoutTemplate.objects.filter(source_post_id__in=post_ids), "source_post", "owner")
+        + _pairs(SavedFoodMeal.objects.filter(source_post_id__in=post_ids), "source_post", "owner"),
+    }
+    people = {person for rows in actions.values() for _, person, _, _ in rows}
+    trust = account_trust(people, now)
+    # A comment from somebody the author has blocked is not engagement to
+    # reward, though it is still a row.
+    commenters = {person for _, person, _, _ in actions["comments"]}
+    blocked = set(
+        Block.objects.filter(
+            blocker_id__in={author for _, _, author, _ in actions["comments"]},
+            blocked_id__in=commenters,
+        ).values_list("blocker_id", "blocked_id")
+    ) if commenters else set()
+
+    raw = {name: Counter() for name in actions}
+    trusted = {name: Counter() for name in actions}
+    for name, rows in actions.items():
+        counted = set()
+        for post_id, person, author, n in rows:
+            raw[name][post_id] += n
+            if person == author or (post_id, person) in counted:
+                continue
+            if name == "comments" and (author, person) in blocked:
+                continue
+            counted.add((post_id, person))
+            trusted[name][post_id] += trust.get(person, FULL_TRUST).for_author(author)
+
+    # A suspended account's views and dismissals count no more than its
+    # likes. There are few of them, so they are a short list to leave out.
+    inactive = inactive_accounts()
     views = _grouped(
-        PostView.objects.filter(post_id__in=post_ids), "post_id",
-        impressions=Count("pk", filter=active_viewer),
-        long_views=Count("pk", filter=active_viewer & Q(total_dwell_ms__gte=LONG_VIEW_MS)),
-        completions=Count("pk", filter=active_viewer & Q(completed=True)),
-        skips=Count("pk", filter=active_viewer & Q(skipped=True)),
+        PostView.objects.filter(post_id__in=post_ids).exclude(viewer_id__in=inactive), "post_id",
+        impressions=Count("pk"),
+        long_views=Count("pk", filter=Q(total_dwell_ms__gte=LONG_VIEW_MS)),
+        completions=Count("pk", filter=Q(completed=True)),
+        skips=Count("pk", filter=Q(skipped=True)),
     )
     dismissals = _grouped(
-        PostFeedback.objects.filter(post_id__in=post_ids, viewer__user__is_active=True),
+        PostFeedback.objects.filter(post_id__in=post_ids).exclude(viewer_id__in=inactive),
         "post_id", n=Count("pk"),
     )
 
@@ -1120,17 +1147,17 @@ def _count_engagement(post_ids, now=None):
 
     return {
         pk: Engagement(
-            likes=likes[pk],
-            comments=n(comments, pk, "rows"),
-            shares=n(shares, pk, "rows"),
-            saves=n(workout_saves, pk, "rows") + n(meal_saves, pk, "rows"),
+            likes=raw["likes"][pk],
+            comments=raw["comments"][pk],
+            shares=raw["shares"][pk],
+            saves=raw["saves"][pk],
             impressions=n(views, pk, "impressions"),
             long_views=n(views, pk, "long_views"),
             completions=n(views, pk, "completions"),
-            trusted_likes=round(trusted_likes[pk], 4),
-            trusted_comments=_trusted_people(comments, pk),
-            trusted_shares=_trusted_people(shares, pk),
-            trusted_saves=_trusted_people(workout_saves, pk) + _trusted_people(meal_saves, pk),
+            trusted_likes=round(trusted["likes"][pk], 4),
+            trusted_comments=round(trusted["comments"][pk], 4),
+            trusted_shares=round(trusted["shares"][pk], 4),
+            trusted_saves=round(trusted["saves"][pk], 4),
             skips=n(views, pk, "skips"),
             dismissals=n(dismissals, pk),
         )
@@ -1172,9 +1199,8 @@ def trending_post_ids(now=None):
             PostLike.objects.filter(
                 created_at__gte=now - timedelta(days=TRENDING_DAYS),
                 post__created_at__gte=now - timedelta(days=WINDOW_DAYS),
-                user__user__is_active=True,
-                user__created_at__lte=now - timedelta(hours=NEW_ACCOUNT_HOURS),
             )
+            .exclude(user_id__in=sorted(set(inactive_accounts()) | set(new_accounts(now))))
             .exclude(user_id=F("post__author_id"))
             .order_by().values("post_id").annotate(n=Count("pk"))
             .order_by("-n", "-post_id").values_list("post_id", flat=True)[:TRENDING_LIMIT]
@@ -1304,12 +1330,13 @@ def eligible_posts(viewer, now=None, hidden=()):
         )
         .annotate(open_reports=Coalesce(Subquery(open_reports), Value(0)))
         .filter(open_reports__lt=REPORT_THRESHOLD)
-        # An author a moderator acted against lately is not put in front of
-        # strangers (core.feed_integrity.MODERATION_COOLDOWN_DAYS). Their
-        # followers chose them, and still get them.
-        .annotate(author_moderated=recently_moderated("author", now))
-        .exclude(author_moderated=True, viewer_follows_author=False)
     )
+    # An author a moderator acted against lately is not put in front of
+    # strangers (core.feed_integrity.MODERATION_COOLDOWN_DAYS). Their
+    # followers chose them, and still get them.
+    moderated = recently_moderated_authors(now)
+    if moderated:
+        queryset = queryset.exclude(author_id__in=moderated, viewer_follows_author=False)
     hiding = _topic_filter([topic for topic in hidden if topic in HIDEABLE_TOPICS])
     if hiding is not None:
         queryset = queryset.exclude(hiding)
@@ -1433,7 +1460,7 @@ def _as_candidates(rows, similar, now):
 
 
 def candidates(viewer, profile, now=None, similar=None):
-    """Recent eligible posts from five sources, merged, each capped."""
+    """Recent eligible posts from up to six sources, merged, each capped."""
     now = now or timezone.now()
     eligible = eligible_posts(viewer, now, profile.hidden)
     newest = ("-created_at", "-id")
@@ -1445,9 +1472,15 @@ def candidates(viewer, profile, now=None, similar=None):
             eligible.filter(author_id__in=profile.followed).order_by(*newest)[:SOURCE_LIMIT],
         ))
 
-    match = _topic_filter(profile.top_topics(5))
+    top = profile.top_topics(5)
+    match = _topic_filter([topic for topic in top if not topic.startswith("exercise:")])
     if match is not None:
         sources.append(("interest", eligible.filter(match).order_by(*newest)[:SOURCE_LIMIT]))
+    # The exercises among the reader's best topics, as a source of their own:
+    # OR'd into the one above they cost the database a much worse plan.
+    match = _topic_filter([topic for topic in top if topic.startswith("exercise:")])
+    if match is not None:
+        sources.append(("detail", eligible.filter(match).order_by(*newest)[:SOURCE_LIMIT]))
 
     similar = similar if similar is not None else similar_tastes(viewer, profile, now)
     if similar:

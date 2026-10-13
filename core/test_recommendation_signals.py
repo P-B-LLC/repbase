@@ -19,15 +19,13 @@ from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 
 from . import recommendations
-from .fixtures_for_tests import aged, make_account, meal_post, workout_post
+from .fixtures_for_tests import meal_post, workout_post
 from .models import (
     Exercise,
     Follow,
-    PostFeedback,
     PostLike,
     PostView,
     PostWorkoutExercise,
-    RepbaseUser,
 )
 from .recommendations import (
     CONNECTED_WINDOW,
@@ -217,16 +215,29 @@ class ExerciseInterestTests(ForYouTestCase):
         details = recommendations.details_by_post([self.deadlifts[1].pk])
         self.assertIn("exercise:barbell row", details[self.deadlifts[1].pk])
 
-    def test_liking_deadlifts_brings_more_deadlifts_than_presses(self):
+    def test_liking_deadlifts_brings_deadlifts_ahead_of_presses(self):
+        """From the same two lifters, whom the reader has never engaged with:
+        the deadlifts come first, because deadlifts are what they liked."""
         reader, token = self.reader("puller", ["Strength"])
         for post in self.deadlifts[:2]:
             PostLike.objects.create(post=post, user=reader)
-        page = self.ids(self.feed(token, page_size=12))
-        rest = {post.pk for post in self.deadlifts[2:]}
-        presses = {post.pk for post in self.presses}
-        first_deadlift = min(page.index(pk) for pk in rest if pk in page)
-        first_press = min((page.index(pk) for pk in presses if pk in page), default=len(page))
-        self.assertLess(first_deadlift, first_press)
+        with override_settings(FOR_YOU_WEIGHTS={"discovery_every": 0}):
+            page = self.ids(self.feed(token, page_size=50))
+        for deadlift, press in zip(self.deadlifts[2:], self.presses[2:]):
+            self.assertLess(page.index(deadlift.pk), page.index(press.pk))
+
+    def test_without_the_detail_weight_they_are_not_told_apart(self):
+        reader, _ = self.reader("puller_without", ["Strength"])
+        for post in self.deadlifts[:2]:
+            PostLike.objects.create(post=post, user=reader)
+        profile = build_profile(reader)
+        found = {item.pk: item for item in recommendations.candidates(reader, profile)}
+        weights = FeedWeights(detail=0.0, jitter=0.0, explore=0.0)
+        now = timezone.now()
+        deadlift = score(found[self.deadlifts[2].pk], profile, weights, now)[1]
+        press = score(found[self.presses[2].pk], profile, weights, now)[1]
+        self.assertEqual(deadlift["detail"], press["detail"])
+        self.assertGreater(score(found[self.deadlifts[2].pk], profile, FeedWeights(), now)[1]["detail"], 0)
 
     def test_the_reason_names_the_exercise(self):
         reader, token = self.reader("puller_reasons", [])
@@ -307,3 +318,34 @@ class ConnectedShareTests(ForYouTestCase):
         for start in range(0, len(page) - CONNECTED_WINDOW + 1):
             window = page[start:start + CONNECTED_WINDOW]
             self.assertLessEqual(sum(pk in followed_posts for pk in window), CONNECTED_WINDOW // 2)
+
+
+class DiversityReportTests(ForYouTestCase):
+    def report(self):
+        import io
+        import json
+
+        from django.core.management import call_command
+
+        output = io.StringIO()
+        call_command("feed_report", "--json", stdout=output)
+        return json.loads(output.getvalue()), output.getvalue()
+
+    def test_where_attention_went_is_reported_without_naming_anyone(self):
+        reader, _ = self.reader("spread_reader", [])
+        Follow.objects.create(follower=reader, following=self.cooks[0])
+        shown = [post for post in self.meals if post.author == self.cooks[0]][:1] + self.running[:3]
+        for post in shown:
+            views(reader, post, dwell_ms=3000)
+        PostView.objects.filter(viewer=reader, post=self.running[0]).update(view_count=2)
+        report, raw = self.report()
+        figures = report["diversity"]
+        self.assertEqual(figures["unconnected_share"], 0.75)
+        self.assertEqual(figures["repeat_impression_rate"], 0.25)
+        self.assertEqual(figures["top_ten_author_share"], 1.0)
+        self.assertEqual(figures["new_creator_share"], 1.0, "the community joined days ago")
+        self.assertNotIn("spread_reader", raw)
+
+    def test_an_empty_window_reports_nothing_rather_than_zero(self):
+        report, _ = self.report()
+        self.assertIsNone(report["diversity"]["unconnected_share"])

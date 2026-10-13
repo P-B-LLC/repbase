@@ -33,7 +33,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from django.core.cache import cache
-from django.db.models import Count, Exists, F, OuterRef
+from django.db.models import Count, F
 from django.utils import timezone
 
 from .models import Post, PostLike, PostVideo, RepbaseUser
@@ -47,25 +47,36 @@ NEW_ACCOUNT_HOURS = 48
 NEW_ACCOUNT_TRUST = 0.5
 #: More likes than this in the last hour is not somebody reading. Beyond it
 #: each like counts LIKE_BURST / likes-that-hour, but never less than
-#: BURST_FLOOR.
+#: BURST_FLOOR. Who is bursting is worked out once for everybody every
+#: BURST_TTL_SECONDS.
 LIKE_BURST = 60
 BURST_FLOOR = 0.1
-#: An account that liked at least FOCUS_MIN of one author's posts in the
-#: last FOCUS_DAYS, with more than FOCUS_SHARE of all its likes going to
-#: that author, is boosting somebody rather than browsing. Its likes on that
-#: author's posts count less the more single-minded it is, down to
-#: FOCUS_FLOOR. Its likes on anybody else count normally. A real fan likes
-#: other people too; a sockpuppet does not.
+BURST_TTL_SECONDS = 5 * 60
+#: An account younger than FOCUS_YOUNG_DAYS that liked at least FOCUS_MIN of
+#: one author's posts in the last FOCUS_DAYS, with more than FOCUS_SHARE of
+#: all its likes going to that author, is boosting somebody rather than
+#: browsing. Its likes on that author's posts count less the more
+#: single-minded it is, down to FOCUS_FLOOR; its likes on anybody else count
+#: normally. A real fan likes other people too; a sockpuppet does not. Only
+#: young accounts are asked: an account that has been around for a month and
+#: likes one person is a superfan, and a ring that has to age its accounts
+#: for a month first is a ring that costs a great deal more to run.
 FOCUS_MIN = 5
 FOCUS_SHARE = 0.6
 FOCUS_FLOOR = 0.2
 FOCUS_DAYS = 30
+FOCUS_YOUNG_DAYS = 30
 #: Trust is the same whoever is asking, so it is worked out once per account
 #: and shared for this long.
 TRUST_TTL_SECONDS = 15 * 60
 #: Accounts looked up per query, so a very long list never meets a
 #: database's limit on parameters.
 TRUST_CHUNK = 5000
+#: The shared lists of suspended and recently made accounts are worked out
+#: once for everybody this often. Suspending an account reaches the counts
+#: within this long; everything it posted leaves every feed at once, as it
+#: always has.
+INACTIVE_TTL_SECONDS = 5 * 60
 
 
 @dataclass(frozen=True)
@@ -117,22 +128,58 @@ def _chunks(ids):
         yield ids[start:start + TRUST_CHUNK]
 
 
-def _compute_trust(account_ids, now):
-    """{account id: Trust}. Three grouped queries per chunk of accounts."""
-    found = {}
-    young = now - timedelta(hours=NEW_ACCOUNT_HOURS)
-    for chunk in _chunks(account_ids):
-        accounts = {
-            pk: (created_at, active)
-            for pk, created_at, active in RepbaseUser.objects.filter(pk__in=chunk)
-            .values_list("pk", "created_at", "user__is_active")
-        }
-        bursts = dict(
-            PostLike.objects.filter(user_id__in=chunk, created_at__gte=now - timedelta(hours=1))
-            .order_by().values("user_id").annotate(n=Count("pk")).values_list("user_id", "n")
+def bursting_accounts(now=None):
+    """{account id: likes in the last hour} for every account over
+    LIKE_BURST, worked out once for everybody. One query over the last hour
+    of likes, rather than one lookup per liker per ranking."""
+    found = cache.get("for-you:bursting")
+    if found is None:
+        now = now or timezone.now()
+        found = dict(
+            PostLike.objects.filter(created_at__gte=now - timedelta(hours=1))
+            .order_by().values("user_id").annotate(n=Count("pk")).filter(n__gt=LIKE_BURST)
+            .values_list("user_id", "n")
         )
-        per_author = {}
-        totals = {}
+        cache.set("for-you:bursting", found, BURST_TTL_SECONDS)
+    return found
+
+
+def inactive_accounts():
+    """The ids of suspended accounts, worked out once for everybody: there
+    are few of them, and a count that leaves them out is then a filter on a
+    short list rather than a join through every row's account."""
+    found = cache.get("for-you:inactive")
+    if found is None:
+        found = sorted(RepbaseUser.objects.filter(user__is_active=False).values_list("pk", flat=True))
+        cache.set("for-you:inactive", found, INACTIVE_TTL_SECONDS)
+    return found
+
+
+def recent_accounts(now=None):
+    """{account id: when it joined} for every account younger than
+    FOCUS_YOUNG_DAYS, worked out once for everybody. Everything trust needs
+    to know about an account's age, without looking each one up."""
+    found = cache.get("for-you:recent-accounts")
+    if found is None:
+        now = now or timezone.now()
+        since = now - max(timedelta(days=FOCUS_YOUNG_DAYS), timedelta(hours=NEW_ACCOUNT_HOURS))
+        found = dict(RepbaseUser.objects.filter(created_at__gt=since).values_list("pk", "created_at"))
+        cache.set("for-you:recent-accounts", found, INACTIVE_TTL_SECONDS)
+    return found
+
+
+def new_accounts(now=None):
+    """The ids of accounts younger than NEW_ACCOUNT_HOURS."""
+    now = now or timezone.now()
+    young = now - timedelta(hours=NEW_ACCOUNT_HOURS)
+    return sorted(pk for pk, joined in recent_accounts(now).items() if joined > young)
+
+
+def _compute_focus(account_ids, now):
+    """{account id: (author id, share) or None} for these accounts: the one
+    author each is single-minded about, if any (FOCUS_*)."""
+    per_author, totals = {}, {}
+    for chunk in _chunks(account_ids):
         for user_id, author_id, n in (
             PostLike.objects.filter(user_id__in=chunk, created_at__gte=now - timedelta(days=FOCUS_DAYS))
             # Liking your own posts says nothing about being single-minded
@@ -145,37 +192,52 @@ def _compute_trust(account_ids, now):
             best = per_author.get(user_id)
             if best is None or n > best[1] or (n == best[1] and author_id < best[0]):
                 per_author[user_id] = (author_id, n)
-
-        for pk in chunk:
-            created_at, active = accounts.get(pk, (None, False))
-            if not active:
-                found[pk] = Trust(base=0.0)
-                continue
-            base = 1.0
-            new = created_at is not None and created_at > young
-            if new:
-                base *= NEW_ACCOUNT_TRUST
-            burst = bursts.get(pk, 0)
-            if burst > LIKE_BURST:
-                base *= max(BURST_FLOOR, LIKE_BURST / burst)
-            focus_author, focus_share = None, 0.0
-            top = per_author.get(pk)
-            if top is not None and top[1] >= FOCUS_MIN and totals.get(pk):
-                share = top[1] / totals[pk]
-                if share > FOCUS_SHARE:
-                    focus_author, focus_share = top[0], share
-            found[pk] = Trust(
-                base=round(base, 4), focus_author=focus_author, focus_share=round(focus_share, 4), new=new,
-            )
+    found = {}
+    for pk in account_ids:
+        top = per_author.get(pk)
+        share = top[1] / totals[pk] if top is not None and totals.get(pk) else 0.0
+        found[pk] = (top[0], round(share, 4)) if top and top[1] >= FOCUS_MIN and share > FOCUS_SHARE else None
     return found
 
 
 def account_trust(account_ids, now=None):
-    """{account id: Trust}, shared across readers for TRUST_TTL_SECONDS."""
+    """{account id: Trust}.
+
+    Made from lists shared by everybody -- who is suspended, who joined
+    lately, who is bursting -- and, for the young accounts among these, how
+    single-minded each is, which is cached per account for
+    TRUST_TTL_SECONDS. Nothing is looked up per account otherwise: an
+    established account that is not bursting is simply trusted, which is
+    what nearly every account is."""
     from .recommendations import _cached_many
 
     now = now or timezone.now()
-    return _cached_many("trust", account_ids, lambda ids: _compute_trust(ids, now), TRUST_TTL_SECONDS)
+    young = now - timedelta(hours=NEW_ACCOUNT_HOURS)
+    inactive = set(inactive_accounts())
+    recent = recent_accounts(now)
+    bursts = bursting_accounts(now)
+    asked = [pk for pk in account_ids if pk in recent and pk not in inactive]
+    focus = _cached_many("focus", asked, lambda ids: _compute_focus(ids, now), TRUST_TTL_SECONDS) if asked else {}
+    found = {}
+    for pk in account_ids:
+        if pk in inactive:
+            found[pk] = Trust(base=0.0)
+            continue
+        joined = recent.get(pk)
+        new = joined is not None and joined > young
+        base = NEW_ACCOUNT_TRUST if new else 1.0
+        burst = bursts.get(pk, 0)
+        if burst > LIKE_BURST:
+            base *= max(BURST_FLOOR, LIKE_BURST / burst)
+        single = focus.get(pk)
+        if base == 1.0 and not new and single is None:
+            found[pk] = FULL_TRUST
+        else:
+            found[pk] = Trust(
+                base=round(base, 4), focus_author=single[0] if single else None,
+                focus_share=single[1] if single else 0.0, new=new,
+            )
+    return found
 
 
 # -------------------------------------------------------- recent moderation
@@ -183,21 +245,31 @@ def account_trust(account_ids, now=None):
 #: An author with a post taken down, or a clip rejected, by a moderator this
 #: recently is not recommended to people who do not follow them. Their
 #: followers chose them and still see them. Undoing the takedown restores
-#: them at once, because `hidden_at` is cleared with it.
+#: them, because `hidden_at` is cleared with it. Worked out once for
+#: everybody every MODERATED_TTL_SECONDS, so a decision reaches For You
+#: within a minute; the post a moderator took down leaves every feed at
+#: once, as it always has.
 MODERATION_COOLDOWN_DAYS = 30
+MODERATED_TTL_SECONDS = 60
 
 
-def recently_moderated(author_ref="author", now=None):
-    """An Exists() that is true for an author a moderator acted against
-    within MODERATION_COOLDOWN_DAYS. `author_ref` names the author column of
-    the queryset it is used in."""
-    now = now or timezone.now()
-    since = now - timedelta(days=MODERATION_COOLDOWN_DAYS)
-    taken_down = Post.objects.filter(author=OuterRef(author_ref), is_hidden=True, hidden_at__gte=since)
-    rejected = PostVideo.objects.filter(
-        post__author=OuterRef(author_ref), status=PostVideo.Status.REJECTED, reviewed_at__gte=since
-    )
-    return Exists(taken_down) | Exists(rejected)
+def recently_moderated_authors(now=None):
+    """The ids of authors a moderator acted against within
+    MODERATION_COOLDOWN_DAYS. A short list, so the ranking can leave them out
+    with a plain IN rather than a correlated subquery on every candidate."""
+    found = cache.get("for-you:moderated")
+    if found is None:
+        now = now or timezone.now()
+        since = now - timedelta(days=MODERATION_COOLDOWN_DAYS)
+        found = sorted(
+            set(Post.objects.filter(is_hidden=True, hidden_at__gte=since).values_list("author_id", flat=True))
+            | set(
+                PostVideo.objects.filter(status=PostVideo.Status.REJECTED, reviewed_at__gte=since)
+                .values_list("post__author_id", flat=True)
+            )
+        )
+        cache.set("for-you:moderated", found, MODERATED_TTL_SECONDS)
+    return found
 
 
 # ---------------------------------------------------------------- captions
@@ -252,11 +324,3 @@ def blend(raw, trusted, amount):
     """`amount` of the way from a raw count to its trusted one: 0 is the
     count as it stands, 1 the count with only trusted engagement in it."""
     return raw + amount * (trusted - raw)
-
-
-# ------------------------------------------------------------- shared cache
-
-def forget_trust(account_ids):
-    """Drop cached trust, for when an account is suspended or reinstated
-    and should not wait out the cache."""
-    cache.delete_many([f"for-you:trust:{pk}" for pk in account_ids])

@@ -17,6 +17,10 @@ What each section answers:
 - `watch`: are clips being watched, and how far;
 - `by_reason`: is each kind of slot earning its place -- whether discovery,
   similar taste and new creators are acted on as often as interest;
+- `diversity`: is attention spread or concentrated -- how much of it the ten
+  most-shown authors take, how much goes to people the reader does not
+  follow and to new creators, and how often a post was put in front of the
+  same person again;
 - `retention`: of the people who started using For You in the window, how
   many were back the next day and within a week (needs ANALYTICS_ENABLED,
   which is what records a day's activity);
@@ -35,7 +39,8 @@ from django.utils import timezone
 
 from core.analytics_models import DailyActiveAccount
 from core.models import Post, PostComment, PostFeedback, PostLike, PostView, SavedFoodMeal, WorkoutTemplate
-from core.recommendations import experiment_config, experiment_variant, latency_summary
+from core.models import Follow
+from core.recommendations import NEWCOMER_DAYS, experiment_config, experiment_variant, latency_summary
 
 ENGAGED = Q(liked=True) | Q(commented=True) | Q(shared=True) | Q(saved=True)
 
@@ -169,6 +174,37 @@ def by_variant(rows, annotated, config, comebacks):
     }
 
 
+def diversity(rows, impressions):
+    """Where attention went: counts and shares only, nobody named."""
+    if not impressions:
+        return {
+            "top_ten_author_share": None, "unconnected_share": None,
+            "new_creator_share": None, "repeat_impression_rate": None,
+        }
+    per_author = sorted(
+        (row["n"] for row in rows.order_by().values("post__author").annotate(n=Count("pk"))),
+        reverse=True,
+    )
+    unconnected = rows.annotate(
+        follows=Exists(Follow.objects.filter(follower=OuterRef("viewer"), following=OuterRef("post__author")))
+    ).filter(follows=False).count()
+    new_creator = rows.filter(
+        post__author__created_at__gte=F("first_seen_at") - timedelta(days=NEWCOMER_DAYS)
+    ).count()
+    return {
+        # How much of For You the ten most-shown authors took. Rising means
+        # the page is concentrating on fewer creators.
+        "top_ten_author_share": rate(sum(per_author[:10]), impressions),
+        # Shown somebody the reader does not follow: what For You is for.
+        "unconnected_share": rate(unconnected, impressions),
+        # Shown somebody who had joined within NEWCOMER_DAYS of being seen.
+        "new_creator_share": rate(new_creator, impressions),
+        # A post put in front of the same reader more than once. Paging never
+        # repeats a post; this is across visits.
+        "repeat_impression_rate": rate(rows.filter(view_count__gt=1).count(), impressions),
+    }
+
+
 def build_report(days=7, hours=24, now=None):
     now = now or timezone.now()
     since = now - timedelta(days=days)
@@ -228,6 +264,7 @@ def build_report(days=7, hours=24, now=None):
             "watch_time_ms": watched["total"] or 0,
         },
         "by_reason": by_reason(rows, annotated),
+        "diversity": diversity(rows, impressions),
         # None when analytics is off: without daily activity there is no
         # honest way to say who came back.
         "retention": summarise_returns(list(comebacks.values())) if settings.ANALYTICS_ENABLED else None,
