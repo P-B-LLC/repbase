@@ -1675,6 +1675,8 @@ class PlannerRecurrence(models.Model):
     )
     #: Every day is 1, every other day 2, and so on.
     interval_days = models.PositiveSmallIntegerField(default=1)
+    #: Monday=0 through Sunday=6. Empty preserves interval-based repeats.
+    weekdays = models.JSONField(default=list, blank=True)
     starts_on = models.DateField(db_index=True)
     #: The first day it no longer applies. Null while it runs indefinitely.
     ends_on = models.DateField(null=True, blank=True, db_index=True)
@@ -1728,6 +1730,8 @@ class PlannerRecurrence(models.Model):
             return False
         if self.ends_on is not None and day >= self.ends_on:
             return False
+        if self.weekdays:
+            return day.weekday() in self.weekdays
         return (day - self.starts_on).days % self.interval_days == 0
 
     def days_through(self, horizon):
@@ -1737,8 +1741,9 @@ class PlannerRecurrence(models.Model):
         last = horizon if self.ends_on is None else min(horizon, self.ends_on - timedelta(days=1))
         day = self.starts_on
         while day <= last:
-            yield day
-            day += timedelta(days=self.interval_days)
+            if self.covers(day):
+                yield day
+            day += timedelta(days=1 if self.weekdays else self.interval_days)
 
 
 class PlannerRecurrenceStep(models.Model):

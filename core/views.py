@@ -2055,14 +2055,16 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
     def perform_create(self, serializer):
         # Write-only, so they are not fields of the row being saved.
         interval = serializer.validated_data.pop("repeat_every_days", None)
+        weekdays = serializer.validated_data.pop("repeat_on_weekdays", None)
         ends_on = serializer.validated_data.pop("repeat_ends_on", None)
         owner = self.owner_profile()
         entry = serializer.save(owner=owner)
 
-        if interval is not None:
+        if interval is not None or weekdays is not None:
             rule = PlannerRecurrence.objects.create(
                 owner=owner,
-                interval_days=interval,
+                interval_days=interval or 1,
+                weekdays=weekdays or [],
                 starts_on=entry.scheduled_date,
                 ends_on=ends_on,
                 title=entry.title,
