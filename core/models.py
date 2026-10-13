@@ -13,9 +13,10 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
+from .video_jobs_models import VideoJob, VideoStoredObject, VideoMetric, VideoDailyUpload  # noqa: F401
 from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
-from .access_models import AccountAccess, AccessPolicyLock, AccessAudit  # noqa: F401
-from zoneinfo import ZoneInfo
+from .access_models import AccountAccess, AccessPolicyLock, AccessAudit, CommunitySpotlight  # noqa: F401
+from zoneinfo import ZoneInfo, available_timezones
 
 from django.utils import timezone
 
@@ -1674,6 +1675,8 @@ class PlannerRecurrence(models.Model):
     )
     #: Every day is 1, every other day 2, and so on.
     interval_days = models.PositiveSmallIntegerField(default=1)
+    #: Monday=0 through Sunday=6. Empty preserves interval-based repeats.
+    weekdays = models.JSONField(default=list, blank=True)
     starts_on = models.DateField(db_index=True)
     #: The first day it no longer applies. Null while it runs indefinitely.
     ends_on = models.DateField(null=True, blank=True, db_index=True)
@@ -1727,6 +1730,8 @@ class PlannerRecurrence(models.Model):
             return False
         if self.ends_on is not None and day >= self.ends_on:
             return False
+        if self.weekdays:
+            return day.weekday() in self.weekdays
         return (day - self.starts_on).days % self.interval_days == 0
 
     def days_through(self, horizon):
@@ -1736,8 +1741,9 @@ class PlannerRecurrence(models.Model):
         last = horizon if self.ends_on is None else min(horizon, self.ends_on - timedelta(days=1))
         day = self.starts_on
         while day <= last:
-            yield day
-            day += timedelta(days=self.interval_days)
+            if self.covers(day):
+                yield day
+            day += timedelta(days=1 if self.weekdays else self.interval_days)
 
 
 class PlannerRecurrenceStep(models.Model):
@@ -2857,6 +2863,10 @@ class PostVideo(models.Model):
         REJECTED = "rejected", "Rejected"
 
     post = models.OneToOneField(Post, on_delete=models.CASCADE, related_name="video")
+    processing_state = models.CharField(max_length=16, default='ready')
+    variants = models.JSONField(default=list)
+    thumbnail_key = models.CharField(max_length=255, blank=True)
+    processing_error = models.CharField(max_length=40, blank=True)
     #: Indexed because serving a clip asks whether it may still be served, and
     #: that question is asked by file name once per request.
     file = models.FileField(upload_to=post_video_path, max_length=255, db_index=True)

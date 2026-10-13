@@ -1,0 +1,27 @@
+[Unit]
+Description=Rytivo bounded video processing batch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=django
+Group=rytivo-media
+UMask=0027
+WorkingDirectory=/home/django/app
+EnvironmentFile=/etc/repbase.env
+ExecStart=/home/django/app/.venv/bin/python manage.py process_videos --limit 1 --cleanup
+TimeoutStartSec=900
+Nice=15
+CPUQuota=25%
+MemoryMax=192M
+TasksMax=32
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp /var/lib/rytivo/videos
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

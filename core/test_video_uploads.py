@@ -103,11 +103,12 @@ class AcceptedClipsTests(SimpleTestCase):
         for name in ("h264_faststart.mp4", "with_location.mov", "moov_at_end.mp4"):
             with self.subTest(name=name):
                 _, clean = inspect(video_fixture(name))
-                with tempfile.NamedTemporaryFile(suffix=os.path.splitext(name)[1]) as handle:
-                    handle.write(clean)
-                    handle.flush()
+                with tempfile.TemporaryDirectory() as directory:
+                    path = os.path.join(directory, 'clip' + os.path.splitext(name)[1])
+                    with open(path, 'wb') as handle:
+                        handle.write(clean)
                     result = subprocess.run(
-                        ["ffmpeg", "-v", "error", "-i", handle.name, "-f", "null", "-"],
+                        ["ffmpeg", "-v", "error", "-i", path, "-f", "null", "-"],
                         capture_output=True, text=True, timeout=30,
                     )
                 self.assertEqual(result.returncode, 0, result.stderr)

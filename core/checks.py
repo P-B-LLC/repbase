@@ -36,6 +36,29 @@ UNCONFIGURED_HOSTS = ('', 'localhost', '127.0.0.1', '::1')
 
 
 @register(deploy=True)
+def video_pipeline_ready(app_configs, **kwargs):
+    if not settings.VIDEO_PIPELINE_ENABLED:
+        return []
+    import shutil
+    from pathlib import Path
+    errors = []
+    if settings.VIDEO_STORAGE_BACKEND not in ('local', 's3'):
+        errors.append(Error('Unsupported video storage backend.', id='core.E009'))
+    if not shutil.which(settings.VIDEO_FFMPEG) or not shutil.which(settings.VIDEO_FFPROBE):
+        errors.append(Error('Video processing requires ffmpeg and ffprobe.', id='core.E010'))
+    if settings.VIDEO_STORAGE_BACKEND == 'local':
+        root = Path(settings.VIDEO_LOCAL_ROOT).resolve()
+        media = Path(settings.MEDIA_ROOT).resolve()
+        if root.is_relative_to(media) or not root.is_dir() or not settings.VIDEO_LOCAL_ACCEL_PREFIX:
+            errors.append(Error('Local videos require an existing private root outside MEDIA_ROOT and an internal nginx offload prefix.', id='core.E011'))
+    elif not settings.VIDEO_STORAGE_BUCKET:
+        errors.append(Error('S3 videos require a private bucket.', id='core.E012'))
+    if settings.VIDEO_MODERATION_BYPASS:
+        errors.append(Warning('Video moderation is temporarily bypassed. Restrict this to the limited beta.', id='core.W008'))
+    return errors
+
+
+@register(deploy=True)
 def push_configuration_ready(app_configs, **kwargs):
     if not settings.APNS_ENABLED:
         return []
