@@ -3385,6 +3385,11 @@ class PostView(models.Model):
     surface = models.CharField(
         max_length=20, choices=Surface.choices, default=Surface.OTHER
     )
+    #: Why the For You page showed it, when that is where it was first seen:
+    #: one of `core.recommendations.REASONS`, or blank. Recorded by the
+    #: server from what it served, never taken from the client, so the
+    #: report can say whether discovery or similar taste is earning its slots.
+    reason = models.CharField(max_length=20, blank=True, default="")
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(default=timezone.now)
 
@@ -3429,6 +3434,72 @@ class PostFeedback(models.Model):
 
     def __str__(self):
         return f"{self.viewer_id}: {self.kind} on post {self.post_id}"
+
+
+#: How long viewing history and "not interested" are kept. The ranking reads
+#: back this far and no further, so nothing older does anything but sit there
+#: describing what somebody once looked at. `prune_expired_rows` deletes it.
+RECOMMENDATION_HISTORY_DAYS = 90
+
+#: How long a dismissed suggestion stays dismissed. Long enough that the same
+#: face does not come back next week; not so long that someone you had no
+#: reason to follow in March can never be suggested again.
+SUGGESTION_DISMISSAL_DAYS = 180
+
+
+class RecommendationPreferences(models.Model):
+    """How somebody wants their For You page made.
+
+    A row only once they change something: every default is what the page
+    does anyway, and the ranking reads an unsaved instance when there is no
+    row, so opening the page never writes.
+    """
+
+    viewer = models.OneToOneField(
+        RepbaseUser, on_delete=models.CASCADE, related_name="recommendation_preferences"
+    )
+    #: Off means the page stops using what the reader does -- likes, views,
+    #: follows, onboarding answers -- and orders posts by quality, popularity
+    #: and freshness alone. What they have already seen is still moved down,
+    #: and what they hid stays hidden.
+    personalized = models.BooleanField(default=True)
+    #: Topics never to be shown, from `core.recommendations.HIDEABLE_TOPICS`.
+    #: A list of strings rather than rows: there are eight, and the whole set
+    #: is read and written at once.
+    hidden_topics = models.JSONField(default=list, blank=True)
+    #: Everything the reader did before this stops counting as taste. Set by
+    #: "start fresh", which also deletes their viewing history -- that exists
+    #: only to make recommendations. Likes and comments are not deleted: they
+    #: are the reader's own content, shown to other people, and simply stop
+    #: counting toward the page.
+    history_cleared_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"recommendation preferences for {self.viewer_id}"
+
+
+class SuggestionDismissal(models.Model):
+    """A reader saying "not this person" to a suggested account.
+
+    Kept for SUGGESTION_DISMISSAL_DAYS, then pruned. Only ever read to leave
+    that person out of the reader's own suggestions; nobody is told.
+    """
+
+    viewer = models.ForeignKey(
+        RepbaseUser, on_delete=models.CASCADE, related_name="dismissed_suggestions"
+    )
+    person = models.ForeignKey(RepbaseUser, on_delete=models.CASCADE, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("viewer", "person"), name="one_dismissal_per_pair")
+        ]
+        indexes = [models.Index(fields=("viewer", "-created_at"))]
+
+    def __str__(self):
+        return f"{self.viewer_id} dismissed suggestion {self.person_id}"
 
 
 #: How many questions one profile may answer. Three keeps a profile readable

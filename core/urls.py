@@ -4,7 +4,14 @@ from .access_views import (MyAccessView, AccessUsersView, UserAccessView,
                            ModerationReportsView, ModerationDecisionView)
 from .push_views import PushDeviceRegistrationView
 
-from .for_you import ForYouView, ImpressionsView
+from .for_you import (
+    ForYouHistoryView,
+    ForYouPreferencesView,
+    ForYouView,
+    ImpressionsView,
+    SuggestedPeopleView,
+    SuggestionDismissalView,
+)
 from .views import (
     BlockViewSet,
     FollowRequestViewSet,
@@ -99,6 +106,22 @@ urlpatterns = [
     ),
     path("social/for-you/", ForYouView.as_view(), name="for-you"),
     path("social/impressions/", ImpressionsView.as_view(), name="impressions"),
+    path(
+        "social/for-you/preferences/",
+        ForYouPreferencesView.as_view(),
+        name="for-you-preferences",
+    ),
+    path("social/for-you/history/", ForYouHistoryView.as_view(), name="for-you-history"),
+    path(
+        "social/suggested-people/",
+        SuggestedPeopleView.as_view(),
+        name="suggested-people",
+    ),
+    path(
+        "social/suggested-people/<int:pk>/dismiss/",
+        SuggestionDismissalView.as_view(),
+        name="suggestion-dismissal",
+    ),
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/login/", LoginView.as_view(), name="login"),
     path("food/search/", FoodSearchView.as_view(), name="food-search"),

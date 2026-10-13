@@ -3248,10 +3248,10 @@ class PostSerializer(serializers.ModelSerializer):
 class RecommendationSerializer(serializers.Serializer):
     """Why the For You page put a post where it did.
 
-    `reason` is a short code -- following, interest, popular, discovery or
-    fresh -- sent as a plain string so a reason added later is a value the
-    client does not recognise rather than a decoding error. `label` is a
-    sentence fit to show under the post as it is.
+    `reason` is a short code -- following, interest, similar, discovery,
+    new_creator, popular or fresh -- sent as a plain string so a reason added
+    later is a value the client does not recognise rather than a decoding
+    error. `label` is a sentence fit to show under the post as it is.
     """
 
     reason = serializers.CharField(read_only=True)
@@ -3314,6 +3314,76 @@ class ImpressionResultSerializer(serializers.Serializer):
     #: How many of the posts named were recorded. Posts the reader cannot
     #: see, and their own, are left out without complaint.
     recorded = serializers.IntegerField(read_only=True)
+
+
+class TopicSerializer(serializers.Serializer):
+    """A topic, by its code and the name to show for it."""
+
+    topic = serializers.CharField(read_only=True)
+    label = serializers.CharField(read_only=True)
+
+
+class InterestSerializer(TopicSerializer):
+    """One topic the For You page has picked up about the reader."""
+
+    #: From 0 to 1: how much it counts toward what they are shown.
+    strength = serializers.FloatField(read_only=True)
+    #: Named by the reader -- in onboarding or on their profile -- rather
+    #: than only inferred from what they did.
+    declared = serializers.BooleanField(read_only=True)
+
+
+class ForYouPreferencesSerializer(serializers.Serializer):
+    """What the reader has chosen about their For You page, and what it has
+    picked up about them -- the second so the first can be informed."""
+
+    personalized = serializers.BooleanField(read_only=True)
+    #: Topic codes never to be shown, each one of `hideable_topics`.
+    hidden_topics = serializers.ListField(child=serializers.CharField(), read_only=True)
+    #: When the reader last started fresh, if ever.
+    history_cleared_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    #: Strongest first. Empty when personalisation is off: nothing is used.
+    interests = InterestSerializer(many=True, read_only=True)
+    #: Every topic that may be hidden, in the order to offer them.
+    hideable_topics = TopicSerializer(many=True, read_only=True)
+
+
+class UpdateForYouPreferencesSerializer(serializers.Serializer):
+    """A change to the reader's For You choices. Either field may be left out.
+
+    Topics are plain strings checked here rather than an enum in the
+    contract, so a topic added later is not a value an older app cannot send
+    or decode.
+    """
+
+    personalized = serializers.BooleanField(required=False)
+    hidden_topics = serializers.ListField(
+        child=serializers.CharField(max_length=40), required=False, allow_empty=True, max_length=20
+    )
+
+    def validate_hidden_topics(self, value):
+        from .recommendations import HIDEABLE_TOPICS
+
+        unknown = sorted(set(value) - set(HIDEABLE_TOPICS))
+        if unknown:
+            raise serializers.ValidationError(
+                f"Not a topic that can be hidden: {', '.join(unknown)}. "
+                f"Use any of: {', '.join(HIDEABLE_TOPICS)}."
+            )
+        # Kept in the catalogue's order, once each, whatever order they came in.
+        return [topic for topic in HIDEABLE_TOPICS if topic in set(value)]
+
+
+class SuggestedPersonSerializer(serializers.Serializer):
+    """Somebody the reader might want to follow, and why.
+
+    `reason` is a plain-string code -- engaged, mutual, similar, discipline,
+    new_creator or popular -- and `label` the sentence to show.
+    """
+
+    person = PublicRepbaseUserSerializer(read_only=True)
+    reason = serializers.CharField(read_only=True)
+    label = serializers.CharField(read_only=True)
 
 
 class CreatePostSerializer(serializers.Serializer):

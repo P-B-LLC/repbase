@@ -9,27 +9,34 @@ what it does, and `FOR_YOU_WEIGHTS` in settings can move any of them.
 ## The pipeline
 
 1. **What this person is into** (`build_profile`). Their likes, comments,
-   saves, reposts, how long they stayed on what they saw, what they scrolled
-   straight past and what they said they were not interested in -- each
-   weighted, each fading with age -- plus who they follow and what they said
-   they train when they signed up. Topics come out of that as a score
-   between -1 and 1 each, and so do authors.
+   saves, reposts, how long they stayed on what they saw and how much of a
+   clip they watched, what they scrolled straight past and what they said
+   they were not interested in -- each weighted, each fading with age -- plus
+   who they follow and what they said they train when they signed up. Topics
+   come out of that as a score between -1 and 1 each, and so do authors.
+   What they did in the last few hours is kept apart as well, as momentum,
+   because it says more about what they want now than last month does.
 
 2. **What they could be shown** (`candidates`). Only what passes every
    eligibility rule: posts this reader may see at all (`visible_posts_for`),
-   from the last month, not their own, not reposts, not from a suspended
-   account, not something they reported or dismissed, not carrying a clip
-   still waiting for review, and not something enough people have reported
-   that a moderator should look first. Drawn from three places at once --
-   the newest posts, posts from people they follow, and posts on their best
-   topics -- each capped, so the work stays the same size however much is
-   posted.
+   from the last month, not their own, not reposts, not something they have
+   already liked, commented on, saved or passed on, not from a suspended
+   account, not something they reported or dismissed, not on a topic they
+   hid, not carrying a clip still waiting for review, and not something
+   enough people have reported that a moderator should look first. Drawn
+   from five places at once -- the newest posts, people they follow, their
+   best topics, what people with similar taste liked, and what the whole
+   community has been liking this week -- each capped, so the work stays the
+   same size however much is posted.
 
-3. **How good a match each one is** (`score`). Topic match, author
-   affinity, following, quality (engagement for its views, smoothed so one
-   like on one view is not a perfect score), popularity, freshness and watch
-   quality, less a penalty for what they have already seen. Every part is
-   kept, so the reason a post ranked where it did can be shown.
+3. **How good a match each one is** (`score`). Topic match, momentum, author
+   affinity, following, similar taste, quality (engagement for its views),
+   popularity, freshness, watch quality and a lift for new creators, less a
+   penalty for what they have already seen. Quality is drawn from what a
+   post's record so far allows rather than pinned to its average, so a post
+   that has had ten views gets a fair chance to show what it is, and one
+   that has had ten thousand is judged on them. Every part is kept, so the
+   reason a post ranked where it did can be shown.
 
 4. **An order worth scrolling** (`rank`). Best first, except that the same
    author cannot appear twice in four posts, a repeated author or topic costs
@@ -38,6 +45,11 @@ what it does, and `FOR_YOU_WEIGHTS` in settings can move any of them.
    their usual ones. That is what stops the page becoming one creator, and
    what gives it something to learn from next time.
 
+5. **Keeping up** (`serve_page`). The first page is ranked from scratch.
+   Every later page re-scores what is left against a fresh profile, so what
+   the reader liked, dismissed or skipped on page one already shapes page
+   two, while what was served stays served: paging never repeats or skips.
+
 ## New accounts
 
 Somebody with no history gets the topics they named during onboarding and
@@ -45,8 +57,15 @@ the disciplines on their profile as a prior, and the ranking falls back on
 quality, popularity and freshness with the same diversity rules. Somebody who
 named nothing gets the best of what is new, mixed -- which is a reasonable
 first page, and the first like starts making it theirs.
+
+## The reader's say
+
+`RecommendationPreferences` lets a reader hide topics, clear what the page
+has learned, or turn personalisation off, in which case the page is ordered
+by quality, popularity and freshness alone. See `RECOMMENDATIONS.md`.
 """
 
+import hashlib
 import logging
 import math
 import random
@@ -76,6 +95,8 @@ from .models import (
     PostReport,
     PostVideo,
     PostView,
+    RECOMMENDATION_HISTORY_DAYS,
+    RecommendationPreferences,
     RepbaseUser,
     SavedFoodMeal,
     UserDiscipline,
@@ -96,10 +117,15 @@ class FeedWeights:
     # --- how much each part of a post's score counts
     #: Match between the post's topics and the reader's.
     topic: float = 2.0
+    #: Match between the post's topics and what the reader engaged with in
+    #: the last MOMENTUM_HOURS.
+    momentum: float = 1.5
     #: How the reader has treated this author before.
     author: float = 1.5
     #: Flat bonus for an author the reader follows.
     follows: float = 1.0
+    #: Liked by people whose likes overlap the reader's.
+    similar: float = 1.2
     #: Engagement for the views it has had, smoothed.
     quality: float = 1.0
     #: Raw engagement, on a log scale.
@@ -108,12 +134,22 @@ class FeedWeights:
     recency: float = 1.2
     #: How often viewers stay, or watch a clip to the end.
     watch: float = 0.6
-    #: Penalty for something this reader has already seen lately.
-    seen: float = 2.5
+    #: A lift for somebody who joined lately and has few followers yet.
+    newcomer: float = 0.4
+    #: Penalty for something this reader has already seen lately. Grows with
+    #: how often it was seen and fades over SEEN_HALF_LIFE_DAYS.
+    seen: float = 3.0
     #: Penalty for open reports below the exclusion threshold.
     reported: float = 1.0
     #: A little noise so exact ties do not always break the same way.
     jitter: float = 0.02
+    #: How far quality is sampled from what a post's record allows rather
+    #: than fixed at its average: 0 ranks by the average alone, 1 samples in
+    #: full (Thompson sampling). This is what gives a post with few views a
+    #: chance. At 0.5 a post nobody has seen yet moves by about +-0.09 and
+    #: one with a hundred views by about +-0.03 -- enough to try new things,
+    #: not enough to outweigh what a reader said they like.
+    explore: float = 0.5
 
     # --- what one action says about what someone likes
     like: float = 1.0
@@ -122,6 +158,8 @@ class FeedWeights:
     share: float = 2.5
     follow: float = 3.0
     long_view: float = 0.5
+    #: Watched at least half of a clip without finishing it.
+    half_watch: float = 0.5
     completion: float = 1.0
     skip: float = -0.3
     not_interested: float = -4.0
@@ -137,8 +175,9 @@ class FeedWeights:
     discovery_every: int = 5
 
     @classmethod
-    def from_settings(cls):
-        overrides = getattr(settings, "FOR_YOU_WEIGHTS", None) or {}
+    def from_settings(cls, extra=None):
+        overrides = dict(getattr(settings, "FOR_YOU_WEIGHTS", None) or {})
+        overrides.update(extra or {})
         unknown = set(overrides) - {item.name for item in fields(cls)}
         if unknown:
             raise ImproperlyConfigured(
@@ -146,24 +185,95 @@ class FeedWeights:
             )
         return replace(cls(), **overrides)
 
+    @classmethod
+    def for_viewer(cls, viewer_id):
+        """The weights this reader is ranked with, and the experiment
+        variant that chose them (None when no experiment is running)."""
+        variant, overrides = experiment_variant(viewer_id)
+        return cls.from_settings(overrides), variant
+
+
+# --------------------------------------------------------------- experiments
+#
+# One experiment at a time, configured in settings:
+#
+#     FOR_YOU_EXPERIMENT = {
+#         "name": "recency-2026-11",
+#         "variants": {"control": {}, "fresher": {"recency": 1.6}},
+#     }
+#
+# Each reader lands in one variant for the life of the experiment, decided by
+# a hash of the experiment's name and their id -- nothing is stored, so there
+# is nothing to clean up and nothing about anyone to leak. `feed_report`
+# splits every figure by variant. Renaming the experiment reshuffles everyone,
+# which is what starting a new one should do.
+
+def experiment_config():
+    """The configured experiment, checked, or None."""
+    config = getattr(settings, "FOR_YOU_EXPERIMENT", None)
+    if not config:
+        return None
+    if not isinstance(config, dict) or set(config) - {"name", "variants"}:
+        raise ImproperlyConfigured('FOR_YOU_EXPERIMENT takes "name" and "variants" only.')
+    name, variants = config.get("name"), config.get("variants")
+    if not isinstance(name, str) or not name.strip():
+        raise ImproperlyConfigured("FOR_YOU_EXPERIMENT needs a name.")
+    if not isinstance(variants, dict) or len(variants) < 2:
+        raise ImproperlyConfigured("FOR_YOU_EXPERIMENT needs at least two variants.")
+    known = {item.name for item in fields(FeedWeights)}
+    for variant, overrides in variants.items():
+        if not isinstance(variant, str) or not isinstance(overrides, dict):
+            raise ImproperlyConfigured("Each FOR_YOU_EXPERIMENT variant maps a name to weights.")
+        unknown = set(overrides) - known
+        if unknown:
+            raise ImproperlyConfigured(
+                f"FOR_YOU_EXPERIMENT variant {variant!r} names unknown weights: "
+                + ", ".join(sorted(unknown))
+            )
+    return {"name": name, "variants": variants}
+
+
+def experiment_variant(viewer_id, config=None):
+    """(variant, weight overrides) for this reader; (None, {}) outside one."""
+    config = config if config is not None else experiment_config()
+    if not config:
+        return None, {}
+    names = sorted(config["variants"])
+    digest = hashlib.sha256(f"{config['name']}:{viewer_id}".encode()).digest()
+    bucket = int.from_bytes(digest[:8], "big") / 2 ** 64
+    variant = names[min(int(bucket * len(names)), len(names) - 1)]
+    return variant, config["variants"][variant]
+
 
 #: How far back a post may be to be recommended at all.
 WINDOW_DAYS = 30
 #: The newest eligible posts considered on every request.
 POOL_SIZE = 500
-#: Cap on each extra source (following, interests).
+#: Cap on each extra source (following, interests, similar taste, trending).
 SOURCE_LIMIT = 150
-#: How many posts one ranking orders. Ten pages of twenty.
+#: How many posts one session serves. Ten pages of twenty; after that a
+#: fresh ranking is a pull to refresh away.
 MAX_RANKED = 200
+#: How many unserved candidates a session keeps for its later pages: twice
+#: what it can still serve. Every later page re-checks all of them, so more
+#: is slower for posts that would almost never be reached.
+POOL_KEEP = 400
 #: How far back interactions count, and how many of each kind are read.
-HISTORY_DAYS = 90
+#: Viewing history older than this is deleted (`prune_expired_rows`).
+HISTORY_DAYS = RECOMMENDATION_HISTORY_DAYS
 HISTORY_LIMIT = 300
+#: How many of the reader's views are read to know what they have seen.
+#: More than the history above: a heavy scroller sees hundreds of posts a
+#: month, and every one of them is something not to show again.
+VIEW_LIMIT = 1000
 #: An interaction's weight halves over this many days.
 SIGNAL_HALF_LIFE_DAYS = 21
+#: What counts as lately, for momentum.
+MOMENTUM_HOURS = 6
 #: A post's freshness halves over this many hours.
 RECENCY_HALF_LIFE_HOURS = 36
-#: Something seen within this long ago counts as already seen.
-SEEN_WINDOW_DAYS = 3
+#: How quickly having seen something stops counting against it.
+SEEN_HALF_LIFE_DAYS = 2
 #: A viewing shorter than this, with no watching, is a scroll past.
 SKIP_MS = 1500
 #: A viewing at least this long is somebody stopping to look.
@@ -178,6 +288,49 @@ SESSION_TTL_SECONDS = 30 * 60
 AUTHOR_GAP = 4
 #: How far down the scored list each slot looks for its pick.
 SCAN_DEPTH = 60
+#: Quality starts from this engagement rate, worth this many views, until a
+#: post has views of its own.
+QUALITY_PRIOR_RATE = 0.1
+QUALITY_PRIOR_VIEWS = 20
+
+#: Per-post counts are the same for every reader, so they are worked out once
+#: and shared for this long. Counting views is most of what a cold ranking
+#: costs, and a post's standing does not change by the minute; the reader's
+#: own likes and views are always read live, so nothing they just did waits
+#: on this.
+STATS_TTL_SECONDS = 10 * 60
+#: Trending: the posts with the most likes over this many days, worked out
+#: once for everybody every few minutes.
+TRENDING_DAYS = 7
+TRENDING_LIMIT = 300
+TRENDING_TTL_SECONDS = 5 * 60
+
+#: Similar taste. The reader's most recent positive actions (at most
+#: SEED_LIMIT) are matched against everyone else's likes; people sharing at
+#: least MIN_OVERLAP of them are candidates, the NEIGHBOUR_POOL with the most
+#: in common are weighed, and the NEIGHBOURS most alike count. Their latest
+#: NEIGHBOUR_LIKES likes are what gets recommended.
+SEED_LIMIT = 100
+MIN_OVERLAP = 2
+NEIGHBOUR_POOL = 100
+NEIGHBOURS = 50
+NEIGHBOUR_LIKES = 3000
+#: With fewer neighbours than this, similar taste counts proportionally less.
+CONFIDENT_NEIGHBOURS = 5
+#: "Liked by people with similar taste" is only said of a post at least this
+#: many of them liked, so it never stands for one identifiable person.
+MIN_SIMILAR_VOTERS = 2
+
+#: A new creator: joined within NEWCOMER_DAYS, with fewer than
+#: NEWCOMER_FOLLOWERS followers. The lift fades as followers arrive.
+NEWCOMER_DAYS = 60
+NEWCOMER_FOLLOWERS = 30
+FOLLOWERS_TTL_SECONDS = 15 * 60
+
+#: Which For You reason each recently served post went out with, kept so an
+#: impression can be attributed to it. Never shown to anyone.
+SERVED_MEMORY = 400
+SERVED_TTL_SECONDS = 24 * 3600
 
 
 # -------------------------------------------------------------------- topics
@@ -212,6 +365,20 @@ DISCIPLINE_TOPICS = {
     "general_fitness": ("kind:workout",),
 }
 
+#: The topics a reader may hide from their For You page. What a post is,
+#: rather than who posted it: hiding "running" should hide runs, not every
+#: meal a runner ever posted.
+HIDEABLE_TOPICS = (
+    "kind:workout",
+    "type:lifting",
+    "type:running",
+    "type:biking",
+    "type:swimming",
+    "kind:meal",
+    "kind:planner",
+    "format:video",
+)
+
 _TOPIC_NAMES = {
     "kind:workout": "workouts",
     "kind:meal": "meals and recipes",
@@ -231,6 +398,12 @@ _TOPIC_NAMES = {
 
 def topic_name(topic):
     return _TOPIC_NAMES.get(topic, topic.split(":", 1)[-1].replace("_", " "))
+
+
+def topic_label(topic):
+    """A topic's name as a heading or a chip, capitalised."""
+    name = topic_name(topic)
+    return name[:1].upper() + name[1:]
 
 
 def topics_for(kind, workout_type, planner_category, has_video, disciplines):
@@ -262,6 +435,46 @@ def primary_topic(topics):
     return next(iter(topics))
 
 
+def _topic_filter(topics):
+    """A Q matching posts about any of these topics, or None."""
+    match = Q()
+    kinds = [topic.split(":", 1)[1] for topic in topics if topic.startswith("kind:")]
+    types = [topic.split(":", 1)[1] for topic in topics if topic.startswith("type:")]
+    categories = [topic.split(":", 1)[1] for topic in topics if topic.startswith("category:")]
+    disciplines = [topic.split(":", 1)[1] for topic in topics if topic.startswith("discipline:")]
+    if kinds:
+        match |= Q(kind__in=kinds)
+    if types:
+        match |= Q(workout__workout_type__in=types)
+        if "lifting" in types:
+            # Untyped sessions are drawn, and so counted, as lifting.
+            match |= Q(kind=Post.Kind.WORKOUT, workout__workout_type__isnull=True)
+    if categories:
+        match |= Q(planner__category__in=categories)
+    if disciplines:
+        # Exists rather than a join through the author's disciplines: an
+        # author with two matching disciplines would otherwise come back
+        # twice.
+        match |= Exists(UserDiscipline.objects.filter(
+            profile=OuterRef("author"), discipline__in=disciplines
+        ))
+    if "format:video" in topics:
+        match |= Exists(PostVideo.objects.filter(post=OuterRef("pk")))
+    return match or None
+
+
+# --------------------------------------------------------------- preferences
+
+def preferences_for(viewer):
+    """This reader's choices about their page, or the defaults if they never
+    made any. Unsaved defaults rather than a row created on read, so looking
+    at the page never writes."""
+    return (
+        RecommendationPreferences.objects.filter(viewer=viewer).first()
+        or RecommendationPreferences(viewer=viewer)
+    )
+
+
 # ------------------------------------------------------------------- profile
 
 def _squash(value, scale=4.0):
@@ -274,47 +487,76 @@ def _squash(value, scale=4.0):
 class InterestProfile:
     topics: dict = field(default_factory=dict)
     authors: dict = field(default_factory=dict)
+    #: Topics from the last MOMENTUM_HOURS alone, squashed more steeply: two
+    #: likes this afternoon say more about tonight than twenty last month.
+    momentum: dict = field(default_factory=dict)
     followed: frozenset = frozenset()
     #: Authors this reader has done anything positive with, followed or not.
     engaged_authors: frozenset = frozenset()
-    #: post id -> skipped, for posts seen within SEEN_WINDOW_DAYS.
+    #: Posts this reader liked, commented on, saved or shared, newest first.
+    #: What similar taste is measured from.
+    engaged_posts: tuple = ()
+    #: post id -> how much having seen it counts against it, from 0 (long
+    #: ago) up to 3 (just now, several times, scrolled past).
     seen: dict = field(default_factory=dict)
     declared: frozenset = frozenset()
+    #: Of those, what the reader literally picked -- an onboarding answer's
+    #: own topic, a discipline on their profile -- as opposed to what the
+    #: ranking reads into it (Running implies triathlon; nobody said so).
+    chosen: frozenset = frozenset()
+    #: Topics the reader asked never to be shown.
+    hidden: frozenset = frozenset()
     signal_count: int = 0
+    #: False when the reader turned personalisation off.
+    personalized: bool = True
 
     @property
     def is_new(self):
         """No history, no follows, no declared interests: a cold start."""
         return not (self.signal_count or self.followed or self.declared)
 
+    def affinity(self, topic):
+        """Long-term interest and momentum together, kept within (-1, 1)."""
+        return max(-1.0, min(1.0, self.topics.get(topic, 0.0) + self.momentum.get(topic, 0.0)))
+
     def top_topics(self, count=5):
-        positive = [(score, topic) for topic, score in self.topics.items() if score > 0]
+        names = set(self.topics) | set(self.momentum)
+        positive = [(self.affinity(topic), topic) for topic in names if self.affinity(topic) > 0]
         return [topic for _, topic in sorted(positive, reverse=True)[:count]]
 
 
 def declared_topics(viewer):
-    """The topics somebody named for themselves: onboarding and profile."""
-    topics = set()
+    """(every topic somebody named for themselves, the ones they literally
+    chose). Onboarding answers and profile disciplines both imply more than
+    they say -- Strength means lifting and five disciplines -- and the
+    ranking uses all of it; only the first part is the reader's own words."""
+    topics, chosen = set(), set()
     choice = Personalization.objects.filter(repbase_user=viewer).first()
     if choice is not None:
         for answer in choice.training_types or []:
             if isinstance(answer, str):
-                topics.update(TRAINING_TYPE_TOPICS.get(answer.strip().lower(), ()))
-        topics.update(EMPHASIS_TOPICS.get((choice.emphasis or "").strip().lower(), ()))
+                implied = TRAINING_TYPE_TOPICS.get(answer.strip().lower(), ())
+                topics.update(implied)
+                chosen.update(implied[:1])
+        emphasis = EMPHASIS_TOPICS.get((choice.emphasis or "").strip().lower(), ())
+        topics.update(emphasis)
+        chosen.update(emphasis)
     for discipline in UserDiscipline.objects.filter(profile=viewer).values_list(
         "discipline", flat=True
     ):
         topics.add(f"discipline:{discipline}")
+        chosen.add(f"discipline:{discipline}")
         topics.update(DISCIPLINE_TOPICS.get(discipline, ()))
-    return frozenset(topics)
+    return frozenset(topics), frozenset(chosen)
 
 
 def _post_topics_by_id(post_ids):
-    """{post id: (author id, topics)} for posts somebody interacted with."""
+    """{post id: (author id, topics, clip length in ms or None)} for posts
+    somebody interacted with."""
     rows = list(
         Post.objects.filter(pk__in=post_ids).values(
             "pk", "author_id", "kind", "workout__workout_type", "planner__category",
-            "video__status",
+            "video__status", "video__duration_ms",
         )
     )
     disciplines = _disciplines_by_author({row["author_id"] for row in rows})
@@ -328,6 +570,7 @@ def _post_topics_by_id(post_ids):
                 row["video__status"] == PostVideo.Status.APPROVED,
                 disciplines.get(row["author_id"], ()),
             ),
+            row["video__duration_ms"],
         )
         for row in rows
     }
@@ -342,86 +585,135 @@ def _disciplines_by_author(author_ids):
     return found
 
 
-def build_profile(viewer, weights=None, now=None):
+def _seen_weight(count, age_days, skipped):
+    """How much having seen a post counts against showing it again.
+
+    Fades with time, so something seen last week can come back, and grows
+    with repeats, so something seen four times does not."""
+    repeats = min(1 + 0.5 * math.log2(count), 2.0) if count > 1 else 1.0
+    return repeats * 0.5 ** (age_days / SEEN_HALF_LIFE_DAYS) * (1.5 if skipped else 1.0)
+
+
+def build_profile(viewer, weights=None, now=None, preferences=None):
     """What this reader is into, from what they have done and said."""
     weights = weights or FeedWeights.from_settings()
     now = now or timezone.now()
+    preferences = preferences or preferences_for(viewer)
+    hidden = frozenset(topic for topic in preferences.hidden_topics or () if topic in HIDEABLE_TOPICS)
+    window_start = now - timedelta(days=WINDOW_DAYS)
     since = now - timedelta(days=HISTORY_DAYS)
-    seen_since = now - timedelta(days=SEEN_WINDOW_DAYS)
+    # Clearing the history means what came before stops counting as taste.
+    # It still counts as seen: a cleared page that opens on everything
+    # already scrolled through would be a worse page, not a fresh one.
+    if preferences.history_cleared_at and preferences.history_cleared_at > since:
+        since = preferences.history_cleared_at
+    momentum_start = now - timedelta(hours=MOMENTUM_HOURS)
 
-    # (post id, weight, when). Every list is bounded twice: by age and count.
+    views = list(
+        PostView.objects.filter(viewer=viewer, last_seen_at__gte=now - timedelta(days=HISTORY_DAYS))
+        .order_by("-last_seen_at")
+        .values_list(
+            "post_id", "last_seen_at", "total_dwell_ms", "view_count", "completed",
+            "skipped", "max_watch_ms",
+        )[:VIEW_LIMIT]
+    )
+    seen = {}
+    for post_id, when, _, count, _, skipped, _ in views:
+        if when >= window_start:
+            age_days = max((now - when).total_seconds(), 0) / 86400
+            seen[post_id] = _seen_weight(count, age_days, skipped)
+
+    if not preferences.personalized:
+        # Nothing the reader did shapes the page, except that it does not
+        # repeat itself and that hidden topics stay hidden.
+        return InterestProfile(seen=seen, hidden=hidden, personalized=False)
+
+    # (post id, weight, when, explicit). Every list is bounded twice: by age
+    # and count. Explicit positive actions are what similar taste is
+    # measured from.
     events = []
 
-    def take(rows, weight):
-        events.extend((post_id, weight, when) for post_id, when in rows if post_id)
+    def take(rows, weight, explicit=False):
+        events.extend((post_id, weight, when, explicit) for post_id, when in rows if post_id)
 
     take(
         PostLike.objects.filter(user=viewer, created_at__gte=since)
         .exclude(post__author=viewer).order_by("-created_at")
         .values_list("post_id", "created_at")[:HISTORY_LIMIT],
-        weights.like,
+        weights.like, True,
     )
     take(
         PostComment.objects.filter(author=viewer, created_at__gte=since)
         .exclude(post__author=viewer).order_by("-created_at")
         .values_list("post_id", "created_at")[:HISTORY_LIMIT],
-        weights.comment,
+        weights.comment, True,
     )
     for model in (WorkoutTemplate, SavedFoodMeal):
         take(
             model.objects.filter(owner=viewer, source_post__isnull=False, created_at__gte=since)
             .order_by("-created_at").values_list("source_post_id", "created_at")[:HISTORY_LIMIT],
-            weights.save,
+            weights.save, True,
         )
     take(
         Post.objects.filter(author=viewer, kind=Post.Kind.REPOST, created_at__gte=since)
         .order_by("-created_at").values_list("repost_of_id", "created_at")[:HISTORY_LIMIT],
-        weights.share,
+        weights.share, True,
     )
 
-    seen = {}
-    for post_id, when, dwell, count, completed, skipped in (
-        PostView.objects.filter(viewer=viewer, last_seen_at__gte=since)
-        .order_by("-last_seen_at")
-        .values_list(
-            "post_id", "last_seen_at", "total_dwell_ms", "view_count", "completed", "skipped"
-        )[:HISTORY_LIMIT]
-    ):
-        if when >= seen_since:
-            seen[post_id] = skipped
+    watched = []
+    for post_id, when, dwell, count, completed, skipped, max_watch in views[:HISTORY_LIMIT]:
+        if when < since:
+            continue
         if completed:
-            events.append((post_id, weights.completion, when))
+            events.append((post_id, weights.completion, when, False))
+        elif max_watch:
+            # Half a clip is a judgement that needs the clip's length, which
+            # is read with the topics below.
+            watched.append((post_id, max_watch, when))
         if count and dwell / count >= LONG_VIEW_MS:
-            events.append((post_id, weights.long_view, when))
+            events.append((post_id, weights.long_view, when, False))
         if skipped:
-            events.append((post_id, weights.skip, when))
+            events.append((post_id, weights.skip, when, False))
 
-    dismissed = list(
+    take(
         PostFeedback.objects.filter(viewer=viewer, created_at__gte=since)
-        .order_by("-created_at").values_list("post_id", "created_at")[:HISTORY_LIMIT]
+        .order_by("-created_at").values_list("post_id", "created_at")[:HISTORY_LIMIT],
+        weights.not_interested,
     )
-    take(dismissed, weights.not_interested)
 
-    topics_by_post = _post_topics_by_id({post_id for post_id, _, _ in events})
+    topics_by_post = _post_topics_by_id(
+        {post_id for post_id, _, _, _ in events} | {post_id for post_id, _, _ in watched}
+    )
+    for post_id, max_watch, when in watched:
+        found = topics_by_post.get(post_id)
+        if found and found[2] and max_watch * 2 >= found[2]:
+            events.append((post_id, weights.half_watch, when, False))
+
     topic_tally = Counter()
+    momentum_tally = Counter()
     author_tally = Counter()
     engaged = set()
-    for post_id, weight, when in events:
+    explicit = []
+    for post_id, weight, when, is_explicit in sorted(events, key=lambda event: event[2], reverse=True):
         found = topics_by_post.get(post_id)
         if found is None:
             continue
-        author_id, topics = found
+        author_id, topics, _ = found
         age_days = max((now - when).total_seconds(), 0) / 86400
         decayed = weight * 0.5 ** (age_days / SIGNAL_HALF_LIFE_DAYS)
         for topic, share in topics.items():
             topic_tally[topic] += decayed * share
+            if when >= momentum_start:
+                momentum_tally[topic] += weight * share
         # Dismissing one post is mostly about the post; it says less about
         # everything else its author might make.
         author_tally[author_id] += decayed * (0.75 if weight < 0 else 1.0)
         if weight > 0:
             engaged.add(author_id)
+        if is_explicit and weight > 0 and post_id not in explicit:
+            explicit.append(post_id)
 
-    declared = declared_topics(viewer)
+    declared, chosen = declared_topics(viewer)
     for topic in declared:
         topic_tally[topic] += weights.declared
 
@@ -434,28 +726,235 @@ def build_profile(viewer, weights=None, now=None):
     return InterestProfile(
         topics={topic: _squash(value) for topic, value in topic_tally.items()},
         authors={author: _squash(value) for author, value in author_tally.items()},
+        momentum={topic: _squash(value, 2.0) for topic, value in momentum_tally.items() if value},
         followed=followed,
         engaged_authors=frozenset(engaged) | followed,
+        engaged_posts=tuple(explicit[:SEED_LIMIT]),
         seen=seen,
         declared=declared,
+        chosen=chosen,
+        hidden=hidden,
         signal_count=len(events),
     )
 
 
-# ---------------------------------------------------------------- candidates
+def interests(profile, limit=8):
+    """What the page has picked up about a reader, strongest first, for
+    showing back to them. Topics only -- never authors or posts, which would
+    turn "what Rytivo thinks you like" into a list of who you look at.
 
-def _count(model, field_name, **filters):
-    """A correlated count, which adds a column and never a row."""
-    return Coalesce(
-        Subquery(
-            model.objects.filter(**{field_name: OuterRef("pk")}, **filters)
-            .order_by().values(field_name).annotate(n=Count("pk")).values("n")[:1]
-        ),
-        Value(0),
+    One line per name a person would recognise: running as a workout type and
+    running as somebody's discipline are the same interest to the reader, so
+    they are shown once, under the topic that can be hidden, at the strength
+    of the stronger. `declared` is true only for what the reader picked
+    themselves, never for what the ranking inferred from it."""
+    if not profile.personalized:
+        return []
+    by_label = {}
+    for topic in set(profile.topics) | set(profile.momentum):
+        strength = profile.affinity(topic)
+        if strength <= 0.05 or topic in profile.hidden:
+            continue
+        label = topic_label(topic)
+        current = by_label.get(label)
+        if current is None:
+            by_label[label] = {
+                "topic": topic, "label": label, "strength": strength,
+                "declared": topic in profile.chosen,
+            }
+            continue
+        current["declared"] = current["declared"] or topic in profile.chosen
+        current["strength"] = max(current["strength"], strength)
+        if topic in HIDEABLE_TOPICS and current["topic"] not in HIDEABLE_TOPICS:
+            current["topic"] = topic
+    ranked = sorted(by_label.values(), key=lambda item: (-item["strength"], item["label"]))[:limit]
+    for item in ranked:
+        item["strength"] = round(item["strength"], 3)
+    return ranked
+
+
+# ----------------------------------------------------------- shared counts
+#
+# A post's likes, comments and views are the same whoever is asking, so they
+# are counted once and kept for a couple of minutes where every worker can
+# read them. Counting them per reader was most of the cost of a ranking, and
+# a ranking does not need them to the second.
+
+@dataclass(frozen=True)
+class Engagement:
+    likes: int = 0
+    comments: int = 0
+    shares: int = 0
+    saves: int = 0
+    impressions: int = 0
+    long_views: int = 0
+    completions: int = 0
+
+
+def _cached_many(prefix, ids, compute, ttl):
+    """{id: value} for these ids, from the cache where it has them and from
+    `compute(missing ids)` where it does not. A bounded number of queries
+    however many ids there are."""
+    keys = {pk: f"for-you:{prefix}:{pk}" for pk in ids}
+    hits = cache.get_many(list(keys.values())) if keys else {}
+    found = {pk: hits[key] for pk, key in keys.items() if key in hits}
+    missing = [pk for pk in keys if pk not in found]
+    if missing:
+        computed = compute(missing)
+        cache.set_many({keys[pk]: value for pk, value in computed.items()}, ttl)
+        found.update(computed)
+    return found
+
+
+def _grouped(queryset, field_name, **counts):
+    """{value of field_name: {count name: n}} in one query."""
+    rows = queryset.order_by().values(field_name).annotate(**counts)
+    return {row[field_name]: row for row in rows}
+
+
+def _count_engagement(post_ids):
+    likes = _grouped(PostLike.objects.filter(post_id__in=post_ids), "post_id", n=Count("pk"))
+    comments = _grouped(
+        PostComment.objects.filter(post_id__in=post_ids, is_hidden=False), "post_id", n=Count("pk")
+    )
+    shares = _grouped(Post.objects.filter(repost_of_id__in=post_ids), "repost_of_id", n=Count("pk"))
+    workout_saves = _grouped(
+        WorkoutTemplate.objects.filter(source_post_id__in=post_ids), "source_post_id", n=Count("pk")
+    )
+    meal_saves = _grouped(
+        SavedFoodMeal.objects.filter(source_post_id__in=post_ids), "source_post_id", n=Count("pk")
+    )
+    views = _grouped(
+        PostView.objects.filter(post_id__in=post_ids), "post_id",
+        impressions=Count("pk"),
+        long_views=Count("pk", filter=Q(total_dwell_ms__gte=LONG_VIEW_MS)),
+        completions=Count("pk", filter=Q(completed=True)),
     )
 
+    def n(table, pk, name="n"):
+        return table.get(pk, {}).get(name, 0)
 
-def eligible_posts(viewer, now=None):
+    return {
+        pk: Engagement(
+            likes=n(likes, pk),
+            comments=n(comments, pk),
+            shares=n(shares, pk),
+            saves=n(workout_saves, pk) + n(meal_saves, pk),
+            impressions=n(views, pk, "impressions"),
+            long_views=n(views, pk, "long_views"),
+            completions=n(views, pk, "completions"),
+        )
+        for pk in post_ids
+    }
+
+
+def engagement_for(post_ids):
+    """{post id: Engagement}, shared across readers for STATS_TTL_SECONDS."""
+    return _cached_many("stats", post_ids, _count_engagement, STATS_TTL_SECONDS)
+
+
+def _count_followers(author_ids):
+    counts = dict(
+        Follow.objects.filter(following_id__in=author_ids).order_by()
+        .values("following_id").annotate(n=Count("pk")).values_list("following_id", "n")
+    )
+    return {pk: counts.get(pk, 0) for pk in author_ids}
+
+
+def follower_counts(author_ids):
+    return _cached_many("followers", author_ids, _count_followers, FOLLOWERS_TTL_SECONDS)
+
+
+def trending_post_ids(now=None):
+    """The most liked recent posts this week, for everybody. Eligibility is
+    applied per reader afterwards; this is only where to look."""
+    found = cache.get("for-you:trending")
+    if found is None:
+        now = now or timezone.now()
+        found = list(
+            PostLike.objects.filter(
+                created_at__gte=now - timedelta(days=TRENDING_DAYS),
+                post__created_at__gte=now - timedelta(days=WINDOW_DAYS),
+            )
+            .order_by().values("post_id").annotate(n=Count("pk"))
+            .order_by("-n", "-post_id").values_list("post_id", flat=True)[:TRENDING_LIMIT]
+        )
+        cache.set("for-you:trending", found, TRENDING_TTL_SECONDS)
+    return found
+
+
+# ------------------------------------------------------------ similar taste
+
+@dataclass(frozen=True)
+class Similar:
+    #: 0-1: how strongly people like this reader went for it, relative to the
+    #: best such post, scaled down when there are few such people.
+    score: float
+    #: How many of them liked it.
+    voters: int
+
+
+def similar_tastes(viewer, profile, now=None):
+    """{post id: Similar}: recent posts liked by people whose likes overlap
+    this reader's.
+
+    Similarity is cosine: shared likes over the geometric mean of both
+    histories, so somebody who likes everything is not everybody's twin.
+    Neighbours are never named or shown -- they only move posts -- and blocked
+    or suspended accounts are not anyone's neighbour.
+    """
+    from .views import without_blocked_authors
+
+    now = now or timezone.now()
+    seeds = list(profile.engaged_posts[:SEED_LIMIT])
+    if not profile.personalized or len(seeds) < MIN_OVERLAP:
+        return {}
+    likers = without_blocked_authors(
+        viewer,
+        PostLike.objects.filter(post_id__in=seeds, user__user__is_active=True).exclude(user=viewer),
+        "user",
+    )
+    overlap = list(
+        likers.order_by().values("user_id").annotate(shared=Count("pk"))
+        .filter(shared__gte=MIN_OVERLAP).order_by("-shared", "user_id")
+        .values_list("user_id", "shared")[:NEIGHBOUR_POOL]
+    )
+    if not overlap:
+        return {}
+    totals = dict(
+        PostLike.objects.filter(
+            user_id__in=[user for user, _ in overlap],
+            created_at__gte=now - timedelta(days=HISTORY_DAYS),
+        ).order_by().values("user_id").annotate(n=Count("pk")).values_list("user_id", "n")
+    )
+    similarity = {
+        user: shared / math.sqrt(len(seeds) * max(totals.get(user, shared), shared))
+        for user, shared in overlap
+    }
+    neighbours = sorted(similarity, key=lambda user: (-similarity[user], user))[:NEIGHBOURS]
+    pairs = (
+        PostLike.objects.filter(
+            user_id__in=neighbours, created_at__gte=now - timedelta(days=WINDOW_DAYS),
+            post__created_at__gte=now - timedelta(days=WINDOW_DAYS),
+        )
+        .exclude(post_id__in=seeds).exclude(post__author=viewer)
+        .order_by("-created_at").values_list("user_id", "post_id")[:NEIGHBOUR_LIKES]
+    )
+    tally, voters = Counter(), Counter()
+    for user, post_id in pairs:
+        tally[post_id] += similarity[user]
+        voters[post_id] += 1
+    if not tally:
+        return {}
+    best = max(tally.values())
+    confidence = min(1.0, len(neighbours) / CONFIDENT_NEIGHBOURS)
+    top = sorted(tally, key=lambda post_id: (-tally[post_id], -post_id))[:SOURCE_LIMIT]
+    return {post_id: Similar(tally[post_id] / best * confidence, voters[post_id]) for post_id in top}
+
+
+# ---------------------------------------------------------------- candidates
+
+def eligible_posts(viewer, now=None, hidden=()):
     """Every post that may be recommended to this reader, before ranking.
 
     Built on `visible_posts_for`, so nothing here can be shown that the
@@ -470,13 +969,21 @@ def eligible_posts(viewer, now=None):
         PostReport.objects.filter(post=OuterRef("pk"), reviewed_at__isnull=True)
         .order_by().values("post").annotate(n=Count("pk")).values("n")[:1]
     )
-    return (
+    queryset = (
         visible_posts_for(viewer, Post.objects.all(), include_reposts=False)
         .exclude(kind=Post.Kind.REPOST)
         .exclude(author=viewer)
         .filter(created_at__gte=now - timedelta(days=WINDOW_DAYS))
         .exclude(Exists(PostFeedback.objects.filter(viewer=viewer, post=OuterRef("pk"))))
         .exclude(Exists(PostReport.objects.filter(reporter=viewer, post=OuterRef("pk"))))
+        # Something the reader already liked, commented on, saved or passed
+        # on is something they have already found. Showing it again is the
+        # page repeating itself.
+        .exclude(Exists(PostLike.objects.filter(user=viewer, post=OuterRef("pk"))))
+        .exclude(Exists(PostComment.objects.filter(author=viewer, post=OuterRef("pk"))))
+        .exclude(Exists(Post.objects.filter(author=viewer, repost_of=OuterRef("pk"))))
+        .exclude(Exists(WorkoutTemplate.objects.filter(owner=viewer, source_post=OuterRef("pk"))))
+        .exclude(Exists(SavedFoodMeal.objects.filter(owner=viewer, source_post=OuterRef("pk"))))
         # A clip waiting for review is its author's alone; a post whose clip
         # nobody else may watch is not one to put in front of strangers.
         .exclude(
@@ -489,16 +996,15 @@ def eligible_posts(viewer, now=None):
         .annotate(open_reports=Coalesce(Subquery(open_reports), Value(0)))
         .filter(open_reports__lt=REPORT_THRESHOLD)
     )
+    hiding = _topic_filter([topic for topic in hidden if topic in HIDEABLE_TOPICS])
+    if hiding is not None:
+        queryset = queryset.exclude(hiding)
+    return queryset
 
 
-#: Counts carry an `n_` prefix because the plain names are taken: `likes`,
-#: `comments` and `views` are already Post's reverse relations, and Django
-#: refuses an annotation that shadows one.
 _CANDIDATE_FIELDS = (
-    "pk", "author_id", "kind", "created_at", "workout__workout_type",
-    "planner__category", "video__status", "open_reports", "n_likes",
-    "n_comments", "n_shares", "n_workout_saves", "n_meal_saves",
-    "n_impressions", "n_long_views", "n_completions",
+    "pk", "author_id", "author__created_at", "kind", "created_at", "workout__workout_type",
+    "planner__category", "video__status", "open_reports",
 )
 
 
@@ -517,6 +1023,11 @@ class Candidate:
     impressions: int
     long_views: int
     completions: int
+    #: 0-1, from `similar_tastes`.
+    similar: float = 0.0
+    similar_voters: int = 0
+    #: 0-1: how new and how small the author is.
+    newcomer: float = 0.0
     sources: set = field(default_factory=set)
     score: float = 0.0
     parts: dict = field(default_factory=dict)
@@ -526,72 +1037,38 @@ class Candidate:
         return primary_topic(self.topics)
 
 
-def _with_counts(queryset):
-    return queryset.annotate(
-        n_likes=_count(PostLike, "post"),
-        n_comments=_count(PostComment, "post", is_hidden=False),
-        n_shares=_count(Post, "repost_of"),
-        n_workout_saves=_count(WorkoutTemplate, "source_post"),
-        n_meal_saves=_count(SavedFoodMeal, "source_post"),
-        n_impressions=_count(PostView, "post"),
-        n_long_views=_count(PostView, "post", total_dwell_ms__gte=LONG_VIEW_MS),
-        n_completions=_count(PostView, "post", completed=True),
-    )
+def _newcomer_scores(rows, now):
+    """{author id: 0-1} for authors who joined within NEWCOMER_DAYS."""
+    joined_after = now - timedelta(days=NEWCOMER_DAYS)
+    young = sorted({
+        row["author_id"] for row in rows
+        if row["author__created_at"] and row["author__created_at"] >= joined_after
+    })
+    if not young:
+        return {}
+    followers = follower_counts(young)
+    scale = math.log1p(NEWCOMER_FOLLOWERS)
+    return {
+        author_id: max(0.0, 1 - math.log1p(followers.get(author_id, 0)) / scale)
+        for author_id in young
+    }
 
 
-def candidates(viewer, profile, now=None):
-    """Recent eligible posts from three sources, merged, each capped."""
-    now = now or timezone.now()
-    eligible = eligible_posts(viewer, now)
-    newest = ("-created_at", "-id")
-    sources = [("fresh", _with_counts(eligible).order_by(*newest)[:POOL_SIZE])]
-
-    if profile.followed:
-        sources.append((
-            "following",
-            _with_counts(eligible.filter(author_id__in=profile.followed)).order_by(*newest)[:SOURCE_LIMIT],
-        ))
-
-    best = profile.top_topics(5)
-    if best:
-        match = Q()
-        kinds = [topic.split(":", 1)[1] for topic in best if topic.startswith("kind:")]
-        types = [topic.split(":", 1)[1] for topic in best if topic.startswith("type:")]
-        categories = [topic.split(":", 1)[1] for topic in best if topic.startswith("category:")]
-        disciplines = [topic.split(":", 1)[1] for topic in best if topic.startswith("discipline:")]
-        if kinds:
-            match |= Q(kind__in=kinds)
-        if types:
-            match |= Q(workout__workout_type__in=types)
-            if "lifting" in types:
-                # Untyped sessions are drawn, and so counted, as lifting.
-                match |= Q(kind=Post.Kind.WORKOUT, workout__workout_type__isnull=True)
-        if categories:
-            match |= Q(planner__category__in=categories)
-        if disciplines:
-            # Exists rather than a join through the author's disciplines: an
-            # author with two matching disciplines would otherwise come back
-            # twice.
-            match |= Exists(UserDiscipline.objects.filter(
-                profile=OuterRef("author"), discipline__in=disciplines
-            ))
-        if match:
-            sources.append((
-                "interest",
-                _with_counts(eligible.filter(match)).order_by(*newest)[:SOURCE_LIMIT],
-            ))
-
-    rows = {}
-    for name, queryset in sources:
-        for row in queryset.values(*_CANDIDATE_FIELDS):
-            rows.setdefault(row["pk"], (row, set()))[1].add(name)
-
+def _as_candidates(rows, similar, now):
+    """Turn candidate rows into Candidates: topics, shared counts, similar
+    taste and newcomer lift. A fixed number of queries for any number."""
+    if not rows:
+        return []
     disciplines = _disciplines_by_author({row["author_id"] for row, _ in rows.values()})
+    stats = engagement_for(sorted(rows))
+    newcomers = _newcomer_scores([row for row, _ in rows.values()], now)
     found = []
-    for row, names in rows.values():
+    for pk, (row, names) in rows.items():
         has_video = row["video__status"] == PostVideo.Status.APPROVED
+        counts = stats.get(pk) or Engagement()
+        taste = similar.get(pk)
         found.append(Candidate(
-            pk=row["pk"],
+            pk=pk,
             author_id=row["author_id"],
             created_at=row["created_at"],
             topics=topics_for(
@@ -600,19 +1077,79 @@ def candidates(viewer, profile, now=None):
             ),
             has_video=has_video,
             open_reports=row["open_reports"],
-            likes=row["n_likes"],
-            comments=row["n_comments"],
-            shares=row["n_shares"],
-            saves=row["n_workout_saves"] + row["n_meal_saves"],
-            impressions=row["n_impressions"],
-            long_views=row["n_long_views"],
-            completions=row["n_completions"],
+            likes=counts.likes,
+            comments=counts.comments,
+            shares=counts.shares,
+            saves=counts.saves,
+            impressions=counts.impressions,
+            long_views=counts.long_views,
+            completions=counts.completions,
+            similar=taste.score if taste else 0.0,
+            similar_voters=taste.voters if taste else 0,
+            newcomer=newcomers.get(row["author_id"], 0.0),
             sources=names,
         ))
     return found
 
 
+def candidates(viewer, profile, now=None, similar=None):
+    """Recent eligible posts from five sources, merged, each capped."""
+    now = now or timezone.now()
+    eligible = eligible_posts(viewer, now, profile.hidden)
+    newest = ("-created_at", "-id")
+    sources = [("fresh", eligible.order_by(*newest)[:POOL_SIZE])]
+
+    if profile.followed:
+        sources.append((
+            "following",
+            eligible.filter(author_id__in=profile.followed).order_by(*newest)[:SOURCE_LIMIT],
+        ))
+
+    match = _topic_filter(profile.top_topics(5))
+    if match is not None:
+        sources.append(("interest", eligible.filter(match).order_by(*newest)[:SOURCE_LIMIT]))
+
+    similar = similar if similar is not None else similar_tastes(viewer, profile, now)
+    if similar:
+        sources.append((
+            "similar", eligible.filter(pk__in=list(similar)).order_by(*newest)[:SOURCE_LIMIT],
+        ))
+
+    trending = trending_post_ids(now)
+    if trending:
+        sources.append(("trending", eligible.filter(pk__in=trending).order_by(*newest)[:SOURCE_LIMIT]))
+
+    rows = {}
+    for name, queryset in sources:
+        for row in queryset.values(*_CANDIDATE_FIELDS):
+            rows.setdefault(row["pk"], (row, set()))[1].add(name)
+    return _as_candidates(rows, similar, now)
+
+
+def candidates_by_id(viewer, profile, post_ids, similar=None, now=None):
+    """These posts as candidates again, minus any that stopped being
+    eligible -- deleted, hidden, dismissed, liked, blocked -- since they were
+    first found. What a later page of a session ranks from."""
+    if not post_ids:
+        return []
+    now = now or timezone.now()
+    rows = {
+        row["pk"]: (row, set())
+        for row in eligible_posts(viewer, now, profile.hidden)
+        .filter(pk__in=list(post_ids)).values(*_CANDIDATE_FIELDS)
+    }
+    return _as_candidates(rows, similar or {}, now)
+
+
 # ------------------------------------------------------------------- scoring
+
+def _explored(mean, draw, explore):
+    """Somewhere between a post's average and a draw from what its record
+    allows. With few observations the draw ranges widely, and that is the
+    point: a new post is sometimes ranked as though it were very good, and
+    finds out whether it is."""
+    return mean + explore * (draw - mean)
+
 
 def score(candidate, profile, weights, now, rng=None):
     """A candidate's score, and the parts it is made of."""
@@ -620,35 +1157,44 @@ def score(candidate, profile, weights, now, rng=None):
     topic_match = sum(
         profile.topics.get(topic, 0.0) * share for topic, share in candidate.topics.items()
     ) / topic_weight
+    momentum = sum(
+        profile.momentum.get(topic, 0.0) * share for topic, share in candidate.topics.items()
+    ) / topic_weight
 
     engagement = (
         candidate.likes + 2 * candidate.comments + 3 * candidate.saves + 2 * candidate.shares
     )
     # Engagement per view, pulled toward a modest prior until there are
     # enough views to say otherwise: one like on one view is not the best post
-    # on the server.
-    rate = (engagement + 0.1 * 20) / (candidate.impressions + 20)
-    quality = 1 - math.exp(-rate / 0.3)
+    # on the server. The posterior is a gamma -- engagement is weighted, so a
+    # count rather than a yes-or-no per view -- whose mean is that smoothed
+    # rate; exploring draws from it instead.
+    alpha = QUALITY_PRIOR_RATE * QUALITY_PRIOR_VIEWS + engagement
+    beta = QUALITY_PRIOR_VIEWS + candidate.impressions
+    rate = alpha / beta
+    stayed = min(candidate.completions if candidate.has_video else candidate.long_views,
+                 candidate.impressions)
+    watch = (stayed + 1) / (candidate.impressions + 2)
+    if rng is not None and weights.explore:
+        rate = _explored(rate, rng.gammavariate(alpha, 1 / beta), weights.explore)
+    quality = 1 - math.exp(-max(rate, 0.0) / 0.3)
     popularity = min(1.0, math.log1p(engagement) / math.log1p(50))
     age_hours = max((now - candidate.created_at).total_seconds(), 0) / 3600
     recency = 0.5 ** (age_hours / RECENCY_HALF_LIFE_HOURS)
-    stayed = candidate.completions if candidate.has_video else candidate.long_views
-    watch = (stayed + 1) / (candidate.impressions + 2)
-
-    seen = 0.0
-    if candidate.pk in profile.seen:
-        seen = 1.5 if profile.seen[candidate.pk] else 1.0
     reported = min(candidate.open_reports, REPORT_THRESHOLD) / REPORT_THRESHOLD
 
     parts = {
         "topic": weights.topic * topic_match,
+        "momentum": weights.momentum * momentum,
         "author": weights.author * profile.authors.get(candidate.author_id, 0.0),
         "follows": weights.follows * (candidate.author_id in profile.followed),
+        "similar": weights.similar * candidate.similar,
         "quality": weights.quality * quality,
         "popularity": weights.popularity * popularity,
         "recency": weights.recency * recency,
         "watch": weights.watch * watch,
-        "seen": -weights.seen * seen,
+        "newcomer": weights.newcomer * candidate.newcomer,
+        "seen": -weights.seen * profile.seen.get(candidate.pk, 0.0),
         "reported": -weights.reported * reported,
     }
     if rng is not None and weights.jitter:
@@ -665,48 +1211,79 @@ class Ranked:
     label: str
 
 
+#: Every reason a post can be given, as sent in `recommendation.reason`.
+#: Plain strings on the wire, so a client that meets one it does not know
+#: shows the label rather than failing to decode.
+REASONS = ("following", "interest", "similar", "discovery", "new_creator", "popular", "fresh")
+
+
 def _reason(candidate, profile, discovery):
     if discovery:
         return "discovery", "Something new for you"
     if candidate.author_id in profile.followed:
         return "following", "From someone you follow"
     matching = [
-        (profile.topics.get(topic, 0.0) * share, topic)
-        for topic, share in candidate.topics.items()
+        (profile.affinity(topic) * share, topic) for topic, share in candidate.topics.items()
     ]
     strength, topic = max(matching)
     if strength > 0.15:
         return "interest", f"Because you like {topic_name(topic)}"
+    if candidate.similar_voters >= MIN_SIMILAR_VOTERS and candidate.similar >= 0.3:
+        return "similar", "Liked by people with similar taste"
+    if candidate.newcomer >= 0.5:
+        return "new_creator", "From a new creator"
     parts = candidate.parts
     if parts.get("quality", 0) + parts.get("popularity", 0) > parts.get("recency", 0):
         return "popular", "Popular in the community"
     return "fresh", "New in the community"
 
 
-def rank(found, profile, weights, rng, limit=MAX_RANKED):
+@dataclass
+class RankState:
+    """Where a page left off: what the next slot must stay varied against.
+
+    Carried from one page of a session to the next, so the author gap and
+    the discovery slots hold across the boundary rather than restarting."""
+
+    position: int = 0
+    authors_used: Counter = field(default_factory=Counter)
+    recent_authors: list = field(default_factory=list)
+    recent_topics: list = field(default_factory=list)
+
+    def dump(self):
+        return [self.position, dict(self.authors_used), self.recent_authors[-8:], self.recent_topics[-8:]]
+
+    @classmethod
+    def load(cls, data):
+        position, used, authors, topics = data
+        return cls(position, Counter(used), list(authors), list(topics))
+
+
+def rank(found, profile, weights, rng, limit=MAX_RANKED, state=None):
     """Order the scored candidates into a page worth scrolling."""
+    state = state if state is not None else RankState()
     remaining = sorted(found, key=lambda item: (-item.score, -item.pk))
     usual = set(profile.top_topics(3))
-    authors_used = Counter()
-    recent_authors = []
-    recent_topics = []
     ordered = []
 
     def adjusted(candidate):
         return (
             candidate.score
-            - weights.author_repeat * authors_used[candidate.author_id]
-            - weights.topic_repeat * recent_topics[-5:].count(candidate.main_topic)
+            - weights.author_repeat * state.authors_used[candidate.author_id]
+            - weights.topic_repeat * state.recent_topics[-5:].count(candidate.main_topic)
         )
 
     while remaining and len(ordered) < limit:
         window = remaining[:SCAN_DEPTH]
-        spaced = [item for item in window if item.author_id not in recent_authors[-(AUTHOR_GAP - 1):]]
+        spaced = [
+            item for item in window
+            if item.author_id not in state.recent_authors[-(AUTHOR_GAP - 1):]
+        ]
         pool = spaced or window
         pick = None
         discovery = False
         every = weights.discovery_every
-        if every and len(ordered) % every == every - 1:
+        if every and state.position % every == every - 1:
             # Unknown means no history either way. Somebody whose posts this
             # reader dismissed is not unknown to them, and neither is a topic
             # they have scrolled past; offering those as "something new"
@@ -715,7 +1292,7 @@ def rank(found, profile, weights, rng, limit=MAX_RANKED):
                 item for item in pool
                 if item.author_id not in profile.engaged_authors
                 and profile.authors.get(item.author_id, 0.0) >= 0
-                and profile.topics.get(item.main_topic, 0.0) >= 0
+                and profile.affinity(item.main_topic) >= 0
             ]
             new_ground = [item for item in unknown if item.main_topic not in usual]
             options = new_ground or unknown
@@ -727,12 +1304,19 @@ def rank(found, profile, weights, rng, limit=MAX_RANKED):
         if pick is None:
             pick = max(pool, key=adjusted)
         remaining.remove(pick)
-        authors_used[pick.author_id] += 1
-        recent_authors.append(pick.author_id)
-        recent_topics.append(pick.main_topic)
+        state.position += 1
+        state.authors_used[pick.author_id] += 1
+        state.recent_authors = (state.recent_authors + [pick.author_id])[-8:]
+        state.recent_topics = (state.recent_topics + [pick.main_topic])[-8:]
         reason, label = _reason(pick, profile, discovery)
         ordered.append(Ranked(pick.pk, reason, label))
     return ordered
+
+
+def new_seed():
+    """Where a ranking's randomness starts. Its own function so a test can
+    fix it and get the same page twice."""
+    return secrets.randbits(32)
 
 
 @dataclass
@@ -741,37 +1325,45 @@ class Ranking:
     candidate_count: int
     is_new: bool
     duration_ms: float
+    variant: object = None
 
 
-def build_ranking(viewer, now=None, seed=None):
-    """Everything above, in order, for one reader."""
+def build_ranking(viewer, now=None, seed=None, limit=MAX_RANKED):
+    """Everything above, in order, for one reader, all at once.
+
+    The page itself goes through `serve_page`, which ranks a page at a time;
+    this is the same work for when the whole order is wanted -- a report, a
+    test, a look at what somebody would be shown.
+    """
     started = time.perf_counter()
-    weights = FeedWeights.from_settings()
     now = now or timezone.now()
-    rng = random.Random(seed if seed is not None else secrets.randbits(32))
+    weights, variant = FeedWeights.for_viewer(viewer.pk)
+    rng = random.Random(seed if seed is not None else new_seed())
     profile = build_profile(viewer, weights, now)
     found = candidates(viewer, profile, now)
     for candidate in found:
         candidate.score, candidate.parts = score(candidate, profile, weights, now, rng)
-    items = rank(found, profile, weights, rng)
+    items = rank(found, profile, weights, rng, limit=limit)
     duration_ms = (time.perf_counter() - started) * 1000
-    record_latency(duration_ms)
-    logger.info(
-        "for_you ranked=%d candidates=%d new_account=%s duration_ms=%.1f reasons=%s",
-        len(items), len(found), profile.is_new, duration_ms,
-        dict(Counter(item.reason for item in items)),
-    )
-    return Ranking(items, len(found), profile.is_new, duration_ms)
+    return Ranking(items, len(found), profile.is_new, duration_ms, variant)
 
 
 # ------------------------------------------------------------------ sessions
 #
-# A ranking is not an ORDER BY a database can page through, so it is worked
-# out once, kept for half an hour, and paged by position. Without that, page
-# two would be ranked again from scratch and could repeat page one or skip
-# what page one pushed down. The cursor names the ranking and the position;
-# it is signed so a client cannot make one up, and the cache key carries the
-# reader's id, so a cursor taken from somebody else opens nothing.
+# A ranking is not an ORDER BY a database can page through, so it is kept in
+# the cache for half an hour and paged by position. What a session holds:
+#
+# - `served`: every post handed out so far, in order, with its reason. Only
+#   ever appended to, so a position means the same post on every request and
+#   a retried page comes back the same.
+# - `pool`: the candidates not served yet, by id. Each later page re-checks
+#   them against the eligibility rules, re-scores them against a fresh
+#   profile and ranks the next page from them -- which is how the page keeps
+#   up with what the reader does while they scroll.
+#
+# The cursor names the session and the position; it is signed so a client
+# cannot make one up, and the cache key carries the reader's id, so a cursor
+# taken from somebody else opens nothing.
 
 _CURSOR_SALT = "core.recommendations.cursor"
 
@@ -780,25 +1372,48 @@ class BadCursor(ValueError):
     pass
 
 
+@dataclass
+class FeedSession:
+    seed: int
+    served: list = field(default_factory=list)
+    pool: list = field(default_factory=list)
+    #: post id -> (similar score, voters), for the pool. Similar taste is
+    #: worked out once per session, not per page.
+    similar: dict = field(default_factory=dict)
+    state: RankState = field(default_factory=RankState)
+
+    def dump(self):
+        return {
+            "v": 2, "seed": self.seed, "served": self.served, "pool": self.pool,
+            "similar": self.similar, "state": self.state.dump(),
+        }
+
+    @classmethod
+    def load(cls, data):
+        if isinstance(data, list):
+            # A session cached by the version before this one: the order it
+            # served, and nothing left to re-rank.
+            return cls(seed=0, served=[tuple(row) for row in data])
+        return cls(
+            seed=data["seed"],
+            served=[tuple(row) for row in data["served"]],
+            pool=list(data["pool"]),
+            similar=dict(data["similar"]),
+            state=RankState.load(data["state"]),
+        )
+
+
 def _session_key(viewer_id, session):
     return f"for-you:{viewer_id}:{session}"
 
 
-def start_session(viewer, ranking):
-    session = secrets.token_urlsafe(12)
-    cache.set(
-        _session_key(viewer.pk, session),
-        [(item.pk, item.reason, item.label) for item in ranking.items],
-        SESSION_TTL_SECONDS,
-    )
-    return session
+def _save_session(viewer, session_id, session):
+    cache.set(_session_key(viewer.pk, session_id), session.dump(), SESSION_TTL_SECONDS)
 
 
-def load_session(viewer, session):
-    stored = cache.get(_session_key(viewer.pk, session))
-    if stored is None:
-        return None
-    return [Ranked(*row) for row in stored]
+def load_session(viewer, session_id):
+    stored = cache.get(_session_key(viewer.pk, session_id))
+    return None if stored is None else FeedSession.load(stored)
 
 
 def make_cursor(session, offset):
@@ -816,17 +1431,140 @@ def read_cursor(value):
     return session, offset
 
 
+def _extend(session, found, profile, weights, now, need):
+    """Score what is left, rank the next `need` posts, and keep the rest."""
+    rng = random.Random(session.seed * 1_000_003 + len(session.served))
+    for candidate in found:
+        candidate.score, candidate.parts = score(candidate, profile, weights, now, rng)
+    chosen = rank(found, profile, weights, rng, limit=need, state=session.state)
+    taken = {item.pk for item in chosen}
+    session.served.extend((item.pk, item.reason, item.label) for item in chosen)
+    rest = sorted(
+        (item for item in found if item.pk not in taken), key=lambda item: (-item.score, -item.pk)
+    )
+    session.pool = [item.pk for item in rest[:POOL_KEEP]]
+    keep = set(session.pool)
+    session.similar = {pk: value for pk, value in session.similar.items() if pk in keep}
+    return chosen
+
+
+@dataclass
+class Page:
+    session: str
+    items: list
+    #: Where the next page starts, or None at the end.
+    next_offset: object
+    #: Milliseconds spent ranking for this page, or None if it was served
+    #: from what an earlier page had already ranked.
+    duration_ms: object = None
+
+
+def serve_page(viewer, session_id=None, offset=0, size=20, now=None, seed=None):
+    """One page of For You: from a new ranking, or from a session's next
+    stretch, re-ranked for what the reader has done since."""
+    started = time.perf_counter()
+    now = now or timezone.now()
+    session = load_session(viewer, session_id) if session_id else None
+    ranked = None
+    if session is None:
+        # No cursor, or the session expired: rank afresh from the top. An
+        # expired session is not resumed at its old position -- position 40
+        # of a different ranking is no continuation of anything, and what the
+        # reader already saw is pushed down by having been seen.
+        weights, variant = FeedWeights.for_viewer(viewer.pk)
+        session_id = secrets.token_urlsafe(12)
+        session = FeedSession(seed=seed if seed is not None else new_seed())
+        offset = 0
+        profile = build_profile(viewer, weights, now)
+        found = candidates(viewer, profile, now)
+        session.similar = {
+            item.pk: (item.similar, item.similar_voters) for item in found if item.similar
+        }
+        ranked = _extend(session, found, profile, weights, now, size)
+        _log_ranking("first", started, viewer, ranked, len(found), profile, variant)
+    else:
+        offset = min(offset, len(session.served))
+        need = min(offset + size, MAX_RANKED) - len(session.served)
+        if need > 0 and session.pool:
+            weights, variant = FeedWeights.for_viewer(viewer.pk)
+            profile = build_profile(viewer, weights, now)
+            similar = {pk: Similar(*value) for pk, value in session.similar.items()}
+            found = candidates_by_id(viewer, profile, session.pool, similar, now)
+            ranked = _extend(session, found, profile, weights, now, need)
+            _log_ranking("next", started, viewer, ranked, len(found), profile, variant)
+    if ranked is not None:
+        _save_session(viewer, session_id, session)
+
+    items = [Ranked(*row) for row in session.served[offset:offset + size]]
+    following = offset + size
+    more = following < len(session.served) or (
+        bool(session.pool) and len(session.served) < MAX_RANKED
+    )
+    remember_reasons(viewer, items)
+    duration = (time.perf_counter() - started) * 1000 if ranked is not None else None
+    return Page(session_id, items, following if more else None, duration)
+
+
+def _log_ranking(kind, started, viewer, items, candidate_count, profile, variant):
+    duration_ms = (time.perf_counter() - started) * 1000
+    record_latency(duration_ms, kind=kind)
+    logger.log(
+        logging.INFO if kind == "first" else logging.DEBUG,
+        "for_you %s ranked=%d candidates=%d new_account=%s personalized=%s variant=%s "
+        "duration_ms=%.1f reasons=%s",
+        kind, len(items), candidate_count, profile.is_new, profile.personalized, variant,
+        duration_ms, dict(Counter(item.reason for item in items)),
+    )
+
+
+# ------------------------------------------------------------- attribution
+#
+# Which reason a post went out with, so `feed_report` can say whether
+# discovery slots, similar taste or new creators are working. Kept server
+# side for a day rather than echoed back by the client: a client cannot get
+# it wrong, and an old client that knows nothing of it is still measured.
+
+def _served_key(viewer_id):
+    return f"for-you:served:{viewer_id}"
+
+
+def remember_reasons(viewer, items):
+    if not items:
+        return
+    known = cache.get(_served_key(viewer.pk)) or {}
+    for item in items:
+        known.pop(item.pk, None)
+        known[item.pk] = item.reason
+    if len(known) > SERVED_MEMORY:
+        known = dict(list(known.items())[-SERVED_MEMORY:])
+    cache.set(_served_key(viewer.pk), known, SERVED_TTL_SECONDS)
+
+
+def served_reasons(viewer):
+    return cache.get(_served_key(viewer.pk)) or {}
+
+
+def forget_reasons(viewer):
+    cache.delete(_served_key(viewer.pk))
+
+
 # ---------------------------------------------------------------- monitoring
 #
-# Latency, kept where every worker can add to it: one cache counter per hour
-# and bucket. `feed_report` turns them into a distribution. Counters rather
-# than a list of timings so recording one costs a single increment.
+# Latency, kept where every worker can add to it: one cache counter per hour,
+# kind and bucket. `feed_report` turns them into a distribution. Counters
+# rather than a list of timings so recording one costs a single increment.
+# "first" is a fresh ranking (a first page, or a pull to refresh); "next" is
+# a later page re-ranked from its session.
 
 LATENCY_BUCKETS_MS = (25, 50, 100, 250, 500, 1000, 2500)
+LATENCY_KINDS = ("first", "next")
 
 
-def _latency_key(hour, label):
-    return f"for-you:latency:{hour}:{label}"
+def _latency_key(hour, label, kind="first"):
+    # The first kind keeps the key it always had, so counts recorded before
+    # there were two kinds still read as what they were.
+    prefix = "for-you:latency" if kind == "first" else f"for-you:latency:{kind}"
+    return f"{prefix}:{hour}:{label}"
 
 
 def _bucket_label(duration_ms):
@@ -836,10 +1574,10 @@ def _bucket_label(duration_ms):
     return "over"
 
 
-def record_latency(duration_ms, now=None):
+def record_latency(duration_ms, now=None, kind="first"):
     hour = int((now or time.time()) // 3600)
     for label in (_bucket_label(duration_ms), "count"):
-        key = _latency_key(hour, label)
+        key = _latency_key(hour, label, kind)
         # add() then incr(): incr alone raises on a key that does not exist,
         # and the first ranking of every hour would be the one that raised.
         cache.add(key, 0, 8 * 24 * 3600)
@@ -849,15 +1587,16 @@ def record_latency(duration_ms, now=None):
             cache.set(key, 1, 8 * 24 * 3600)
 
 
-def latency_summary(hours=24, now=None):
+def latency_summary(hours=24, now=None, kind="first"):
     """{bucket: count} over the last `hours`, plus an estimated p50 and p95."""
     current = int((now or time.time()) // 3600)
     labels = [f"le{limit}" for limit in LATENCY_BUCKETS_MS] + ["over"]
     totals = Counter()
     for hour in range(current - hours + 1, current + 1):
-        values = cache.get_many([_latency_key(hour, label) for label in labels + ["count"]])
-        for label in labels + ["count"]:
-            totals[label] += values.get(_latency_key(hour, label), 0) or 0
+        keys = [_latency_key(hour, label, kind) for label in labels + ["count"]]
+        values = cache.get_many(keys)
+        for label, key in zip(labels + ["count"], keys):
+            totals[label] += values.get(key, 0) or 0
 
     def percentile(fraction):
         target = totals["count"] * fraction
@@ -906,6 +1645,14 @@ def record_impressions(viewer, events, now=None):
         .exclude(author=viewer).values_list("pk", flat=True)
     )
     if visible:
+        reasons = {}
+        if any(merged[post_id]["surface"] == PostView.Surface.FOR_YOU for post_id in visible):
+            reasons = served_reasons(viewer)
+        for post_id in visible:
+            entry = merged[post_id]
+            entry["reason"] = (
+                reasons.get(post_id, "") if entry["surface"] == PostView.Surface.FOR_YOU else ""
+            )
         _upsert_views(viewer, [(post_id, merged[post_id]) for post_id in visible], now)
     return len(visible)
 
@@ -921,13 +1668,14 @@ def _upsert_views(viewer, entries, now):
 
     The new row and the update say the same thing: the counters are summed,
     the furthest watch and "ever completed" are kept, `skipped` is the latest
-    viewing's verdict, and `surface` and `first_seen_at` keep the first.
+    viewing's verdict, and `surface`, `reason` and `first_seen_at` keep the
+    first.
     """
     ops = connection.ops
     table = ops.quote_name(PostView._meta.db_table)
     columns = [
         "viewer_id", "post_id", "view_count", "total_dwell_ms", "max_watch_ms",
-        "completed", "skipped", "surface", "first_seen_at", "last_seen_at",
+        "completed", "skipped", "surface", "reason", "first_seen_at", "last_seen_at",
     ]
     first_seen = ops.adapt_datetimefield_value(timezone.now())
     last_seen = ops.adapt_datetimefield_value(now)
@@ -947,9 +1695,10 @@ def _upsert_views(viewer, entries, now):
                 and not entry["completed"]
                 and (entry["watch"] or 0) < SKIP_MS
             ),
-            # A plain string: raw parameters skip the field's own conversion,
+            # Plain strings: raw parameters skip the field's own conversion,
             # and psycopg would send an enum member by its name.
             str(entry["surface"]),
+            str(entry.get("reason") or ""),
             first_seen,
             last_seen,
         ]

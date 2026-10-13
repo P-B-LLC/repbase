@@ -102,6 +102,17 @@ if REDIS_URL:
             'OPTIONS': {'socket_connect_timeout': 3, 'socket_timeout': 3},
         }
     }
+else:
+    # Django's default, with room. Its stock ceiling is 300 entries, and one
+    # For You ranking shares counts for several hundred posts through the
+    # cache -- at 300 each ranking would evict the last, and development
+    # would measure a page that recomputes everything every time.
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'OPTIONS': {'MAX_ENTRIES': 20000},
+        }
+    }
 
 TEMPLATES = [
     {

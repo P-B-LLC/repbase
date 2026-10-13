@@ -263,11 +263,17 @@ there.
    (three open reports) until a moderator looks. It stays in its author's
    followers' feeds. This trades brigading against keeping reported content
    from spreading while it waits.
-9. **The iOS app is behind the contract.** It keeps working against this
-   backend -- every contract change is additive -- but does not yet show For
-   You, report views, play clips or offer "not interested". Its generated
-   client must be regenerated on a Mac with Xcode; see `RECOMMENDATIONS.md`.
-   The October 2026 change to it (A16) was syntax-checked, not built.
+9. **The iOS For You integration has not been built in Xcode.** The app now
+   shows the ranked For You page, reports views, offers "not interested", the
+   Tune sheet and suggested people. It was type-checked as Mac Catalyst
+   against the iOS 26.5 SDK with the project's concurrency settings, and its
+   impression batching was run on macOS, but it has not been built for a
+   device or simulator or tapped through. Separately, the iOS contract
+   carries the `community_*` user fields of the unmerged video-processing
+   branch, which this backend does not send yet: until that branch lands, the
+   app cannot decode users or posts from this backend -- For You included,
+   as everything else. The October 2026 change to it (A16) was syntax-checked,
+   not built.
 10. **Photos lose HDR gain maps and depth data** along with their metadata,
     so an iPhone HDR photo displays as standard range. HEIC uploads were
     already refused (Pillow here has no HEIF support).
@@ -307,5 +313,7 @@ there.
   server does not do, so that policy was not exercised in a browser; the built
   web app contains no inline script, inline style or `eval`, which is what it
   forbids.
-- Nothing was load-tested. The recommender's query count is constant in the
-  amount of content (tested), and its candidate pool is capped.
+- Nothing was load-tested under concurrent traffic. The recommender's query
+  count is constant in the amount of content (tested), its candidate pool is
+  capped, and it was timed on PostgreSQL with 20,000 accounts and 3.2 million
+  view rows (`RECOMMENDATIONS.md`, Performance).
