@@ -14,6 +14,7 @@ from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from .video_jobs_models import VideoJob, VideoStoredObject, VideoMetric, VideoDailyUpload  # noqa: F401
+from .local_moderation_models import LocalModerationJob, LocalModerationCase  # noqa: F401
 from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
 from .access_models import AccountAccess, AccessPolicyLock, AccessAudit, CommunitySpotlight  # noqa: F401
 from zoneinfo import ZoneInfo, available_timezones

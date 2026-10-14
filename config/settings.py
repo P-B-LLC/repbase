@@ -506,6 +506,9 @@ DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@repbase.local')
 
 # Off only for local development/tests. Production explicitly enables this.
 MODERATION_ENABLED = os.getenv('MODERATION_ENABLED', 'false').lower() == 'true'
+# Experimental, opt-in evaluation only. These flags do NOT replace live checks.
+LOCAL_MODERATION_SHADOW_ENABLED = os.getenv('LOCAL_MODERATION_SHADOW_ENABLED', 'false').lower() == 'true'
+LOCAL_MODERATION_DETECTOR_FACTORY = os.getenv('LOCAL_MODERATION_DETECTOR_FACTORY', '')
 MODERATION_API_KEY = os.getenv('MODERATION_API_KEY', '')
 MODERATION_DISCLOSURE_CONFIRMED = os.getenv('MODERATION_DISCLOSURE_CONFIRMED', 'false').lower() == 'true'
 MODERATION_CONTACT_EMAIL = os.getenv('MODERATION_CONTACT_EMAIL', 'support@rytivo.app')

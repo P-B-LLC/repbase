@@ -1,0 +1,28 @@
+[Unit]
+Description=Rytivo bounded local moderation evaluation (no publication changes)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=django
+Group=django
+WorkingDirectory=/home/django/app
+EnvironmentFile=/etc/repbase.env
+Environment=OMP_NUM_THREADS=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=MKL_NUM_THREADS=1
+ExecStart=/home/django/app/.venv/bin/python manage.py process_local_moderation --limit 1
+# Stop before the 120-second lease expires. Expired work retries with a new lease.
+TimeoutStartSec=90
+KillMode=control-group
+MemoryMax=512M
+CPUQuota=25%
+Nice=15
+IOWeight=10
+TasksMax=32
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# No timer is installed: operator/model readiness gates must be satisfied first.
