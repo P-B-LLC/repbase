@@ -222,6 +222,11 @@ class FeedWeights:
     completion: float = 1.0
     skip: float = -0.3
     not_interested: float = -4.0
+    #: "Show fewer like this": as strong about the kind of content as a
+    #: save is the other way, and only a little about the author.
+    fewer_like_this: float = -3.0
+    #: "Show more like this": as strong as a save.
+    more_like_this: float = 3.0
     #: Came back to a post and stayed on it again.
     rewatch: float = 1.0
     #: A topic named during onboarding, or a discipline on the profile.
@@ -427,6 +432,12 @@ YOUNG_REJECTION_SHARE = 0.5
 #: free; FATIGUE_SCALE more count about three quarters of the weight.
 FATIGUE_HOURS = 72
 FATIGUE_SCALE = 3.0
+
+#: How much of "fewer like this" and "more like this" falls on the post's
+#: author, beside a full share on its topics. "Not interested" puts 0.75 on
+#: the author, every other signal 1.
+FEWER_AUTHOR_SHARE = 0.25
+MORE_AUTHOR_SHARE = 0.5
 
 #: The span `connected_share` is measured over.
 CONNECTED_WINDOW = 10
@@ -866,8 +877,8 @@ def build_profile(viewer, weights=None, now=None, preferences=None):
     # measured from.
     events = []
 
-    def take(rows, weight, explicit=False):
-        events.extend((post_id, weight, when, explicit) for post_id, when in rows if post_id)
+    def take(rows, weight, explicit=False, author=None):
+        events.extend((post_id, weight, when, explicit, author) for post_id, when in rows if post_id)
 
     take(
         PostLike.objects.filter(user=viewer, created_at__gte=since)
@@ -898,19 +909,19 @@ def build_profile(viewer, weights=None, now=None, preferences=None):
         if when < since:
             continue
         if completed:
-            events.append((post_id, weights.completion, when, False))
+            events.append((post_id, weights.completion, when, False, None))
         elif max_watch:
             # Half a clip is a judgement that needs the clip's length, which
             # is read with the topics below.
             watched.append((post_id, max_watch, when))
         if count and dwell / count >= LONG_VIEW_MS:
-            events.append((post_id, weights.long_view, when, False))
+            events.append((post_id, weights.long_view, when, False, None))
             if count >= 2:
                 # Came back to it and stayed again: the clearest thing a
                 # view alone can say.
-                events.append((post_id, weights.rewatch, when, False))
+                events.append((post_id, weights.rewatch, when, False, None))
         if skipped:
-            events.append((post_id, weights.skip, when, False))
+            events.append((post_id, weights.skip, when, False, None))
 
     # What For You put on screen lately, for fatigue: whose posts keep being
     # shown to somebody who never does anything with them. Only For You:
@@ -921,28 +932,38 @@ def build_profile(viewer, weights=None, now=None, preferences=None):
         if when >= fatigue_start and when >= since and surface == PostView.Surface.FOR_YOU
     ]
 
-    take(
+    # What the reader said outright. "Not interested" is mostly about the
+    # post and its author; "fewer like this" about its kind of content, much
+    # more than the person; "more like this" about both, and is something
+    # they want, which similar taste is measured from.
+    said = {}
+    for post_id, when, kind in (
         PostFeedback.objects.filter(viewer=viewer, created_at__gte=since)
-        .order_by("-created_at").values_list("post_id", "created_at")[:HISTORY_LIMIT],
-        weights.not_interested,
-    )
+        .order_by("-created_at").values_list("post_id", "created_at", "kind")[:HISTORY_LIMIT]
+    ):
+        said.setdefault(kind, []).append((post_id, when))
+    take(said.get(PostFeedback.Kind.NOT_INTERESTED, ()), weights.not_interested)
+    take(said.get(PostFeedback.Kind.FEWER, ()), weights.fewer_like_this, author=FEWER_AUTHOR_SHARE)
+    take(said.get(PostFeedback.Kind.MORE, ()), weights.more_like_this, True, author=MORE_AUTHOR_SHARE)
 
     topics_by_post = _post_topics_by_id(
-        {post_id for post_id, _, _, _ in events}
+        {post_id for post_id, *_ in events}
         | {post_id for post_id, _, _ in watched}
         | set(shown_lately)
     )
     for post_id, max_watch, when in watched:
         found = topics_by_post.get(post_id)
         if found and found[2] and max_watch * 2 >= found[2]:
-            events.append((post_id, weights.half_watch, when, False))
+            events.append((post_id, weights.half_watch, when, False, None))
 
     topic_tally = Counter()
     momentum_tally = Counter()
     author_tally = Counter()
     engaged = set()
     explicit = []
-    for post_id, weight, when, is_explicit in sorted(events, key=lambda event: event[2], reverse=True):
+    for post_id, weight, when, is_explicit, author_share in sorted(
+        events, key=lambda event: event[2], reverse=True
+    ):
         found = topics_by_post.get(post_id)
         if found is None:
             continue
@@ -959,7 +980,9 @@ def build_profile(viewer, weights=None, now=None, preferences=None):
                 momentum_tally[topic] += weight * share * DETAIL_SHARE
         # Dismissing one post is mostly about the post; it says less about
         # everything else its author might make.
-        author_tally[author_id] += decayed * (0.75 if weight < 0 else 1.0)
+        if author_share is None:
+            author_share = 0.75 if weight < 0 else 1.0
+        author_tally[author_id] += decayed * author_share
         if weight > 0:
             engaged.add(author_id)
         if is_explicit and weight > 0 and post_id not in explicit:
@@ -1196,7 +1219,7 @@ def _count_engagement(post_ids, now=None):
         young_skips=Count("pk", filter=Q(skipped=True) & youngish),
     )
     dismissals = _grouped(
-        PostFeedback.objects.filter(established, post_id__in=post_ids)
+        PostFeedback.objects.filter(established, post_id__in=post_ids, kind__in=PostFeedback.REJECTING)
         .filter(Exists(PostView.objects.filter(viewer=OuterRef("viewer"), post=OuterRef("post"))))
         .exclude(viewer_id__in=inactive),
         "post_id", n=Count("pk"), young=Count("pk", filter=youngish),
@@ -1239,7 +1262,7 @@ def engagement_for(post_ids, now=None):
     missing = [pk for pk in post_ids if pk not in found]
     if missing:
         found.update(_cached_many(
-            "stats5", missing, lambda ids: _count_engagement(ids, now), STATS_TTL_SECONDS
+            "stats6", missing, lambda ids: _count_engagement(ids, now), STATS_TTL_SECONDS
         ))
     return found
 

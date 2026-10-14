@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 #: The way of counting that wrote a row. Raise it whenever what
 #: `_count_engagement` means by a count changes, so old rows are recomputed
 #: rather than read.
-STATS_VERSION = 1
+STATS_VERSION = 2
 #: A row older than this is not read: the ranking works the figures out itself.
 FRESH_SECONDS = 30 * 60
 #: Every row in the window is rewritten at least this often.

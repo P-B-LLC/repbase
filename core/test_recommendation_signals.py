@@ -26,6 +26,7 @@ from .models import (
     PostLike,
     PostView,
     PostWorkoutExercise,
+    RepbaseUser,
 )
 from .recommendations import (
     CONNECTED_WINDOW,
@@ -385,3 +386,114 @@ class DiversityReportTests(ForYouTestCase):
     def test_an_empty_window_reports_nothing_rather_than_zero(self):
         report, _ = self.report()
         self.assertIsNone(report["diversity"]["unconnected_share"])
+
+
+class MoreAndFewerTests(ForYouTestCase):
+    """"Show more like this" and "show fewer like this": one word per post,
+    each undoable, each moving what the page shows next."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+
+    def say(self, token, post, what, method="post"):
+        self.authenticate(token)
+        return getattr(self.client, method)(f"/api/v1/social/posts/{post.pk}/{what}/")
+
+    def kinds(self, profile):
+        from .models import PostFeedback
+
+        return dict(PostFeedback.objects.filter(viewer=profile).values_list("post_id", "kind"))
+
+    def test_one_word_per_post_and_taking_one_back_leaves_another_alone(self):
+        profile, token = self.reader("decisive", [])
+        post = self.meals[0]
+        self.assertEqual(self.say(token, post, "more-like-this").status_code, 204)
+        self.assertEqual(self.kinds(profile), {post.pk: "more_like_this"})
+        self.assertEqual(self.say(token, post, "fewer-like-this").status_code, 204)
+        self.assertEqual(self.kinds(profile), {post.pk: "fewer_like_this"})
+        self.assertEqual(self.say(token, post, "more-like-this", "delete").status_code, 204)
+        self.assertEqual(self.kinds(profile), {post.pk: "fewer_like_this"}, "a different word is left alone")
+        self.assertEqual(self.say(token, post, "fewer-like-this", "delete").status_code, 204)
+        self.assertEqual(self.kinds(profile), {})
+        self.assertEqual(self.say(token, post, "fewer-like-this", "delete").status_code, 204, "twice is fine")
+
+    def test_not_on_your_own_or_an_invisible_post(self):
+        profile, token = self.reader("self_regarding", [])
+        own = meal_post(profile)
+        self.assertEqual(self.say(token, own, "more-like-this").status_code, 400)
+        hidden = meal_post(self.cooks[0])
+        from .models import Post
+
+        Post.objects.filter(pk=hidden.pk).update(is_hidden=True)
+        self.assertEqual(self.say(token, hidden, "fewer-like-this").status_code, 404)
+
+    def test_more_lifts_the_topic_and_fewer_lowers_it_more_than_the_author(self):
+        from .models import PostFeedback
+
+        reader, _ = self.reader("steering", [])
+        PostFeedback.objects.create(viewer=reader, post=self.running[0], kind=PostFeedback.Kind.MORE)
+        profile = build_profile(reader)
+        self.assertGreater(profile.topics["type:running"], 0.3)
+        self.assertGreater(profile.authors[self.running[0].author_id], 0)
+
+        fewer, _ = self.reader("steering_away", [])
+        dismisser, _ = self.reader("dismissing", [])
+        PostFeedback.objects.create(viewer=fewer, post=self.lifting[0], kind=PostFeedback.Kind.FEWER)
+        PostFeedback.objects.create(viewer=dismisser, post=self.lifting[0], kind=PostFeedback.Kind.NOT_INTERESTED)
+        by_fewer, by_dismissal = build_profile(fewer), build_profile(dismisser)
+        author = self.lifting[0].author_id
+        self.assertLess(by_fewer.topics["type:lifting"], -0.3)
+        self.assertGreater(by_fewer.authors[author], by_dismissal.authors[author],
+                           "fewer like this is about the content more than the person")
+
+    def test_the_next_page_follows_more_like_this(self):
+        _, token = self.reader("wants_meals", ["Running"])
+        first = self.feed(token, page_size=4)
+        self.assertEqual(self.say(token, self.meals[0], "more-like-this").status_code, 204)
+        later = self.ids(self.follow_next(first))
+        self.assertGreaterEqual(self.share(later, self.meals), 1)
+
+    def test_fewer_takes_the_post_off_the_page_and_more_keeps_it(self):
+        """A retried page is the same page, less what the reader turned down
+        since: "fewer like this" goes, "more like this" stays."""
+        from .models import Post
+
+        _, token = self.reader("tidy", [])
+        first = self.feed(token, page_size=5)
+        second = self.follow_next(first)
+        page = self.ids(second)
+        kept, dropped = page[0], page[1]
+        self.say(token, Post.objects.get(pk=kept), "more-like-this")
+        self.say(token, Post.objects.get(pk=dropped), "fewer-like-this")
+        again = self.ids(self.follow_next(first))
+        self.assertIn(kept, again)
+        self.assertNotIn(dropped, again)
+
+    def test_fewer_counts_against_a_post_with_everybody_and_more_does_not(self):
+        from .models import PostFeedback
+
+        post = self.meals[1]
+        for person, kind in ((self.runners[0], PostFeedback.Kind.FEWER), (self.runners[1], PostFeedback.Kind.MORE)):
+            RepbaseUser.objects.filter(pk=person.pk).update(created_at=timezone.now() - timedelta(days=40))
+            PostView.objects.create(viewer=person, post=post, view_count=1)
+            PostFeedback.objects.create(viewer=person, post=post, kind=kind)
+        cache.clear()
+        self.assertEqual(recommendations.engagement_for([post.pk])[post.pk].dismissals, 1)
+
+    def test_the_report_counts_both(self):
+        import io
+        import json
+
+        from django.core.management import call_command
+
+        from .models import PostFeedback
+
+        reader, _ = self.reader("reported_steering", [])
+        for post, kind in ((self.meals[0], PostFeedback.Kind.MORE), (self.meals[1], PostFeedback.Kind.FEWER)):
+            views(reader, post, dwell_ms=3000)
+            PostFeedback.objects.create(viewer=reader, post=post, kind=kind)
+        output = io.StringIO()
+        call_command("feed_report", "--json", stdout=output)
+        actions = json.loads(output.getvalue())["actions"]
+        self.assertEqual((actions["more_like_this_rate"], actions["fewer_like_this_rate"]), (0.5, 0.5))

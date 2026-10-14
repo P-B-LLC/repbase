@@ -127,7 +127,11 @@ class ForYouView(APIView):
             viewer,
             visible_posts_for(viewer, posts_for_cards().filter(pk__in=wanted)),
         ).exclude(
-            Exists(PostFeedback.objects.filter(viewer=viewer, post=OuterRef("pk")))
+            # Turned down since it was ranked. "More like this" stays where it
+            # is: the reader wants it, and a retried page should show it.
+            Exists(PostFeedback.objects.filter(
+                viewer=viewer, post=OuterRef("pk"), kind__in=PostFeedback.REJECTING
+            ))
         )
         by_id = {post.pk: post for post in servable}
         posts = []

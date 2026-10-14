@@ -3460,6 +3460,8 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         "save_workout": "social",
         "save_meal": "social",
         "not_interested": "social",
+        "more_like_this": "social",
+        "fewer_like_this": "social",
         "report": "report",
         "video": "upload",
     }
@@ -3785,6 +3787,58 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
     )
     @action(detail=True, methods=["post", "delete"], url_path="not-interested")
     def not_interested(self, request, pk=None):
+        return self._feedback(request, PostFeedback.Kind.NOT_INTERESTED)
+
+    @extend_schema(
+        methods=["POST"],
+        request=None,
+        responses={204: None},
+        description=(
+            "Ask for more posts like this one on your For You page: its topics "
+            "and the exercises in it, and to a lesser degree its author, are "
+            "shown more from the next page on. Replaces \"not interested\" or "
+            "\"fewer like this\" on the same post. Saying it twice is not an "
+            "error."
+        ),
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        request=None,
+        responses={204: None},
+        description="Take back \"more like this\" on this post. Nothing else is undone.",
+    )
+    @action(detail=True, methods=["post", "delete"], url_path="more-like-this")
+    def more_like_this(self, request, pk=None):
+        return self._feedback(request, PostFeedback.Kind.MORE)
+
+    @extend_schema(
+        methods=["POST"],
+        request=None,
+        responses={204: None},
+        description=(
+            "Ask for fewer posts like this one on your For You page. It leaves "
+            "the page at once, and its kind of content -- its topics and the "
+            "exercises in it -- is shown less from then on; its author only a "
+            "little less, unlike \"not interested\". Replaces \"not "
+            "interested\" or \"more like this\" on the same post. Saying it "
+            "twice is not an error."
+        ),
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        request=None,
+        responses={204: None},
+        description="Take back \"fewer like this\" on this post. Nothing else is undone.",
+    )
+    @action(detail=True, methods=["post", "delete"], url_path="fewer-like-this")
+    def fewer_like_this(self, request, pk=None):
+        return self._feedback(request, PostFeedback.Kind.FEWER)
+
+    def _feedback(self, request, kind):
+        """One reader's word on one post, of one kind: set, or taken back.
+
+        A reader has at most one word per post, so setting one replaces any
+        other, and taking one back leaves a different one alone."""
         post = self.get_object()
         viewer = self.owner_profile()
         if post.author_id == viewer.pk:
@@ -3792,9 +3846,13 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         # About a repost, the reader means the thing being passed on.
         target = post.repost_of or post
         if request.method == "POST":
-            PostFeedback.objects.get_or_create(viewer=viewer, post=target)
+            PostFeedback.objects.update_or_create(
+                viewer=viewer, post=target,
+                # Counted from when it was last said, which is what it means now.
+                defaults={"kind": kind, "created_at": timezone.now()},
+            )
         else:
-            PostFeedback.objects.filter(viewer=viewer, post=target).delete()
+            PostFeedback.objects.filter(viewer=viewer, post=target, kind=kind).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     @extend_schema(

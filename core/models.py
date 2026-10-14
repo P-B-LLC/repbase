@@ -3417,15 +3417,30 @@ class PostView(models.Model):
 
 
 class PostFeedback(models.Model):
-    """A reader saying they do not want to see something like this.
+    """A reader telling the For You page what they think of something like
+    this post.
 
-    Explicit, and kept apart from views, because it is the strongest negative
-    signal there is and it has to be undoable: "not interested" pressed by
-    mistake has to come back off.
+    Explicit, and kept apart from views, because these are the clearest
+    signals there are and they have to be undoable: a button pressed by
+    mistake has to come back off. One row per reader and post, so the three
+    are mutually exclusive -- saying "more like this" about a post you had
+    marked "not interested" replaces it.
+
+    - **not interested**: this post, and posts like it and its author, less.
+    - **fewer like this**: posts like it less -- its kind of content, much
+      more than its author.
+    - **more like this**: posts like it, and to a lesser degree its author,
+      more.
     """
 
     class Kind(models.TextChoices):
         NOT_INTERESTED = "not_interested", "Not interested"
+        FEWER = "fewer_like_this", "Show fewer like this"
+        MORE = "more_like_this", "Show more like this"
+
+    #: The kinds that turn a post down: it leaves the reader's page, and it
+    #: counts against the post with everybody (`core.recommendations`).
+    REJECTING = (Kind.NOT_INTERESTED, Kind.FEWER)
 
     viewer = models.ForeignKey(
         RepbaseUser, on_delete=models.CASCADE, related_name="post_feedback"

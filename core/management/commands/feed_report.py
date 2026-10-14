@@ -42,19 +42,25 @@ from core.models import Post, PostComment, PostFeedback, PostLike, PostView, Sav
 from core.models import Follow
 from core.recommendations import NEWCOMER_DAYS, experiment_config, experiment_variant, latency_summary
 
-ENGAGED = Q(liked=True) | Q(commented=True) | Q(shared=True) | Q(saved=True)
+ENGAGED = Q(liked=True) | Q(commented=True) | Q(shared=True) | Q(saved=True) | Q(wanted_more=True)
 
 
 def engaged(queryset):
     """Annotate each view row with whether its viewer acted on its post."""
     same_post = {"post": OuterRef("post")}
+
+    def said(kind):
+        return Exists(PostFeedback.objects.filter(viewer=OuterRef("viewer"), kind=kind, **same_post))
+
     return queryset.annotate(
         liked=Exists(PostLike.objects.filter(user=OuterRef("viewer"), **same_post)),
         commented=Exists(PostComment.objects.filter(author=OuterRef("viewer"), **same_post)),
         shared=Exists(Post.objects.filter(author=OuterRef("viewer"), repost_of=OuterRef("post"))),
         saved=Exists(WorkoutTemplate.objects.filter(owner=OuterRef("viewer"), source_post=OuterRef("post")))
         | Exists(SavedFoodMeal.objects.filter(owner=OuterRef("viewer"), source_post=OuterRef("post"))),
-        dismissed=Exists(PostFeedback.objects.filter(viewer=OuterRef("viewer"), **same_post)),
+        dismissed=said(PostFeedback.Kind.NOT_INTERESTED),
+        wanted_fewer=said(PostFeedback.Kind.FEWER),
+        wanted_more=said(PostFeedback.Kind.MORE),
     )
 
 
@@ -229,7 +235,10 @@ def build_report(days=7, hours=24, now=None):
     acted = {
         "engaged": annotated.filter(ENGAGED).count(),
         "dismissed": annotated.filter(dismissed=True).count(),
-        **{name: annotated.filter(**{name: True}).count() for name in ("liked", "commented", "saved", "shared")},
+        **{
+            name: annotated.filter(**{name: True}).count()
+            for name in ("liked", "commented", "saved", "shared", "wanted_more", "wanted_fewer")
+        },
     }
     clips = rows.filter(post__video__isnull=False, max_watch_ms__isnull=False, post__video__duration_ms__gt=0)
     watched = clips.aggregate(
@@ -254,6 +263,9 @@ def build_report(days=7, hours=24, now=None):
             "comment_rate": rate(acted["commented"], impressions),
             "save_rate": rate(acted["saved"], impressions),
             "share_rate": rate(acted["shared"], impressions),
+            # "Show more like this" and "show fewer like this", pressed.
+            "more_like_this_rate": rate(acted["wanted_more"], impressions),
+            "fewer_like_this_rate": rate(acted["wanted_fewer"], impressions),
         },
         "watch": {
             "clip_impressions": totals["with_clip"],

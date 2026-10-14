@@ -142,7 +142,7 @@ class AccountTrustTests(ForYouTestCase):
     def test_likes_made_right_after_signing_up_count_for_half_too(self):
         post = self.meals[2]
         engagement_for([post.pk])
-        cache.delete(f"for-you:stats5:{post.pk}")
+        cache.delete(f"for-you:stats6:{post.pk}")
         fresh = make_account("instant_liker")[1]
         PostLike.objects.create(post=post, user=fresh)
         self.assertEqual(engagement_for([post.pk])[post.pk].trusted_likes, feed_integrity.NEW_ACCOUNT_TRUST)
@@ -287,7 +287,7 @@ class TrustedCountTests(ForYouTestCase):
         self.assertEqual(self.counts().dismissals, 1)
 
     def test_counts_cached_by_an_earlier_version_are_never_read(self):
-        for older in ("stats", "stats3", "stats4"):
+        for older in ("stats", "stats3", "stats4", "stats5"):
             cache.set(f"for-you:{older}:{self.post.pk}", "an older shape", 600)
         self.assertEqual(engagement_for([self.post.pk])[self.post.pk].likes, 0)
 
