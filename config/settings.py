@@ -421,7 +421,12 @@ SECURE_SSL_REDIRECT = not DEBUG and os.getenv(
     'true',
 ).lower() in {'1', 'true', 'yes'}
 SECURE_HSTS_SECONDS = int(os.getenv('DJANGO_SECURE_HSTS_SECONDS', '0'))
-SECURE_HSTS_INCLUDE_SUBDOMAINS = SECURE_HSTS_SECONDS > 0
+# A positive max-age must not silently opt unrelated subdomains into HTTPS.
+# Enable only after auditing every subdomain; preload is a separate commitment.
+SECURE_HSTS_INCLUDE_SUBDOMAINS = os.getenv(
+    'DJANGO_SECURE_HSTS_INCLUDE_SUBDOMAINS', 'false'
+).lower() in {'1', 'true', 'yes'}
+SECURE_HSTS_PRELOAD = False
 
 # Behind a TLS-terminating proxy, this is how the app learns the request
 # arrived over HTTPS. Without it every absolute URL the API builds says
