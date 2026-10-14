@@ -44,7 +44,8 @@ wired into publication. Existing production behavior is unchanged.
 
 ## Deployment limitation
 
-The current droplet was previously identified as a 512 MB host. Validate available
-RAM/CPU and model latency; media inference may require a separate private worker.
+Read-only inspection on 14 October found about 2 GB RAM, one CPU and no swap
+(about 1.4 GB available at that instant). Validate model memory/latency under load;
+media inference may require a separate private worker to avoid delaying API calls.
 No external service was provisioned, no billing incurred, and no production
 settings were changed. Classifier accuracy and performance remain unmeasured.
