@@ -464,9 +464,10 @@ shared through the cache:
 - the exercise vocabulary, for an hour;
 - the active ranking model, for 5 minutes.
 
-The learned part costs nothing extra to query: the model is cached, and its
-inputs are the score's own parts. It adds a few microseconds of arithmetic per
-candidate.
+The learned part costs no extra query: the model is cached, and its inputs
+are the score's own parts. It costs arithmetic -- two small regressions per
+candidate -- and remembering each served post's features until its
+impression arrives: about 15 ms on a first page (below).
 
 An established account that is not bursting is simply trusted: nothing is
 looked up about it. The reader's own actions are always read live, so nothing
@@ -489,6 +490,25 @@ The cost of counting only trusted engagement is paid when per-post counts are
 worked out, which with a shared cache is once per post per ten minutes, not
 once per reader; the empty-cache case is a restart without Redis. The
 remaining warm-path cost is the `detail` source and scoring more parts.
+
+Then the counts table and the learned part, on the same data and machine
+(migrations 0071–0074 applied in about two seconds, `PostView.features` being a
+nullable column on 3.4 million rows):
+
+| | p50 | p95 | queries |
+| --- | --- | --- | --- |
+| first page, cache empty, no counts table yet | 955 ms | 1,587 ms | 52 |
+| first page, cache empty, counts table kept up | 413 ms | 491 ms | 39 |
+| first page, shared counts cached | 182 ms | 215 ms | 25 |
+| later page, re-ranked | 65 ms | 79 ms | 16 |
+| first page, cached, with an active learned model | 198 ms | 229 ms | 25 |
+| later page, with an active learned model | 73 ms | 91 ms | 16 |
+| people suggestions | 81 ms | 118 ms | 30 |
+
+The job itself: a full run over the 29,679 posts in the window took 16.7 s; a
+run with nothing new took 0.25 s. In steady state a run rewrites what was acted
+on plus a third of the window for age, about 10,000 posts here, so roughly six
+seconds every five minutes on this machine.
 
 Indexes it relies on: `PostLike(user, -created_at)`, `PostComment(author,
 -created_at)`, `PostView(viewer, -last_seen_at)`, `PostView(surface,
@@ -649,6 +669,30 @@ The test asserts the claims that should hold whatever the weights: the ring
 and bait lose at least half and three quarters of their reach, the moderated
 author none of strangers' pages, integrity content never reaches anybody's
 top three, and utility -- overall and cold-start -- does not fall.
+
+**The learned part** (`FEED_EVAL_LEARNED=1`): one round of the community
+using For You with the rules alone is the training record (1,017 impressions
+to learn from, 418 from held-out readers), the trainer runs as it would in
+production -- its minimum-data thresholds lowered to fit this small world --
+and a second round is measured with the model it made active:
+
+| | rules | rules + model |
+| --- | --- | --- |
+| held-out AUC, engaged above turned down | 0.860 | 0.879 |
+| mean utility of what was served | 0.515 | 0.560 |
+| utility of the first page for readers with no history | 0.362 | 0.449 |
+| served from the ring, bait or the moderated author | 2.2% | 0.1% |
+| served on a topic the reader dislikes | 4.0% | 4.2% |
+| distinct authors per 30 posts | 22.3 | 20.9 |
+
+It learned mostly what readers turn down (held-out AUC 0.83 for that, 0.56
+for what they engage with), which is where the rules were weakest. The cost
+is a little less author spread. The simulated readers act on a hidden quality
+the model can partly see through the rules' parts, so real gains will be
+smaller and less certain; that is why it ships behind its gate and should be
+run as an experiment (`{"learned": 0}` against the default). "More like this",
+"fewer like this" and added interests are not used by the simulated readers;
+their effects are covered by the unit tests, not measured here.
 
 ## Tuning
 
