@@ -45,6 +45,7 @@ class SaveConcurrencyTests(RepbaseAPITestMixin, APITransactionTestCase):
         second = Gear.objects.create(owner=self.profile, kind='shoe', name='Second')
         third = Gear.objects.create(owner=self.profile, kind='shoe', name='Third')
         barrier = Barrier(2)
+
         def switch(pk):
             close_old_connections()
             try:

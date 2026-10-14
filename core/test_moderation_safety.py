@@ -24,6 +24,8 @@ def consented():
     class _Request:
         META = {'HTTP_X_MODERATION_CONSENT': django_settings.MODERATION_CONSENT_VERSION}
     return _Request()
+
+
 from .models import Block, CommentReport, FoodEntry, FoodMeal, Post, PostComment, PostReport
 from .tests import RepbaseAPITestMixin
 

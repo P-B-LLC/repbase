@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh Rytivo For You per-post counts five minutes after each run
+
+[Timer]
+OnBootSec=120
+OnUnitInactiveSec=300
+Unit=repbase-feed-stats.service
+
+[Install]
+WantedBy=timers.target

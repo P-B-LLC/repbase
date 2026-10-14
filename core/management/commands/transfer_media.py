@@ -50,6 +50,7 @@ def referenced_names():
                 names.add(str(value))
     return names
 
+
 def stored_names(storage, prefix=''):
     """Every file the storage holds, walked depth-first."""
     found = set()

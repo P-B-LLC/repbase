@@ -43,6 +43,10 @@ List responses are paginated with `count`, `next`, `previous`, and `results` fie
 - `/api/v1/social/for-you/` — posts picked for you from everyone, each with a `recommendation` saying why (cursor paging)
 - `POST /api/v1/social/impressions/` — what was on screen and for how long, in batches of up to 50
 - `POST`/`DELETE /api/v1/social/posts/{id}/not-interested/` — dismiss a post from For You, or undo it
+- `GET`/`PATCH /api/v1/social/for-you/preferences/` — what For You has picked up about you, the topics you hid, and whether it is personalised at all
+- `DELETE /api/v1/social/for-you/history/` — start For You fresh: past activity stops counting and viewing history is deleted
+- `GET /api/v1/social/suggested-people/?limit=` — people you might want to follow, each with a `reason` and a `label`
+- `POST`/`DELETE /api/v1/social/suggested-people/{id}/dismiss/` — stop suggesting somebody for six months, or undo it
 - `POST /api/v1/social/posts/{id}/report/` — report a post to the moderators
 - `POST`/`DELETE /api/v1/social/posts/{id}/video/` — attach or remove a clip on your own post
 
