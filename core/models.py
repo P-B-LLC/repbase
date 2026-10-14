@@ -3175,9 +3175,8 @@ class PostReport(models.Model):
     composing. ``detail`` is there for the case the list does not cover, and
     is optional everywhere else.
 
-    One row per person per post. Reporting twice is not more true than
-    reporting once, and a second press of a button is far more likely to be
-    someone unsure it worked than someone with a second complaint.
+    One row per person, post and reason. Retries are idempotent while distinct
+    violations can reach the queue independently.
 
     Cascades with the post. A report about something that no longer exists is
     not something anyone can act on.
@@ -3235,8 +3234,8 @@ class PostReport(models.Model):
         ordering = ("-created_at", "-id")
         constraints = [
             models.UniqueConstraint(
-                fields=("post", "reporter"),
-                name="one_report_per_person_per_post",
+                fields=("post", "reporter", "reason"),
+                name="one_post_report_per_person_reason",
             )
         ]
         indexes = [

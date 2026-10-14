@@ -30,6 +30,34 @@ def report_data(row, kind):
                 reason=row.reason, detail=row.detail, created_at=row.created_at)
 
 
+def report_review_data(row, kind, request):
+    """Private review context; never added to the public post response."""
+    import json
+    from django.core.serializers.json import DjangoJSONEncoder
+    from .serializers import RepostedPostSerializer, PostVideoSerializer
+    require(request.user, 'moderate')
+    data = report_data(row, kind)
+    post = row.post if kind == 'post' else row.comment.post
+
+    def card(value):
+        result = dict(RepostedPostSerializer(value, context={'request': request}).data)
+        video = getattr(value, 'video', None)
+        if video:
+            result['video'] = PostVideoSerializer(video, context={'request': request}).data
+        result['visibility'] = value.visibility
+        result['is_hidden'] = value.is_hidden
+        result['snapshots'] = [
+            {'name': name.title(), 'data': json.dumps(result[name], indent=2, cls=DjangoJSONEncoder)}
+            for name in ('workout', 'meal', 'planner') if result.get(name)
+        ]
+        return result
+
+    data['post'] = card(post)
+    data['original'] = card(post.repost_of) if post.repost_of_id else None
+    data['reason_label'] = row.get_reason_display()
+    return data
+
+
 @transaction.atomic
 def decide_report(actor, kind, report_id, decision, reason):
     AccessPolicyLock.objects.select_for_update().get(pk=1)

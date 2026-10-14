@@ -3880,8 +3880,8 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         _, created = PostReport.objects.get_or_create(
             post=post,
             reporter=reporter,
+            reason=body.validated_data["reason"],
             defaults={
-                "reason": body.validated_data["reason"],
                 "detail": body.validated_data.get("detail", ""),
             },
         )

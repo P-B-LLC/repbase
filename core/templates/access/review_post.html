@@ -1,0 +1,9 @@
+<section aria-label="Reported post context">
+<h3>Post #{{ post.id }} · @{{ post.author.username }}</h3>
+<p>{{ post.kind|title }} · {{ post.visibility }} · Posted {{ post.created_at }}{% if post.is_hidden %} · Already removed{% endif %}</p>
+<p style="white-space:pre-wrap">{{ post.caption|default:'No caption' }}</p>
+{% if post.image_url %}<details><summary>Show photo (may contain sensitive content)</summary><img src="{{ post.image_url }}" alt="Post attachment" style="max-width:100%;max-height:600px" loading="lazy"></details>{% endif %}
+{% if post.video %}<details><summary>Inspect video (may contain sensitive content)</summary><p>Status: {{ post.video.status }} · Processing: {{ post.video.processing_state }}</p>
+{% if post.video.url %}<video controls preload="none" src="{{ post.video.url }}" style="max-width:100%;max-height:600px"></video>{% else %}<p>Playback is unavailable in the current processing or moderation state. Do not treat unavailable media as reviewed.</p>{% endif %}</details>{% endif %}
+{% for snapshot in post.snapshots %}<details open><summary>Shared {{ snapshot.name }} details</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">{{ snapshot.data }}</pre></details>{% endfor %}
+</section>
