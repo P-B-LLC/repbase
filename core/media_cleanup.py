@@ -48,6 +48,20 @@ MEDIA_FIELDS = {
 }
 
 
+def queue_media_deletion(name, using='default'):
+    """Delete a stored file once the current transaction commits.
+
+    Recorded first, so a crash before the commit hook runs leaves a job for
+    the cleanup command rather than a file nothing points at.
+    """
+    job, _ = PendingMediaDeletion.objects.using(using).get_or_create(name=name)
+    transaction.on_commit(
+        lambda job_id=job.pk: delete_pending_media(job_id, using),
+        using=using,
+        robust=True,
+    )
+
+
 @receiver(post_delete, sender=Post)
 @receiver(post_delete, sender=RepbaseUser)
 @receiver(post_delete, sender=PostVideo)
@@ -59,9 +73,4 @@ def queue_deleted_media(sender, instance, using, **kwargs):
             continue
         name = uploaded.name
         uploaded.close()
-        job, _ = PendingMediaDeletion.objects.using(using).get_or_create(name=name)
-        transaction.on_commit(
-            lambda job_id=job.pk: delete_pending_media(job_id, using),
-            using=using,
-            robust=True,
-        )
+        queue_media_deletion(name, using)

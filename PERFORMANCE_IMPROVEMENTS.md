@@ -236,3 +236,71 @@ Three costs listed above as still open, each growing with use:
   tests and RECOMMENDATIONS.md promise, unless every write that feeds it also
   invalidates it.
 
+
+---
+
+# Performance: For You Shares Its Counts, Re-ranks Each Page, and Was Timed at Scale
+
+**Status:** Done, not yet committed
+**Date:** 2026-10-12
+**Area:** Backend / For You ranking and its sessions
+
+## Why
+
+The recommendation upgrade (similar taste, trending, momentum, new creators,
+a re-rank on every page) adds work to every ranking, and the costs listed
+above were still open: per-post counts were recomputed for every reader as
+correlated subqueries, and nothing had been measured at a realistic size.
+
+Measured first, on PostgreSQL 16 with 20,000 accounts, 90,000 posts (30,000
+inside the window), 900,000 likes, 3.2 million view rows and 400,000 follows:
+the previous version took 149 ms p50 per first page, 134 ms of it in
+candidate retrieval, and of that about 50 ms per 500 posts was counting
+likes, comments and views -- the same counts for every reader.
+
+## What Was Changed
+
+- `core/recommendations.py`:
+  - per-post engagement counts are computed once, as six grouped queries over
+    the posts that lack them, and shared through the cache for ten minutes
+    (`engagement_for`); the reader's own actions are still read live;
+  - this week's trending posts are computed once for everybody every five
+    minutes, and follower counts of recently joined authors (for the newcomer
+    part) every fifteen;
+  - a later page no longer re-reads the whole ranking: the session keeps up to
+    400 unserved candidates by id, re-checks them against eligibility, and
+    re-scores them against a fresh profile;
+  - similar taste asks for at most 100 neighbours with two or more shared
+    likes before weighing them, which keeps its slowest query bounded.
+- `config/settings.py`: without Redis, the local cache now holds 20,000
+  entries instead of Django's 300. At 300 a single ranking evicted its own
+  counts, so development measured a page that recomputed everything.
+
+## Verification
+
+Same database, 30 readers, Django's local-memory cache standing in for Redis:
+
+| | p50 | p95 | queries |
+| --- | --- | --- | --- |
+| first page, counts cached (normal) | 91 ms | 98 ms | 22 |
+| first page, cache empty (after a restart) | 275 ms | 476 ms | 30 |
+| later page, re-ranked | 28 ms | 30 ms | 15 |
+| people suggestions | 57 ms | 67 ms | 30 |
+| previous version, first page | 149 ms | 162 ms | 16 |
+
+`ScaleTests` asserts that the query count is constant in the amount of
+content for first pages, later pages and suggestions, and that a warm cache
+saves the counting queries. 960 backend tests pass on SQLite and PostgreSQL 16.
+
+## Needs To Be Changed / Improved
+
+- **A restart starts cold.** The first rankings after a deploy pay for the
+  counts (about 275 ms, up to 480). A scheduled job writing per-post counts
+  to a table would remove that and the cache entries both, at the cost of a
+  job to run.
+- **Later pages rebuild the profile.** About 11 ms of a later page's 28 is
+  the profile, read fresh on purpose so the page follows what the reader just
+  did. Reading only what changed since the session began would save most of
+  that.
+- **Not load-tested under concurrency.** The figures above are one request at
+  a time.

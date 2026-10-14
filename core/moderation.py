@@ -53,6 +53,7 @@ class ModerationConsentRequired(PermissionDenied):
     }
     default_code = 'moderation_consent_required'
 
+
 #: The header as it appears on the wire, and as the contract documents it.
 CONSENT_HEADER_NAME = 'X-Moderation-Consent'
 #: Django's spelling of the same header. Derived rather than written out

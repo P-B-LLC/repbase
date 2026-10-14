@@ -1,0 +1,19 @@
+[Unit]
+Description=Rytivo For You per-post counts refresh
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=django
+Group=django
+WorkingDirectory=/home/django/app
+EnvironmentFile=/etc/repbase.env
+ExecStart=/home/django/app/.venv/bin/python manage.py refresh_feed_stats
+TimeoutStartSec=600
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=read-only
+ProtectSystem=strict
+StandardOutput=journal
+StandardError=journal

@@ -3,14 +3,12 @@ from datetime import timedelta
 import base64
 import io
 import binascii
-import uuid
 from decimal import Decimal
 from zoneinfo import available_timezones
 
 from django.contrib.auth import authenticate, get_user_model, password_validation
 from django.contrib.auth.validators import ASCIIUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
-from django.core.files.base import ContentFile
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
@@ -32,6 +30,7 @@ class SessionFinishSerializer(serializers.Serializer):
         if value > timezone.now():
             raise serializers.ValidationError("Finish time cannot be in the future.")
         return value
+
 
 from .models import (
     CardioMachine,
@@ -211,19 +210,16 @@ class ProfilePhotoUploadSerializer(serializers.Serializer):
         return attrs
 
     def save_to(self, profile):
+        from .post_publication import replace_profile_photo
+
         extension = (
             self.validated_data.get("extension")
             or ALLOWED_PHOTO_TYPES[self.validated_data["content_type"]]
         )
-        # Replaced, not accumulated: the previous file would otherwise sit on
-        # disk forever with nothing pointing at it.
-        profile.profile_photo.delete(save=False)
-        profile.profile_photo.save(
-            f"{uuid.uuid4().hex}{extension}",
-            ContentFile(self.validated_data["decoded"]),
-            save=True,
-        )
-        return profile
+        # Replaced, not accumulated: the previous file is queued for deletion
+        # once the new one is on the row. Raises PublicationMediaError when
+        # storage cannot take the file.
+        return replace_profile_photo(profile, self.validated_data["decoded"], extension)
 
 
 class NutritionGoalSerializer(serializers.ModelSerializer):
@@ -1196,7 +1192,6 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         help_text="The account's password. Required when changing email.",
     )
 
-
     class Meta:
         model = RepbaseUser
         fields = [
@@ -1264,8 +1259,6 @@ class RepbaseUserSerializer(serializers.ModelSerializer):
         if profile.user_id != getattr(request.user, "id", None):
             return False
         return allowed(request.user)
-
-
 
     def validate_username(self, value):
         # Only a username being changed is held to the rules. The app sends
@@ -2330,7 +2323,6 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Workout does not belong to this user.")
         return value
 
-
     def validate_gear(self, value):
         """Gear must be the user's, and must suit the sport.
 
@@ -2374,6 +2366,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
         return SetEntry.objects.filter(
             session_exercise__session=session,
         ).exclude(weight_kg__isnull=True, reps__isnull=True).count()
+
 
 class SessionRoutePointSerializer(serializers.ModelSerializer):
     class Meta:
@@ -3333,10 +3326,10 @@ class PostSerializer(serializers.ModelSerializer):
 class RecommendationSerializer(serializers.Serializer):
     """Why the For You page put a post where it did.
 
-    `reason` is a short code -- following, interest, popular, discovery or
-    fresh -- sent as a plain string so a reason added later is a value the
-    client does not recognise rather than a decoding error. `label` is a
-    sentence fit to show under the post as it is.
+    `reason` is a short code -- following, interest, similar, discovery,
+    new_creator, popular or fresh -- sent as a plain string so a reason added
+    later is a value the client does not recognise rather than a decoding
+    error. `label` is a sentence fit to show under the post as it is.
     """
 
     reason = serializers.CharField(read_only=True)
@@ -3399,6 +3392,103 @@ class ImpressionResultSerializer(serializers.Serializer):
     #: How many of the posts named were recorded. Posts the reader cannot
     #: see, and their own, are left out without complaint.
     recorded = serializers.IntegerField(read_only=True)
+
+
+class TopicSerializer(serializers.Serializer):
+    """A topic, by its code and the name to show for it."""
+
+    topic = serializers.CharField(read_only=True)
+    label = serializers.CharField(read_only=True)
+
+
+class InterestSerializer(TopicSerializer):
+    """One topic the For You page has picked up about the reader."""
+
+    #: From 0 to 1: how much it counts toward what they are shown.
+    strength = serializers.FloatField(read_only=True)
+    #: Named by the reader -- in onboarding or on their profile -- rather
+    #: than only inferred from what they did.
+    declared = serializers.BooleanField(read_only=True)
+
+
+class ForYouPreferencesSerializer(serializers.Serializer):
+    """What the reader has chosen about their For You page, and what it has
+    picked up about them -- the second so the first can be informed."""
+
+    personalized = serializers.BooleanField(read_only=True)
+    #: Topic codes never to be shown, each one of `hideable_topics`.
+    hidden_topics = serializers.ListField(child=serializers.CharField(), read_only=True)
+    #: When the reader last started fresh, if ever.
+    history_cleared_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    #: Strongest first. Empty when personalisation is off: nothing is used.
+    interests = InterestSerializer(many=True, read_only=True)
+    #: Every topic that may be hidden, in the order to offer them.
+    hideable_topics = TopicSerializer(many=True, read_only=True)
+    #: Topic codes the reader added as interests of their own, each one of
+    #: `addable_topics` when it was added.
+    added_topics = serializers.ListField(child=serializers.CharField(), read_only=True)
+    #: Every topic that may be added as an interest, in the order to offer
+    #: them: what can be hidden, the disciplines, then the exercises most
+    #: people are posting lately.
+    addable_topics = TopicSerializer(many=True, read_only=True)
+
+
+class UpdateForYouPreferencesSerializer(serializers.Serializer):
+    """A change to the reader's For You choices. Any field may be left out.
+
+    Topics are plain strings checked here rather than an enum in the
+    contract, so a topic added later is not a value an older app cannot send
+    or decode. A topic is hidden or added, never both: a change to one list
+    takes its topics out of the other, and a change to both at once may not
+    put a topic in each.
+    """
+
+    personalized = serializers.BooleanField(required=False)
+    hidden_topics = serializers.ListField(
+        child=serializers.CharField(max_length=40), required=False, allow_empty=True, max_length=20
+    )
+    added_topics = serializers.ListField(
+        child=serializers.CharField(max_length=160), required=False, allow_empty=True, max_length=30
+    )
+
+    def validate_added_topics(self, value):
+        from .recommendations import addable_topics
+
+        # What is offered changes as exercises come and go from the most
+        # posted; one the reader already added stays theirs to keep.
+        offered = set(addable_topics()) | set(self.context.get("added_topics", ()))
+        unknown = sorted(set(value) - offered)
+        if unknown:
+            raise serializers.ValidationError(
+                f"Not a topic that can be added: {', '.join(unknown)}. "
+                "Use any of `addable_topics` from the preferences."
+            )
+        # Once each, in the order they were given.
+        return list(dict.fromkeys(value))
+
+    def validate_hidden_topics(self, value):
+        from .recommendations import HIDEABLE_TOPICS
+
+        unknown = sorted(set(value) - set(HIDEABLE_TOPICS))
+        if unknown:
+            raise serializers.ValidationError(
+                f"Not a topic that can be hidden: {', '.join(unknown)}. "
+                f"Use any of: {', '.join(HIDEABLE_TOPICS)}."
+            )
+        # Kept in the catalogue's order, once each, whatever order they came in.
+        return [topic for topic in HIDEABLE_TOPICS if topic in set(value)]
+
+
+class SuggestedPersonSerializer(serializers.Serializer):
+    """Somebody the reader might want to follow, and why.
+
+    `reason` is a plain-string code -- engaged, mutual, similar, discipline,
+    new_creator or popular -- and `label` the sentence to show.
+    """
+
+    person = PublicRepbaseUserSerializer(read_only=True)
+    reason = serializers.CharField(read_only=True)
+    label = serializers.CharField(read_only=True)
 
 
 class CreatePostSerializer(serializers.Serializer):
@@ -3614,24 +3704,6 @@ class FollowRequestSerializer(serializers.ModelSerializer):
         return profile_photo_url_for(
             request_row.requester, self.context.get("request")
         )
-
-
-class FollowSerializer(serializers.ModelSerializer):
-    """The record that one person follows another.
-
-    Response only. Both people are named by the URL and the token, so a request
-    body would carry nothing, and the checks a follow needs — not yourself, not
-    someone either of you has blocked — cannot be made from a body that names
-    nobody. They belong in the view.
-    """
-
-    follower = serializers.PrimaryKeyRelatedField(read_only=True)
-    following = serializers.PrimaryKeyRelatedField(read_only=True)
-
-    class Meta:
-        model = Follow
-        fields = ["id", "follower", "following", "created_at"]
-        read_only_fields = ["id", "follower", "following", "created_at"]
 
 
 class BlockSerializer(serializers.ModelSerializer):

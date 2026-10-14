@@ -24,6 +24,7 @@ class AccessAuditAdmin(admin.ModelAdmin):
     def has_view_permission(self, request, obj=None):
         return request.user.is_active and request.user.is_superuser
 
+
 from .media import signed_media_path
 from .models import (
     BodyWeightEntry,
@@ -42,6 +43,7 @@ from .models import (
     WorkoutSession,
     WorkoutTemplate,
 )
+from .moderation_audit import record_hide
 from .videos import set_review
 
 
@@ -209,6 +211,7 @@ class PostReportAdmin(admin.ModelAdmin):
     @transaction.atomic
     def hide_reported_posts(self, request, queryset):
         posts = Post.objects.filter(reports__in=queryset).distinct()
+        record_hide(request.user, posts, hide=True)
         hidden = posts.update(is_hidden=True, hidden_at=timezone.now())
         # Every report against a post just hidden is settled by that, not only
         # the rows that happened to be selected.
@@ -225,6 +228,7 @@ class PostReportAdmin(admin.ModelAdmin):
     @transaction.atomic
     def unhide_reported_posts(self, request, queryset):
         posts = Post.objects.filter(reports__in=queryset).distinct()
+        record_hide(request.user, posts, hide=False)
         shown = posts.update(is_hidden=False, hidden_at=None)
         count = self._resolve(request, queryset, PostReport.Resolution.NO_ACTION)
         self.message_user(
@@ -256,6 +260,8 @@ class PostAdmin(admin.ModelAdmin):
     ordering = ("-created_at",)
     inlines = (PostReportInline,)
     actions = ("hide_posts", "unhide_posts")
+    # Set with is_hidden, never by hand: the moderation cooldown counts from it.
+    readonly_fields = ("hidden_at",)
 
     def get_queryset(self, request):
         return (
@@ -277,13 +283,27 @@ class PostAdmin(admin.ModelAdmin):
     # who can open the list at all -- view permission is enough -- so a
     # read-only moderator could take posts down and put them back. The
     # report admin above already required change permission; this did not.
+    @transaction.atomic
+    def save_model(self, request, obj, form, change):
+        # Hiding from the change form is a moderation decision like the
+        # actions', and is written down the same way.
+        if change and "is_hidden" in form.changed_data:
+            record_hide(request.user, Post.objects.filter(pk=obj.pk), hide=obj.is_hidden)
+            obj.hidden_at = timezone.now() if obj.is_hidden else None
+        super().save_model(request, obj, form, change)
+
     @admin.action(description="Hide", permissions=["change"])
+    @transaction.atomic
     def hide_posts(self, request, queryset):
+        # Written down first, where it outlives the post (core.moderation_audit).
+        record_hide(request.user, queryset, hide=True)
         count = queryset.update(is_hidden=True, hidden_at=timezone.now())
         self.message_user(request, f"{count} post(s) hidden.")
 
     @admin.action(description="Unhide", permissions=["change"])
+    @transaction.atomic
     def unhide_posts(self, request, queryset):
+        record_hide(request.user, queryset, hide=False)
         count = queryset.update(is_hidden=False, hidden_at=None)
         self.message_user(request, f"{count} post(s) restored.")
 

@@ -255,7 +255,10 @@ class AccessTests(RepbaseAPITestMixin, APITestCase):
         self.assertFalse(self.client.get('/api/v1/me/access/').data['capabilities']['manage_roles'])
 
     def test_no_action_preserves_content_and_anonymous_decision_denied(self):
-        post = Post.objects.create(author=self.admin_profile, kind='text', caption='Allowed text')
+        # Somebody other than the deciding account: nobody decides a report
+        # about their own post.
+        _, author, _ = self.create_account('author')
+        post = Post.objects.create(author=author, kind='text', caption='Allowed text')
         report = PostReport.objects.create(post=post, reporter=self.profile, reason='other')
         url = f'/api/v1/administration/reports/post/{report.pk}/decision/'
         self.client.credentials()

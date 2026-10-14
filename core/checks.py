@@ -212,7 +212,13 @@ def scheduled_cleanup_is_running(app_configs, **kwargs):
 
     from django.utils import timezone
 
-    from .models import FoodSearchCache, PendingMediaDeletion, SaveReceipt
+    from .models import (
+        RECOMMENDATION_HISTORY_DAYS,
+        FoodSearchCache,
+        PendingMediaDeletion,
+        PostView,
+        SaveReceipt,
+    )
 
     now = timezone.now()
     overdue = []
@@ -228,6 +234,10 @@ def scheduled_cleanup_is_running(app_configs, **kwargs):
         stuck_deletions = PendingMediaDeletion.objects.filter(
             created_at__lt=now - timedelta(days=1)
         ).count()
+        # A day of grace past the retention window, like the deletions above.
+        stale_views = PostView.objects.filter(
+            last_seen_at__lt=now - timedelta(days=RECOMMENDATION_HISTORY_DAYS + 1)
+        ).count()
     except Exception:
         # Before the first migrate there is nothing to ask. `check` runs ahead
         # of `migrate` in the deploy entry point, and a missing table is not a
@@ -240,6 +250,8 @@ def scheduled_cleanup_is_running(app_configs, **kwargs):
         overdue.append(f'{stale_receipts} save receipts whose payload should have been compacted')
     if stuck_deletions:
         overdue.append(f'{stuck_deletions} media deletions older than a day still waiting')
+    if stale_views:
+        overdue.append(f'{stale_views} viewing-history rows past the {RECOMMENDATION_HISTORY_DAYS}-day retention')
 
     if not overdue:
         return []
@@ -248,8 +260,66 @@ def scheduled_cleanup_is_running(app_configs, **kwargs):
             'Scheduled cleanup does not appear to be running: ' + ', '.join(overdue) + '.',
             hint=(
                 'Run `python -m config.deploy maintenance` daily. Until something '
-                'does, two tables only grow and storage keeps files no row points at.'
+                'does, three tables only grow -- one of them people\'s viewing '
+                'history, kept past what the privacy policy says -- and storage '
+                'keeps files no row points at.'
             ),
             id='core.W007',
+        )
+    ]
+
+
+@register()
+def for_you_configuration_is_valid(app_configs, **kwargs):
+    """`FOR_YOU_WEIGHTS` and `FOR_YOU_EXPERIMENT` name real weights.
+
+    Checked on every start, not only on deploy, so a typo in a weight's name
+    stops `runserver` and the release rather than turning the first For You
+    request after it into a 500.
+    """
+    from django.core.exceptions import ImproperlyConfigured
+
+    from .recommendations import FeedWeights, experiment_config
+
+    try:
+        FeedWeights.from_settings()
+        config = experiment_config()
+        for overrides in (config or {}).get("variants", {}).values():
+            FeedWeights.from_settings(overrides)
+    except (ImproperlyConfigured, TypeError) as problem:
+        return [Error(
+            f'The For You configuration is not valid: {problem}',
+            hint='See "Tuning" and "Experiments" in RECOMMENDATIONS.md.',
+            id='core.E009',
+        )]
+    return []
+
+
+@register(deploy=True)
+def feed_stats_are_kept_up(app_configs, **kwargs):
+    """The per-post counts table is being refreshed, once it has been set up.
+
+    An empty table is not a warning: the job is optional, and without it the
+    ranking works the counts out itself. A table whose newest row is older
+    than the ranking will read means the timer was set up and has stopped --
+    For You is then quietly doing the slow thing on every cold request.
+    """
+    from .feed_stats import FRESH_SECONDS, staleness
+
+    try:
+        age = staleness()
+    except Exception:
+        return []
+    if age is None or age <= FRESH_SECONDS:
+        return []
+    return [
+        Warning(
+            f'The For You per-post counts were last refreshed {int(age // 60)} minutes ago.',
+            hint=(
+                'The repbase-feed-stats timer (python manage.py refresh_feed_stats) does not '
+                'appear to be running. For You still works, counting during requests, but '
+                'slower. See "Performance" in RECOMMENDATIONS.md.'
+            ),
+            id='core.W009',
         )
     ]
