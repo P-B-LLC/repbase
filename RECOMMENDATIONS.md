@@ -4,22 +4,28 @@ How recommendations are made, how they keep up with the reader, how to tune
 and test changes to them, what the reader controls, what is kept about them,
 and what a client has to do. The ranking is `core/recommendations.py`, what
 engagement it trusts and what it will not recommend is
-`core/feed_integrity.py`, the people suggested beside it are
-`core/suggestions.py`, and the endpoints are in `core/for_you.py`.
+`core/feed_integrity.py`, the record of every moderation decision it reads is
+`core/moderation_audit.py`, the per-post counts kept by a job are
+`core/feed_stats.py`, the learned part is `core/ranking_model.py`, the people
+suggested beside it are `core/suggestions.py`, and the endpoints are in
+`core/for_you.py`.
 
 ## Design in one paragraph
 
-Rules, not a model. There is not yet enough interaction data to train anything
-trustworthy, and a ranking nobody can read cannot be debugged or explained to
-a user. So each reader gets an *interest profile* built from what they did and
-said, with what they did in the last few hours kept apart as *momentum*; each
+Rules first, and a small model only where it has earned its place. A ranking
+nobody can read cannot be debugged or explained to a user. So each reader gets
+an *interest profile* built from what they did and said, with what they did in the last few hours kept apart as *momentum*; each
 eligible recent post gets a *score* made of named parts with configurable
 weights; and the scored posts are *re-ranked* so no creator or topic takes the
 page over, people the reader already follows take at most half of it, and one
 slot in five goes to something new. Each later page is re-scored against a
 fresh profile, so the page keeps up with the reader while they scroll. Every
 post on the page says why it is there, and the reader can see what the page has
-picked up about them, hide topics, start fresh, or turn personalisation off.
+picked up about them, add interests, hide topics, ask for more or fewer posts
+like one in front of them, start fresh, or turn personalisation off. One part
+of the score, `learned`, comes from two logistic regressions trained daily on
+the page's own record; it stays at 0 until a model ranks better than the rules
+on readers it never learned from (see "The learned part" below).
 
 The shape follows what Instagram has published about its own ranking (see
 "Where this comes from" below): a post's value is the actions it earns *per
@@ -43,11 +49,17 @@ What one of the reader's own actions says about what they like:
 | Watched at least half of a clip | `PostView.max_watch_ms` against the clip's length | +0.5 |
 | Watched a clip to the end | `PostView.completed` | +1.0 |
 | Scrolled past (< 1.5 s, no watching) | `PostView.skipped` | −0.3 |
+| More like this | `PostFeedback` (`more_like_this`) | +3.0 (×0.5 for the author) |
+| Fewer like this | `PostFeedback` (`fewer_like_this`) | −3.0 (×0.25 for the author) |
 | Not interested | `PostFeedback` | −4.0 (×0.75 for the author) |
-| Named during onboarding, or a profile discipline | `Personalization`, `UserDiscipline` | +2.0 per topic |
+| Named during onboarding, a profile discipline, or added on the page | `Personalization`, `UserDiscipline`, `RecommendationPreferences.added_topics` | +2.0 per topic |
 
 Interactions from the last 90 days count, at most 300 of each kind, each
-halving in weight every 21 days. A post's **topics** are its kind, its workout
+halving in weight every 21 days. A post holds one of the three things a reader
+can say about it -- more, fewer, not interested -- and saying one replaces
+another. "More like this" also counts as a positive action for similar taste;
+it is never counted toward the post's standing with anybody else, so it cannot
+be used to lift a post for everyone. A post's **topics** are its kind, its workout
 type or planner category, whether it carries a clip, and -- at half weight --
 its author's disciplines. A workout's **detail topics** are its three
 most-performed exercises (by sets), when the name is in the shared exercise
@@ -137,6 +149,7 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
    | fatigue | the author keeps being shown to this reader to no effect (above) | −0.4 |
    | reported | open reports below the exclusion threshold | −1.0 |
    | bait | the caption farms likes (×1.0) or sells something (×0.7) | −1.5 |
+   | learned | P(engage) − 0.5 × P(turn down) from the active model, or 0 with none | 3.0 |
    | jitter | tiny noise, so ties do not always break the same way | 0.02 |
 
    **Engagement** for quality and popularity is `1·likes + 1.5·comments +
@@ -149,8 +162,9 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
    helped nor hurt until there is a record. Dismissals never count for more
    than the views behind them, and the hide part is capped at −1.8 -- a heavy
    demotion, but less than a strong topic match is worth -- so no crowd can
-   bury a post for the people it suits. Reports, not dismissals, are what take
-   a post off the page.
+   bury a post for the people it suits. "Fewer like this" counts as a
+   dismissal here, with the same protections. Reports, not dismissals, are
+   what take a post off the page.
 
    **Exploration.** Quality is not pinned to a post's average: it is drawn
    from the gamma posterior its likes and views allow (Thompson sampling), and
@@ -240,11 +254,17 @@ and saves rules can be run as an experiment.
 - **Recent moderation.** An author a moderator took a post down from, or
   rejected a clip of, in the last 30 days is not shown to anybody who does not
   follow them (`MODERATION_COOLDOWN_DAYS`). Their followers chose them and
-  still see them. The list is read from posts still hidden, clips still
-  rejected, and the access portal's audit of hide decisions -- which outlives
-  the post, so deleting a post the portal hid does not end the cooldown. Undoing
-  a takedown lifts it. The list is worked out once a minute for everyone; the
-  post that was taken down leaves every feed at once, as it always has.
+  still see them. Every path a moderator takes -- the access portal, the
+  Django admin's actions and its change form, the report queue, clip review --
+  writes the same `AccessAudit` row (`core/moderation_audit.py`), subject
+  `post:<id>`, and every undo writes its own (`moderation_unhide`,
+  `clip_approved`). The rows outlive the post, so deleting a post that was
+  taken down does not end the cooldown, and the newest decision on each post
+  is the one that counts, so an undo lifts it even after the post is gone.
+  Decisions made before the audit existed are still read from posts still
+  hidden and clips still rejected. The list is cached for a minute and dropped
+  as soon as a decision commits; the post that was taken down leaves every
+  feed at once, as it always has.
 - **Bait and pitches.** A caption that asks for likes, follows, shares or tags
   ("like this if…", "tag a friend who…", "f4f", "follow for more") costs the
   full `bait` weight; one that sells ("DM me for coaching plans", "use my
@@ -312,23 +332,45 @@ week ago is still a candidate after the newest 500 have moved past it.
   strength from 0 to 1 and whether the reader named it themselves. Topics
   only -- never authors or posts, which would turn "what Rytivo thinks you
   like" into a list of who you look at.
+- **added_topics** and the **addable_topics** to choose from: the hideable
+  topics below, kinds of athlete, and the 40 exercises posted most lately --
+  one chip per name, so "Running" is offered once. An added interest counts as
+  one the reader chose (+2.0 per topic, marked "You chose this"), and an added
+  exercise brings posts with it through the `detail` source. At most 30. One
+  the reader added stays theirs after it leaves the offer, and is listed at the
+  end of `addable_topics` so it can still be seen and taken off.
 - **hidden_topics** and the **hideable_topics** to choose from: workouts,
   lifting, running, cycling, swimming, meals, planning, videos. A hidden topic
-  is never shown -- an exclusion, not a nudge.
+  is never shown -- an exclusion, not a nudge. A topic is added or hidden,
+  never both: replacing one list takes its topics out of the other (so an app
+  that knows nothing of added interests can still hide one), and sending both
+  lists with a topic in each is refused.
 - **personalized**: off means the page stops using what the reader does --
   likes, views, follows, onboarding answers -- and orders eligible posts by
   quality, popularity and freshness alone. Posts already seen are still moved
   down, and hidden topics and dismissed posts stay hidden.
 
-`PATCH` changes `personalized` and `hidden_topics`.
+`PATCH` changes `personalized`, `hidden_topics` and `added_topics`.
 `DELETE /api/v1/social/for-you/history/` **starts fresh**: everything before
 now stops counting toward the page, and the reader's viewing history is
-deleted outright. Likes, comments, follows and "not interested" stay -- they
-are the reader's own actions, shown to other people or chosen on purpose, not
-a record kept about them -- they simply stop counting.
+deleted outright. Likes, comments, follows and what they said about posts stay
+-- they are the reader's own actions, shown to other people or chosen on
+purpose, not a record kept about them -- they simply stop counting. Added
+interests and hidden topics are choices, not history, and stay in force.
 
-"Not interested" on any post dismisses it at once, even from a page already
-ranked, and can be undone.
+On any For You post the reader can say:
+
+- **Not interested**: it leaves the page at once, even a page already ranked,
+  and posts like it -- its topics, and to a lesser degree its author -- are
+  shown less.
+- **Fewer like this**: the same, but about its kind of content -- its topics
+  and exercises -- much more than its author.
+- **More like this**: its topics, exercises and to a lesser degree its author
+  are shown more from the next page. Like a like, the post itself is not
+  recommended again; the screen keeps it where it is.
+
+Each can be taken back (`DELETE`), a post holds one of them at a time, and
+saying one about your own post is refused.
 
 ## People to follow
 
@@ -355,11 +397,17 @@ it back.
 - **What is kept.** For each post that was on a reader's screen: how many
   times, for how long in all, how far into its clip, whether it was finished
   or scrolled past, where it was first seen and, for For You, the reason it was
-  shown for. One row per reader and post (`PostView`). Plus "not interested"
-  (`PostFeedback`), the reader's choices (`RecommendationPreferences`) and
-  dismissed suggestions (`SuggestionDismissal`).
-- **For how long.** Viewing history and "not interested" for 90 days -- as long
-  as the ranking reads them -- then `prune_expired_rows` (part of
+  shown for, with what the ranking knew about it then (`features`: each part
+  of its score before weighting, the slot and whether it was a discovery
+  slot, written by the server). One row per reader and post (`PostView`).
+  Plus more/fewer/not interested (`PostFeedback`), the reader's choices
+  (`RecommendationPreferences`) and dismissed suggestions
+  (`SuggestionDismissal`). The learned model (`RankingModel`) is weights and
+  averages over everybody, and names nobody; per-post counts
+  (`PostEngagementStats`) are counts about a post, never about who.
+- **For how long.** Viewing history (features included) and what readers said
+  about posts for 90 days -- as long as the ranking reads them -- then
+  `prune_expired_rows` (part of
   `python -m config.deploy maintenance`) deletes them. Dismissed suggestions for
   180 days. The deploy check `core.W007` warns when history older than that is
   still there, which means the daily job is not running. Starting fresh deletes
@@ -381,11 +429,29 @@ it back.
 Every query is bounded by a cap, not by the amount of content: the number of
 queries one ranking makes does not grow with the community (`ScaleTests`
 asserts it, for first and later pages and for suggestions), and the candidate
-pool is at most 1,250 posts. What is the same for every reader is computed
-once and shared through the cache:
+pool is at most 1,250 posts.
 
-- per-post engagement -- each action as rows and as trusted people, views,
-  long views, completions, skips and "not interested" -- for 10 minutes;
+**Per-post counts are kept by a job.** Each post's engagement -- each action
+as rows and as trusted people, views, long views, completions, skips and
+dismissals -- is written to `PostEngagementStats` by `refresh_feed_stats`
+(the `repbase-feed-stats` timer, five minutes after each run), and the ranking
+reads those rows in one query instead of counting during somebody's request.
+Each run rewrites every post acted on since the last run that finished (and,
+for posts under two days old, every one that was seen), and enough of the rest,
+oldest first, that every row in the 30-day window comes round within 15
+minutes however big the window grows. A row is read only while it is under 30
+minutes old and was written by the current way of counting
+(`STATS_VERSION`); anything else is counted on the spot, as before, so a
+stopped job makes the page slower, never wrong, and the deploy check
+`core.W009` says so. Each batch commits on its own; a post deleted while its
+batch was counted is left out, not a failed run; and a run stopped half way
+leaves nothing behind, because the next one looks for activity from when the
+last *finished* run started.
+
+What is the same for every reader and not in that table is computed once and
+shared through the cache:
+
+- per-post engagement, when the table has no fresh row, for 10 minutes;
 - each posted workout's exercises for 6 hours (they never change);
 - this week's trending posts for 5 minutes;
 - follower counts of recently joined authors, for the newcomer part, for 15
@@ -393,8 +459,14 @@ once and shared through the cache:
 - the lists trust is made from -- suspended accounts, accounts that joined in
   the last 30 days, accounts bursting this hour -- for 5 minutes, and how
   single-minded each young liker is for 15;
-- authors under a moderation cooldown, for 1 minute;
-- the exercise vocabulary, for an hour.
+- authors under a moderation cooldown, for 1 minute (dropped when a decision
+  commits);
+- the exercise vocabulary, for an hour;
+- the active ranking model, for 5 minutes.
+
+The learned part costs nothing extra to query: the model is cached, and its
+inputs are the score's own parts. It adds a few microseconds of arithmetic per
+candidate.
 
 An established account that is not bursting is simply trusted: nothing is
 looked up about it. The reader's own actions are always read live, so nothing
@@ -430,9 +502,8 @@ bursting list reads the last hour of likes every five minutes, found by
 walking back the primary key rather than scanning the table. A later page
 re-checks up to 400 remaining candidates; that is most of its cost.
 
-When the community outgrows this -- hundreds of thousands of posts a month --
-the next step is a table of per-post counts (raw and trusted) kept up to date
-by a scheduled job, in place of the shared cache.
+With the counts table kept up, the cold path above is the exception (a
+fresh deploy, or a stopped job) rather than every tenth minute.
 
 ## Monitoring
 
@@ -447,7 +518,8 @@ by a scheduled job, in place of the shared cache.
   - impressions, viewers and distinct posts and authors shown (coverage);
   - engagement rate: the share of For You views the reader then liked,
     commented on, saved or reposted, and each of those on its own (`actions`);
-  - skip rate, not-interested rate and clip completion rate;
+  - skip rate, not-interested, more-like-this and fewer-like-this rates, and
+    clip completion rate;
   - average dwell, and for clips how far people got and the total watch time
     (`watch`);
   - every rate per reason (`by_reason`), which is how to tell whether
@@ -461,9 +533,66 @@ by a scheduled job, in place of the shared cache.
     week (needs `ANALYTICS_ENABLED`, which records daily activity);
   - ranking latency for first and later pages, as histograms with p50/p95
     bounds;
-  - per experiment arm, when one is running (`by_variant`).
+  - per experiment arm, when one is running (`by_variant`);
+  - which learned model is active and the newest one trained, with its
+    held-out figures and why it was or was not made active (`model`).
 
   Run it before and after changing weights.
+- **`python manage.py refresh_feed_stats [--full]`** and
+  **`python manage.py train_ranking_model [--no-activate]`** each log one line
+  of counts (and the trainer prints its figures as JSON). The deploy check
+  `core.W009` warns when the counts table has stopped being kept up.
+
+## The learned part
+
+`core/ranking_model.py`. Every post For You serves is recorded with the parts
+of its score before weighting, its slot and whether it filled a discovery slot
+(`PostView.features`, the latest serving before the reader's first impression
+of it). An hour later, what the reader did is the label: **engaged** (liked,
+commented, saved, shared, more like this) or **turned down** (scrolled
+straight past, not interested, fewer like this).
+
+`train_ranking_model` (daily, on the `repbase-ranking-model` timer, at about
+04:30) fits two logistic regressions in plain Python over the last 30 days, at
+most 200,000 impressions -- P(engage) and P(turn down) -- and adds
+`learned × (P(engage) − 0.5 × P(turn down))` to every score. No new
+dependency; the model is 19 weights and a bias per regression, stored in
+`RankingModel` and shown by `feed_report`.
+
+**It has to earn its place.** A fifth of readers, chosen by a hash of their
+id, are held out whole. On them the trainer asks the question the page
+answers -- does the score put what people took above what they turned down?
+-- of the rules' own total, and of the rules plus the model, scored exactly as
+when serving. Only with at least 2,000 training impressions (100 engaged) and
+300 held-out ones (20 engaged), and a held-out AUC at least 0.01 better than
+the rules alone, does it become the one active model (a database constraint
+allows only one). Until then -- and that includes today, with no data -- the
+`learned` part is 0 and the page is the rules. The ten newest inactive models
+are kept for comparison.
+
+**Position bias.** People engage with what is near the top whatever it is.
+Position and discovery are features in training and held at their average
+when scoring, so the model judges what a post is, not where the rules put it,
+and the held-out test does the same, so a model that learned only the slot
+cannot pass.
+
+`FOR_YOU_WEIGHTS = {"learned": 0}` turns it off at once; an experiment arm with
+`{"learned": 0}` measures it on real traffic, which is the only measurement
+that should decide whether it stays. See below for what it did on the
+simulated community.
+
+## Jobs
+
+| Timer (in `deploy/`) | Runs | Missing it means |
+| --- | --- | --- |
+| `repbase-feed-stats` | `refresh_feed_stats`, 5 minutes after each run | a slower first page (counted on the spot); `core.W009` warns |
+| `repbase-ranking-model` | `train_ranking_model`, daily ~04:30 | the active model ages; with none, the rules alone |
+
+Both are installed like the other timers: copy the `.service` and `.timer`
+into `/etc/systemd/system/`, `systemctl daemon-reload`, then
+`systemctl enable --now repbase-feed-stats.timer repbase-ranking-model.timer`.
+The first counts run is a full one over the window. Neither is needed for the
+page to work.
 
 ## Evaluating a change before it ships
 
@@ -608,8 +737,13 @@ rule-based ranker:
 - **Diversity and discovery.** No long runs from one author; a large share of
   what is shown comes from accounts the reader does not follow; small and new
   creators get a fair first audience.
-- **The reader's controls.** Not interested, hidden topics, a visible list of
-  what the page has picked up (like Instagram's "Your Algorithm"), and a reset.
+- **The reader's controls.** Interested and not interested on a post, hidden
+  topics, a visible list of what the page has picked up that the reader can
+  add to (like Instagram's "Your Algorithm"), and a reset.
+- **Predictions learned from what people did.** Instagram's ranking is
+  built from models predicting each action from what was shown; here one
+  small, readable model learns how much each rule's part predicts, and only
+  counts once it does better than the rules.
 
 Sources: [Instagram Ranking Explained (2023)](https://about.instagram.com/blog/announcements/instagram-ranking-explained),
 [Scaling the Instagram Explore recommendations system (2023)](https://engineering.fb.com/2023/08/09/ml-applications/scaling-instagram-explore-recommendations-system/),
@@ -623,16 +757,17 @@ Sources: [Instagram Ranking Explained (2023)](https://about.instagram.com/blog/a
 
 ## Known limits
 
-- **Not every takedown outlives its post.** A post hidden in the Django admin,
-  or a clip rejected there, leaves no record that survives the post being
-  deleted, so an author who deletes it ends their cooldown early. The access
-  portal's decisions are audited and do not have this gap. The fix is for every
-  moderation path to write the same audit row (or a `moderated_at` on the
-  account); it touches the moderation code, so it is proposed separately. The
-  reverse also happens: a portal hide that was undone in the admin, on a post
-  its author then deleted, looks like a hide nobody undid, and puts the author
-  back under the cooldown until 30 days after the decision. Recording undos in
-  the same audit fixes both.
+- **Takedowns from before the audit.** A post hidden in the Django admin
+  before every path was audited, and then deleted by its author, left no
+  record; its cooldown ended early. Everything decided from this branch on is
+  recorded, undos included.
+- **The learned part has only been measured on a simulated community.** Its
+  gate keeps it off until real data says it beats the rules, and it should
+  then be run as an experiment before it is trusted.
+- **Older apps and the new choices.** An app built before this branch shows no
+  "more/fewer like this" and no added interests; what a reader chose on a newer
+  app still shapes their page there, and hiding a topic from an older app
+  takes it off their added interests.
 - **Reports are counted from anybody.** Three open reports from different
   accounts -- fresh ones included -- take a post out of For You until a
   moderator looks. That predates this branch and is deliberately safety-first;
@@ -662,8 +797,12 @@ GET    /api/v1/social/for-you/?cursor=…&page_size=…        page of posts, ea
 POST   /api/v1/social/impressions/                         {"events": [{post, dwell_ms, watch_ms, completed, surface}]}, ≤ 50
 POST   /api/v1/social/posts/{id}/not-interested/           204
 DELETE /api/v1/social/posts/{id}/not-interested/           204
-GET    /api/v1/social/for-you/preferences/                 {personalized, hidden_topics, history_cleared_at, interests, hideable_topics}
-PATCH  /api/v1/social/for-you/preferences/                 {personalized?, hidden_topics?} → the same
+POST   /api/v1/social/posts/{id}/more-like-this/           204
+DELETE /api/v1/social/posts/{id}/more-like-this/           204
+POST   /api/v1/social/posts/{id}/fewer-like-this/          204
+DELETE /api/v1/social/posts/{id}/fewer-like-this/          204
+GET    /api/v1/social/for-you/preferences/                 {personalized, hidden_topics, history_cleared_at, interests, hideable_topics, added_topics, addable_topics}
+PATCH  /api/v1/social/for-you/preferences/                 {personalized?, hidden_topics?, added_topics?} → the same
 DELETE /api/v1/social/for-you/history/                     start fresh → the same
 GET    /api/v1/social/suggested-people/?limit=…            [{person, reason, label}]
 POST   /api/v1/social/suggested-people/{id}/dismiss/       204
@@ -673,7 +812,8 @@ DELETE /api/v1/social/posts/{id}/video/                    returns the post
 ```
 
 Writes on the preferences, history and dismissal endpoints share the `social`
-rate limit with likes and "not interested".
+rate limit with likes, "not interested", "more like this" and "fewer like
+this".
 
 ### What a client should send
 
