@@ -105,6 +105,8 @@ from .feed_integrity import (
     recently_moderated_authors,
     trust_by_id,
 )
+from .ranking_model import active_model, feature_row
+from .ranking_model import value as ranking_value
 from .models import (
     Block,
     Exercise,
@@ -195,6 +197,12 @@ class FeedWeights:
     #: modest: not liking something is weaker evidence than skipping it, and
     #: on the simulated community a heavier weight cost relevant authors.
     fatigue: float = 0.4
+    #: What a model learned from the page's own record adds:
+    #: weight x (P(engage) - 0.5 x P(turn down)), once a model has beaten the
+    #: rules on readers it did not learn from (`core.ranking_model`). 0 for
+    #: the rules alone -- which is also what every page gets until a model
+    #: has earned it.
+    learned: float = 3.0
     #: How far engagement is counted only from accounts that can be trusted
     #: (`core.feed_integrity`): 1 counts each person once, never the author,
     #: never a suspended account, and less for brand-new, bursting or
@@ -1661,7 +1669,7 @@ def _match(topics, affinity):
     return sum(affinity(topic) * share for topic, share in topics.items()) / total
 
 
-def score(candidate, profile, weights, now, rng=None):
+def score(candidate, profile, weights, now, rng=None, model=None):
     """A candidate's score, and the parts it is made of.
 
     Three kinds of part, added up:
@@ -1744,6 +1752,25 @@ def score(candidate, profile, weights, now, rng=None):
         "reported": -weights.reported * reported,
         "bait": -weights.bait * candidate.bait,
     }
+    # The same parts before weighting, for the learned model to read and for
+    # the page to record against what the reader does next
+    # (`core.ranking_model`). The rules' own total goes with them, as the bar
+    # a model has to beat.
+    candidate.raw = {
+        "topic": topic_match, "momentum": momentum, "detail": detail,
+        "author": profile.authors.get(candidate.author_id, 0.0),
+        "follows": float(candidate.author_id in profile.followed), "similar": candidate.similar,
+        "quality": quality, "popularity": popularity, "watch": watch,
+        "skip_rate": skip_rate, "hide_rate": hide_rate, "recency": recency,
+        "newcomer": candidate.newcomer, "seen": profile.seen.get(candidate.pk, 0.0),
+        "fatigue": profile.fatigue.get(candidate.author_id, 0.0), "reported": reported,
+        "bait": candidate.bait, "rules": sum(parts.values()),
+    }
+    # What a model learned from the page's own record adds, once one has
+    # earned it (core.ranking_model); nothing until then.
+    parts["learned"] = (
+        weights.learned * ranking_value(model, candidate.raw) if model is not None and weights.learned else 0.0
+    )
     if rng is not None and weights.jitter:
         parts["jitter"] = weights.jitter * rng.random()
     return sum(parts.values()), parts
@@ -1919,8 +1946,9 @@ def build_ranking(viewer, now=None, seed=None, limit=MAX_RANKED):
     rng = random.Random(seed if seed is not None else new_seed())
     profile = build_profile(viewer, weights, now)
     found = candidates(viewer, profile, now)
+    model = active_model() if weights.learned else None
     for candidate in found:
-        candidate.score, candidate.parts = score(candidate, profile, weights, now, rng)
+        candidate.score, candidate.parts = score(candidate, profile, weights, now, rng, model)
     items = rank(found, profile, weights, rng, limit=limit)
     duration_ms = (time.perf_counter() - started) * 1000
     return Ranking(items, len(found), profile.is_new, duration_ms, variant)
@@ -2014,13 +2042,24 @@ def read_cursor(value):
     return session, offset
 
 
-def _extend(session, found, profile, weights, now, need):
-    """Score what is left, rank the next `need` posts, and keep the rest."""
+def _extend(session, found, profile, weights, now, need, viewer=None):
+    """Score what is left, rank the next `need` posts, and keep the rest.
+    What the ranking knew about each post it serves is remembered for the
+    impression that follows (`remember_features`)."""
     rng = random.Random(session.seed * 1_000_003 + len(session.served))
+    model = active_model() if weights.learned else None
     for candidate in found:
-        candidate.score, candidate.parts = score(candidate, profile, weights, now, rng)
+        candidate.score, candidate.parts = score(candidate, profile, weights, now, rng, model)
     chosen = rank(found, profile, weights, rng, limit=need, state=session.state)
     taken = {item.pk for item in chosen}
+    if viewer is not None:
+        by_pk = {item.pk: item for item in found}
+        remember_features(viewer, {
+            item.pk: feature_row(
+                by_pk[item.pk].raw, discovery=item.reason == "discovery", position=len(session.served) + index,
+            )
+            for index, item in enumerate(chosen)
+        })
     session.served.extend((item.pk, item.reason, item.label) for item in chosen)
     rest = sorted(
         (item for item in found if item.pk not in taken), key=lambda item: (-item.score, -item.pk)
@@ -2063,7 +2102,7 @@ def serve_page(viewer, session_id=None, offset=0, size=20, now=None, seed=None):
         session.similar = {
             item.pk: (item.similar, item.similar_voters) for item in found if item.similar
         }
-        ranked = _extend(session, found, profile, weights, now, size)
+        ranked = _extend(session, found, profile, weights, now, size, viewer)
         _log_ranking("first", started, viewer, ranked, len(found), profile, variant)
     else:
         offset = min(offset, len(session.served))
@@ -2073,7 +2112,7 @@ def serve_page(viewer, session_id=None, offset=0, size=20, now=None, seed=None):
             profile = build_profile(viewer, weights, now)
             similar = {pk: Similar(*value) for pk, value in session.similar.items()}
             found = candidates_by_id(viewer, profile, session.pool, similar, now)
-            ranked = _extend(session, found, profile, weights, now, need)
+            ranked = _extend(session, found, profile, weights, now, need, viewer)
             _log_ranking("next", started, viewer, ranked, len(found), profile, variant)
     if ranked is not None:
         _save_session(viewer, session_id, session)
@@ -2094,9 +2133,9 @@ def _log_ranking(kind, started, viewer, items, candidate_count, profile, variant
     logger.log(
         logging.INFO if kind == "first" else logging.DEBUG,
         "for_you %s ranked=%d candidates=%d new_account=%s personalized=%s variant=%s "
-        "duration_ms=%.1f reasons=%s",
+        "model=%s duration_ms=%.1f reasons=%s",
         kind, len(items), candidate_count, profile.is_new, profile.personalized, variant,
-        duration_ms, dict(Counter(item.reason for item in items)),
+        (active_model() or {}).get("id"), duration_ms, dict(Counter(item.reason for item in items)),
     )
 
 
@@ -2127,8 +2166,30 @@ def served_reasons(viewer):
     return cache.get(_served_key(viewer.pk)) or {}
 
 
+def _features_key(viewer_id):
+    return f"for-you:features:{viewer_id}"
+
+
+def remember_features(viewer, rows):
+    """{post id: what the ranking knew about it} for posts just served, kept
+    beside their reasons until the impression that records them arrives.
+    The first ranking that served a post is the one that counts."""
+    if not rows:
+        return
+    known = cache.get(_features_key(viewer.pk)) or {}
+    for pk, row in rows.items():
+        known.setdefault(pk, row)
+    if len(known) > SERVED_MEMORY:
+        known = dict(list(known.items())[-SERVED_MEMORY:])
+    cache.set(_features_key(viewer.pk), known, SERVED_TTL_SECONDS)
+
+
+def served_features(viewer):
+    return cache.get(_features_key(viewer.pk)) or {}
+
+
 def forget_reasons(viewer):
-    cache.delete(_served_key(viewer.pk))
+    cache.delete_many([_served_key(viewer.pk), _features_key(viewer.pk)])
 
 
 # ---------------------------------------------------------------- monitoring
@@ -2241,14 +2302,15 @@ def record_impressions(viewer, events, now=None):
         elif entry["watch"] is not None and duration:
             entry["watch"] = min(entry["watch"], duration)
     if visible:
-        reasons = {}
+        reasons, features = {}, {}
         if any(merged[post_id]["surface"] == PostView.Surface.FOR_YOU for post_id in visible):
             reasons = served_reasons(viewer)
+            features = served_features(viewer)
         for post_id in visible:
             entry = merged[post_id]
-            entry["reason"] = (
-                reasons.get(post_id, "") if entry["surface"] == PostView.Surface.FOR_YOU else ""
-            )
+            for_you = entry["surface"] == PostView.Surface.FOR_YOU
+            entry["reason"] = reasons.get(post_id, "") if for_you else ""
+            entry["features"] = features.get(post_id) if for_you else None
         _upsert_views(viewer, [(post_id, merged[post_id]) for post_id in visible], now)
     return len(visible)
 
@@ -2271,8 +2333,9 @@ def _upsert_views(viewer, entries, now):
     table = ops.quote_name(PostView._meta.db_table)
     columns = [
         "viewer_id", "post_id", "view_count", "total_dwell_ms", "max_watch_ms",
-        "completed", "skipped", "surface", "reason", "first_seen_at", "last_seen_at",
+        "completed", "skipped", "surface", "reason", "features", "first_seen_at", "last_seen_at",
     ]
+    features_field = PostView._meta.get_field("features")
     first_seen = ops.adapt_datetimefield_value(timezone.now())
     last_seen = ops.adapt_datetimefield_value(now)
     params = []
@@ -2295,6 +2358,7 @@ def _upsert_views(viewer, entries, now):
             # and psycopg would send an enum member by its name.
             str(entry["surface"]),
             str(entry.get("reason") or ""),
+            features_field.get_db_prep_value(entry.get("features"), connection),
             first_seen,
             last_seen,
         ]
@@ -2313,6 +2377,8 @@ def _upsert_views(viewer, entries, now):
         f"ELSE {current} END, "
         f"completed = ({table}.completed OR excluded.completed), "
         f"skipped = excluded.skipped, "
+        # The first ranking that showed it is what it is learned from.
+        f"features = COALESCE({table}.{ops.quote_name('features')}, excluded.{ops.quote_name('features')}), "
         f"last_seen_at = excluded.last_seen_at"
     )
     with connection.cursor() as cursor:

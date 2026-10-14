@@ -3400,6 +3400,14 @@ class PostView(models.Model):
     #: server from what it served, never taken from the client, so the
     #: report can say whether discovery or similar taste is earning its slots.
     reason = models.CharField(max_length=20, blank=True, default="")
+    #: What the For You ranking knew about this post for this reader when it
+    #: first showed it -- the score's parts before weighting, and the slot
+    #: -- as a list of numbers in `core.ranking_model.FEATURES` order. What
+    #: the learned ranking model is trained on, against what the reader then
+    #: did. Recorded by the server, never taken from the client; kept and
+    #: deleted with the row, so it lives no longer than the viewing history
+    #: it belongs to.
+    features = models.JSONField(null=True, blank=True, default=None)
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(default=timezone.now)
 
@@ -3546,6 +3554,46 @@ class PostEngagementStats(models.Model):
 
     def __str__(self):
         return f"stats for post {self.post_id}"
+
+
+class RankingModel(models.Model):
+    """A ranking model learned from what people did with what For You
+    showed them (`core.ranking_model`).
+
+    Two logistic regressions over the same features -- how likely a reader is
+    to engage with a post (like, comment, save, share, "more like this"), and
+    how likely to turn it down (scroll past, "not interested", "fewer like
+    this") -- with the feature scaling they were trained with, and how well
+    they did on readers held out of training. Aggregate numbers only: nothing
+    here names a reader or a post.
+
+    At most one is active. `train_ranking_model` makes a new one active only
+    when it beat the rules on the held-out readers.
+    """
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    #: The feature names, in order, that the lists below follow.
+    features = models.JSONField(default=list)
+    means = models.JSONField(default=list)
+    scales = models.JSONField(default=list)
+    engage_weights = models.JSONField(default=list)
+    engage_bias = models.FloatField(default=0.0)
+    reject_weights = models.JSONField(default=list)
+    reject_bias = models.FloatField(default=0.0)
+    #: Sample counts and held-out quality, the rules' included.
+    metrics = models.JSONField(default=dict)
+    is_active = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("is_active",), condition=models.Q(is_active=True), name="one_active_ranking_model"
+            )
+        ]
+
+    def __str__(self):
+        return f"ranking model {self.pk} ({'active' if self.is_active else 'inactive'})"
 
 
 class SuggestionDismissal(models.Model):

@@ -40,6 +40,11 @@ changing its weight:
 
     FEED_EVAL_REPORT=1 python manage.py test core.test_feed_evaluation
     FEED_EVAL_ABLATION=1 python manage.py test core.test_feed_evaluation
+    FEED_EVAL_LEARNED=1 python manage.py test core.test_feed_evaluation
+
+The last learns a ranking model from one round of the community using For
+You, and compares a fresh round under the rules with one under the rules
+plus that model.
 
 The clock is frozen for each arm, so two runs of the same weights give the
 same figures and any difference between arms is the weights'.
@@ -447,6 +452,51 @@ class SimulatedCommunityTests(TestCase):
                 )
                 transaction.set_rollback(True)
             print(name.ljust(26), *[str(result[key]).rjust(17) for key in keys])
+
+
+    @unittest.skipUnless(os.environ.get("FEED_EVAL_LEARNED"), "set FEED_EVAL_LEARNED=1 to run")
+    def test_a_learned_model_earns_its_place(self):
+        """Learn from one round of the community using For You under the
+        rules, then compare a fresh round under the rules with a fresh round
+        under rules plus the model. Both rounds start from the same world."""
+        from . import ranking_model
+        from .models import RankingModel
+
+        limits = {"MIN_TRAIN": 300, "MIN_POSITIVES": 30, "MIN_TEST": 50, "MIN_TEST_POSITIVES": 5}
+        with ExitStack() as stack:
+            for name, value in limits.items():
+                stack.enter_context(mock.patch.object(ranking_model, name, value))
+            stack.enter_context(mock.patch.object(ranking_model, "LABEL_DELAY", timedelta(0)))
+            stack.enter_context(mock.patch("django.utils.timezone.now", return_value=self.now))
+            with transaction.atomic():
+                self.run_arm({"learned": 0}, feed_integrity.MODERATION_COOLDOWN_DAYS, feed_integrity.NEW_ACCOUNT_HOURS)
+                model = ranking_model.train()
+                learned = {
+                    field: getattr(model, field) for field in (
+                        "features", "means", "scales", "engage_weights", "engage_bias",
+                        "reject_weights", "reject_bias", "metrics",
+                    )
+                }
+                transaction.set_rollback(True)
+        results = {}
+        for name, overrides, with_model in (("rules", {"learned": 0}, False), ("rules + model", {}, True)):
+            with transaction.atomic():
+                if with_model:
+                    RankingModel.objects.create(is_active=True, **learned)
+                cache.clear()
+                results[name] = self.run_arm(
+                    overrides, feed_integrity.MODERATION_COOLDOWN_DAYS, feed_integrity.NEW_ACCOUNT_HOURS
+                )
+                transaction.set_rollback(True)
+        keys = ("mean_utility", "cold_start_utility_page1", "integrity_exposure", "disliked_topic_share",
+                "distinct_authors_per_30", "first_page_ms_p50")
+        print("\nmodel:", {key: learned["metrics"].get(key) for key in (
+            "train", "test", "auc_engage", "auc_turned_down", "rules_auc", "model_auc", "gate")})
+        print("arm".ljust(16), *[key[:16].rjust(17) for key in keys])
+        for name, result in results.items():
+            print(name.ljust(16), *[str(result[key]).rjust(17) for key in keys])
+        self.assertGreaterEqual(results["rules + model"]["mean_utility"], results["rules"]["mean_utility"] - 0.01)
+        self.assertLessEqual(results["rules + model"]["integrity_exposure"], results["rules"]["integrity_exposure"] + 0.01)
 
 
 def topic_is(truth, pk, topic):

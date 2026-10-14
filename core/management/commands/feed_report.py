@@ -211,6 +211,26 @@ def diversity(rows, impressions):
     }
 
 
+def model_summary():
+    """The learned ranking model in use, and the newest one trained, as
+    figures only (core.ranking_model)."""
+    from core.models import RankingModel
+
+    def figures(model):
+        if model is None:
+            return None
+        keep = ("train", "test", "model_auc", "rules_auc", "auc_engage", "auc_turned_down", "gate")
+        return {
+            "trained_at": model.created_at.isoformat(),
+            **{key: model.metrics.get(key) for key in keep},
+        }
+
+    return {
+        "active": figures(RankingModel.objects.filter(is_active=True).first()),
+        "newest": figures(RankingModel.objects.first()),
+    }
+
+
 def build_report(days=7, hours=24, now=None):
     now = now or timezone.now()
     since = now - timedelta(days=days)
@@ -283,6 +303,7 @@ def build_report(days=7, hours=24, now=None):
         "latency": latency_summary(hours=hours, kind="first"),
         "latency_next_page": latency_summary(hours=hours, kind="next"),
     }
+    report["model"] = model_summary()
     config = experiment_config()
     if config:
         report["experiment"] = config["name"]

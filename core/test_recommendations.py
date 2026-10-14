@@ -85,6 +85,7 @@ HISTORY = "/api/v1/social/for-you/history/"
 EVERY_PART = {
     "topic", "momentum", "detail", "author", "follows", "similar", "quality", "popularity",
     "recency", "watch", "newcomer", "skip_rate", "hide_rate", "seen", "fatigue", "reported", "bait",
+    "learned",
 }
 
 
