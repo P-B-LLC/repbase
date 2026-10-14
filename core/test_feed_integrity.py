@@ -142,7 +142,7 @@ class AccountTrustTests(ForYouTestCase):
     def test_likes_made_right_after_signing_up_count_for_half_too(self):
         post = self.meals[2]
         engagement_for([post.pk])
-        cache.delete(f"for-you:stats4:{post.pk}")
+        cache.delete(f"for-you:stats5:{post.pk}")
         fresh = make_account("instant_liker")[1]
         PostLike.objects.create(post=post, user=fresh)
         self.assertEqual(engagement_for([post.pk])[post.pk].trusted_likes, feed_integrity.NEW_ACCOUNT_TRUST)
@@ -242,6 +242,8 @@ class TrustedCountTests(ForYouTestCase):
         self.assertEqual((counts.trusted_shares, counts.trusted_saves), (1, 1))
 
     def test_views_skips_and_dismissals_from_suspended_accounts_do_not_count(self):
+        for runner in self.runners:
+            backdate(runner, 40)
         for viewer, skipped in ((self.runners[0], True), (self.runners[1], True), (self.runners[2], False)):
             PostView.objects.create(viewer=viewer, post=self.post, view_count=1, skipped=skipped)
         PostFeedback.objects.create(viewer=self.runners[0], post=self.post)
@@ -260,14 +262,32 @@ class TrustedCountTests(ForYouTestCase):
         counts = self.counts()
         self.assertEqual((counts.impressions, counts.skips, counts.dismissals), (0, 0, 0))
 
+    def test_week_old_accounts_take_off_half_as_much_and_never_bury(self):
+        """Twenty accounts made three days ago, each viewing and dismissing a
+        post. They count, at half, and the post is pushed down -- but not
+        below what a strong match for a reader is worth."""
+        crowd = [make_account(f"patient_burier{n}")[1] for n in range(20)]
+        for person in crowd:
+            backdate(person, 3)
+            PostView.objects.create(viewer=person, post=self.post, view_count=1, skipped=True)
+            PostFeedback.objects.create(viewer=person, post=self.post)
+        counts = self.counts()
+        self.assertEqual(counts.impressions, 20)
+        self.assertEqual((counts.skips, counts.dismissals), (10, 10))
+        item = candidate(self.post.pk, self.author.pk, {"kind:meal": 1.0}, impressions=20, skips=10, dismissals=10)
+        _, parts = score(item, InterestProfile(), FeedWeights(), timezone.now())
+        self.assertGreaterEqual(parts["hide_rate"], -FeedWeights().hide_rate * recommendations.HIDE_RATE_CEILING)
+        self.assertLess(-parts["hide_rate"] - parts["skip_rate"], FeedWeights().topic)
+
     def test_not_interested_counts_only_from_somebody_who_was_shown_it(self):
+        backdate(self.runners[0], 40)
         PostFeedback.objects.create(viewer=self.runners[0], post=self.post)
         self.assertEqual(self.counts().dismissals, 0)
         PostView.objects.create(viewer=self.runners[0], post=self.post, view_count=1)
         self.assertEqual(self.counts().dismissals, 1)
 
     def test_counts_cached_by_an_earlier_version_are_never_read(self):
-        for older in ("stats", "stats3"):
+        for older in ("stats", "stats3", "stats4"):
             cache.set(f"for-you:{older}:{self.post.pk}", "an older shape", 600)
         self.assertEqual(engagement_for([self.post.pk])[self.post.pk].likes, 0)
 

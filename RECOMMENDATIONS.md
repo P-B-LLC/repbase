@@ -130,7 +130,7 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
    | popularity | log-scaled trusted engagement | 0.6 |
    | watch | share of views that stayed (or finished the clip), smoothed | 0.6 |
    | skip_rate | −(share of viewers who scrolled straight past, smoothed toward 0.3 over 20 views, minus 0.3) | 1.0 |
-   | hide_rate | −(share of viewers who said "not interested", smoothed toward 0.005 over 50 views, minus 0.005; at most 0.25) | 12.0 |
+   | hide_rate | −(share of viewers who said "not interested", smoothed toward 0.005 over 50 views, minus 0.005; at most 0.15) | 12.0 |
    | recency | halves every 36 hours | 1.2 |
    | newcomer | author joined in the last 60 days, fading as followers arrive (0 at 30) | 0.4 |
    | seen | how much having seen it counts (below) | −3.0 |
@@ -147,9 +147,10 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
    who do not follow the author. A post with no views yet gets the priors for
    skip and hide rates, so those two parts are exactly 0 for it: neither
    helped nor hurt until there is a record. Dismissals never count for more
-   than the views behind them, and the hide part is capped at −3.0, so no
-   amount of "not interested" can push a post below what a quarter of its
-   viewers turning it down would.
+   than the views behind them, and the hide part is capped at −1.8 -- a heavy
+   demotion, but less than a strong topic match is worth -- so no crowd can
+   bury a post for the people it suits. Reports, not dismissals, are what take
+   a post off the page.
 
    **Exploration.** Quality is not pinned to a post's average: it is drawn
    from the gamma posterior its likes and views allow (Thompson sampling), and
@@ -225,9 +226,10 @@ far more expensive ring.
 
 The other side matters as much: a crowd must not be able to *bury* a post
 either. Views, scroll-pasts and "not interested" count toward a post's rates
-only from accounts past their first two days that are not suspended, and "not
-interested" only from somebody who was actually shown the post (a `PostView`
-of it).
+only from accounts past their first two days that are not suspended, a skip
+or "not interested" from an account younger than a week counts half, and "not
+interested" counts only from somebody who was actually shown the post (a
+`PostView` of it).
 
 The rows as they stand are counted too, and `trust` blends between the two (1
 = trusted, the default; 0 = rows as before), so the likes, comments, reposts
@@ -626,7 +628,11 @@ Sources: [Instagram Ranking Explained (2023)](https://about.instagram.com/blog/a
   deleted, so an author who deletes it ends their cooldown early. The access
   portal's decisions are audited and do not have this gap. The fix is for every
   moderation path to write the same audit row (or a `moderated_at` on the
-  account); it touches the moderation code, so it is proposed separately.
+  account); it touches the moderation code, so it is proposed separately. The
+  reverse also happens: a portal hide that was undone in the admin, on a post
+  its author then deleted, looks like a hide nobody undid, and puts the author
+  back under the cooldown until 30 days after the decision. Recording undos in
+  the same audit fixes both.
 - **Reports are counted from anybody.** Three open reports from different
   accounts -- fresh ones included -- take a post out of For You until a
   moderator looks. That predates this branch and is deliberately safety-first;
@@ -634,6 +640,13 @@ Sources: [Instagram Ranking Explained (2023)](https://about.instagram.com/blog/a
   report-bombing, which is a moderation decision.
 - **Suspensions reach the counts within five minutes** (the shared list of
   suspended accounts), and moderation decisions the cooldown within a minute.
+  The suspended list only grows; at thousands of entries it is still a hashed
+  lookup, but it is the thing to move into a join if it reaches tens of
+  thousands.
+- **Young accounts are read row by row.** Engagement from accounts younger
+  than 30 days is fetched per person to weigh it; while most of a community is
+  that young -- at launch -- that is most of its engagement. It is cached per
+  post like everything else; `FOCUS_YOUNG_DAYS` is the dial.
 - **Exercise names come from posts.** A name three different people used in
   the last month is a topic, and can appear in a reader's own interests and
   reasons. Only the reader ever sees their interests.

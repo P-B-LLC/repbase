@@ -411,8 +411,16 @@ SKIP_PRIOR_VIEWS = 20
 HIDE_PRIOR_RATE = 0.005
 HIDE_PRIOR_VIEWS = 50
 #: The most the hide rate can count against a post: at the default weight,
-#: 3.0 -- more than any topic match is worth.
-HIDE_RATE_CEILING = 0.25
+#: 1.8 -- a heavy demotion, but less than a strong topic match is worth, so
+#: no crowd can bury a post for the people it suits. Reports, not
+#: dismissals, are what take a post off the page.
+HIDE_RATE_CEILING = 0.15
+#: A skip or a "not interested" from an account younger than
+#: YOUNG_REJECTION_DAYS counts YOUNG_REJECTION_SHARE less -- so a crowd made
+#: last week has to be twice the size to move a post as far -- and nothing
+#: at all from one in its first two days.
+YOUNG_REJECTION_DAYS = 7
+YOUNG_REJECTION_SHARE = 0.5
 
 #: Fatigue: posts by one author on the reader's screen in the last
 #: FATIGUE_HOURS, with no engagement with that author at all. The first is
@@ -1057,10 +1065,11 @@ class Engagement:
     trusted_comments: float = 0.0
     trusted_shares: float = 0.0
     trusted_saves: float = 0.0
-    #: Viewers whose latest viewing was a scroll past.
-    skips: int = 0
-    #: Viewers who said "not interested".
-    dismissals: int = 0
+    #: Viewers whose latest viewing was a scroll past, the young ones
+    #: counted at half.
+    skips: float = 0.0
+    #: Viewers who said "not interested", the young ones counted at half.
+    dismissals: float = 0.0
 
 
 def _cached_many(prefix, ids, compute, ttl):
@@ -1172,7 +1181,11 @@ def _count_engagement(post_ids, now=None):
         for post_id, person, author, _ in rows:
             trusted[name][post_id] -= 1 - trust.get(person, FULL_TRUST).for_author(author)
 
+    # Turning a post down counts for YOUNG_REJECTION_SHARE less from an
+    # account younger than YOUNG_REJECTION_DAYS: burying a post with a crowd
+    # should cost as much as lifting one.
     established = Q(viewer__created_at__lte=new_since(now))
+    youngish = Q(viewer__created_at__gt=now - timedelta(days=YOUNG_REJECTION_DAYS))
     views = _grouped(
         PostView.objects.filter(established, post_id__in=post_ids).exclude(viewer_id__in=inactive),
         "post_id",
@@ -1180,12 +1193,13 @@ def _count_engagement(post_ids, now=None):
         long_views=Count("pk", filter=Q(total_dwell_ms__gte=LONG_VIEW_MS)),
         completions=Count("pk", filter=Q(completed=True)),
         skips=Count("pk", filter=Q(skipped=True)),
+        young_skips=Count("pk", filter=Q(skipped=True) & youngish),
     )
     dismissals = _grouped(
         PostFeedback.objects.filter(established, post_id__in=post_ids)
         .filter(Exists(PostView.objects.filter(viewer=OuterRef("viewer"), post=OuterRef("post"))))
         .exclude(viewer_id__in=inactive),
-        "post_id", n=Count("pk"),
+        "post_id", n=Count("pk"), young=Count("pk", filter=youngish),
     )
 
     def n(table, pk, name="n"):
@@ -1204,8 +1218,8 @@ def _count_engagement(post_ids, now=None):
             trusted_comments=round(max(trusted["comments"][pk], 0.0), 4),
             trusted_shares=round(max(trusted["shares"][pk], 0.0), 4),
             trusted_saves=round(max(trusted["saves"][pk], 0.0), 4),
-            skips=n(views, pk, "skips"),
-            dismissals=n(dismissals, pk),
+            skips=n(views, pk, "skips") - YOUNG_REJECTION_SHARE * n(views, pk, "young_skips"),
+            dismissals=n(dismissals, pk) - YOUNG_REJECTION_SHARE * n(dismissals, pk, "young"),
         )
         for pk in post_ids
     }
@@ -1216,7 +1230,7 @@ def engagement_for(post_ids, now=None):
     The key carries a version, so counts cached by an earlier shape of
     Engagement are never read back as this one."""
     return _cached_many(
-        "stats4", post_ids, lambda ids: _count_engagement(ids, now), STATS_TTL_SECONDS
+        "stats5", post_ids, lambda ids: _count_engagement(ids, now), STATS_TTL_SECONDS
     )
 
 
@@ -1635,8 +1649,8 @@ def score(candidate, profile, weights, now, rng=None):
         / (candidate.impressions + SKIP_PRIOR_VIEWS)
     ) - SKIP_PRIOR_RATE
     # Never more dismissals than views, and never more than a ceiling's
-    # worth of penalty: a quarter of viewers turning a post down already puts
-    # it as low as anything should go on this alone.
+    # worth of penalty: past it, a crowd could bury a post for the very
+    # people it suits.
     hide_rate = min((
         (min(candidate.dismissals, candidate.impressions) + HIDE_PRIOR_RATE * HIDE_PRIOR_VIEWS)
         / (candidate.impressions + HIDE_PRIOR_VIEWS)

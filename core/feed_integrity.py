@@ -325,7 +325,7 @@ _BAIT = re.compile(
     # Asking for the like itself -- but not "I would like if...".
     r"(?<!would )(?<!'d )(?<!to )like\s+(this\s+(post\s+)?)?if\s+you\b|"
     r"double[\s-]?tap\s+if|smash\s+(that\s+)?like|like\s+and\s+(follow|share)|"
-    r"like\s+for\s+like|l4l|follow\s+for\s+follow|f4f|"
+    r"like\s+for\s+like|l4l\b|follow\s+for\s+follow|f4f\b|"
     r"follow\s+back(?=\s*(?:[!?.,]|$))|follow\s+(me\s+)?for\s+more|"
     r"tag\s+(a|\d+|your)\s+(friends?|mates?|buddy|buddies|bros?|people)|"
     r"share\s+(this\s+)?(with|to)\s+(a|your)\s+(friends?|mates?)\s+(who|that)|"
