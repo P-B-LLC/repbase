@@ -4524,10 +4524,11 @@ paths:
         Posts picked for the reader, from everyone, best first.
 
         The first page ranks from scratch, so it always reflects what the reader
-        did a moment ago. Later pages read the ranking that first page made, by
-        position, so paging never repeats or skips a post. Each page is checked
-        against the visibility rules again as it is served: a post hidden,
-        deleted, dismissed or blocked since the ranking was made does not appear.
+        did a moment ago. Each later page is ranked from what that first ranking
+        left, re-scored for what the reader has done since -- liked, dismissed,
+        scrolled past -- while what earlier pages served stays where it was, so
+        paging never repeats or skips a post. Each page is checked against the
+        visibility rules again as it is served.
       parameters:
       - in: query
         name: cursor
@@ -4552,6 +4553,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ForYouPage'
+          description: ''
+  /api/v1/social/for-you/history/:
+    delete:
+      operationId: social_for_you_history_destroy
+      description: 'Start the For You page fresh. Everything the reader did before
+        now stops counting toward what they are shown, and their viewing history --
+        which posts were on screen, for how long, how much of a clip they watched
+        -- is deleted. Likes, comments, follows and posts marked not interested stay:
+        they are the reader''s own actions, not a record kept about them. Answers
+        with the preferences, not 204.'
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForYouPreferences'
+          description: ''
+  /api/v1/social/for-you/preferences/:
+    get:
+      operationId: social_for_you_preferences_retrieve
+      description: |-
+        The reader's say over their For You page.
+
+        What the page has picked up about them (topics only, strongest first),
+        which topics they have hidden, and whether it is personalised at all.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForYouPreferences'
+          description: ''
+    patch:
+      operationId: social_for_you_preferences_partial_update
+      description: 'Turn personalisation on or off, replace the list of hidden topics,
+        or replace the list of interests the reader added (each one of `addable_topics`).
+        Any field may be left out. A topic is hidden or added, never both: replacing
+        one list takes its topics out of the other, and a topic may not be in both
+        when both are sent. Takes effect on the next page ranked.'
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateForYouPreferencesRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateForYouPreferencesRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateForYouPreferencesRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForYouPreferences'
           description: ''
   /api/v1/social/impressions/:
     post:
@@ -4843,6 +4915,47 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/social/posts/{id}/fewer-like-this/:
+    post:
+      operationId: social_posts_fewer_like_this_create
+      description: Ask for fewer posts like this one on your For You page. It leaves
+        the page at once, and its kind of content -- its topics and the exercises
+        in it -- is shown less from then on; its author only a little less, unlike
+        "not interested". Replaces "not interested" or "more like this" on the same
+        post. Saying it twice is not an error.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+    delete:
+      operationId: social_posts_fewer_like_this_destroy
+      description: Take back "fewer like this" on this post. Nothing else is undone.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/social/posts/{id}/like/:
     post:
       operationId: social_posts_like_create
@@ -4888,6 +5001,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/Post'
           description: ''
+  /api/v1/social/posts/{id}/more-like-this/:
+    post:
+      operationId: social_posts_more_like_this_create
+      description: 'Ask for more posts like this one on your For You page: its topics
+        and the exercises in it, and to a lesser degree its author, are shown more
+        from the next page on. Replaces "not interested" or "fewer like this" on the
+        same post. Saying it twice is not an error.'
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+    delete:
+      operationId: social_posts_more_like_this_destroy
+      description: Take back "more like this" on this post. Nothing else is undone.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/social/posts/{id}/not-interested/:
     post:
       operationId: social_posts_not_interested_create
@@ -5192,6 +5345,66 @@ paths:
               schema:
                 $ref: '#/components/schemas/CommunitySpotlight'
           description: ''
+  /api/v1/social/suggested-people/:
+    get:
+      operationId: social_suggested_people_list
+      description: People the reader might want to follow, each with why.
+      parameters:
+      - in: query
+        name: limit
+        schema:
+          type: integer
+        description: How many to suggest, 1 to 20. Ten if left out.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SuggestedPerson'
+          description: ''
+  /api/v1/social/suggested-people/{id}/dismiss/:
+    post:
+      operationId: social_suggested_people_dismiss_create
+      description: Stop suggesting this person, for six months. Nobody is told. Dismissing
+        twice is not an error.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+    delete:
+      operationId: social_suggested_people_dismiss_destroy
+      description: Take a dismissal back, so this person may be suggested again.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/step-counts/:
     get:
       operationId: step_counts_list
@@ -7008,6 +7221,53 @@ components:
       - viewer_saved
       - visibility
       - workout
+    ForYouPreferences:
+      type: object
+      description: |-
+        What the reader has chosen about their For You page, and what it has
+        picked up about them -- the second so the first can be informed.
+      properties:
+        personalized:
+          type: boolean
+          readOnly: true
+        hidden_topics:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        history_cleared_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        interests:
+          type: array
+          items:
+            $ref: '#/components/schemas/Interest'
+          readOnly: true
+        hideable_topics:
+          type: array
+          items:
+            $ref: '#/components/schemas/Topic'
+          readOnly: true
+        added_topics:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        addable_topics:
+          type: array
+          items:
+            $ref: '#/components/schemas/Topic'
+          readOnly: true
+      required:
+      - addable_topics
+      - added_topics
+      - hidden_topics
+      - hideable_topics
+      - history_cleared_at
+      - interests
+      - personalized
     Gear:
       type: object
       properties:
@@ -7336,6 +7596,28 @@ components:
           maxLength: 300
       required:
       - exercise
+    Interest:
+      type: object
+      description: One topic the For You page has picked up about the reader.
+      properties:
+        topic:
+          type: string
+          readOnly: true
+        label:
+          type: string
+          readOnly: true
+        strength:
+          type: number
+          format: double
+          readOnly: true
+        declared:
+          type: boolean
+          readOnly: true
+      required:
+      - declared
+      - label
+      - strength
+      - topic
     LiftEnum:
       enum:
       - bench
@@ -8497,6 +8779,33 @@ components:
           type: string
           format: date-time
           nullable: true
+    PatchedUpdateForYouPreferencesRequest:
+      type: object
+      description: |-
+        A change to the reader's For You choices. Any field may be left out.
+
+        Topics are plain strings checked here rather than an enum in the
+        contract, so a topic added later is not a value an older app cannot send
+        or decode. A topic is hidden or added, never both: a change to one list
+        takes its topics out of the other, and a change to both at once may not
+        put a topic in each.
+      properties:
+        personalized:
+          type: boolean
+        hidden_topics:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 40
+          maxItems: 20
+        added_topics:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 160
+          maxItems: 30
     PatchedUpdatePostRequest:
       type: object
       description: |-
@@ -10119,10 +10428,10 @@ components:
       description: |-
         Why the For You page put a post where it did.
 
-        `reason` is a short code -- following, interest, popular, discovery or
-        fresh -- sent as a plain string so a reason added later is a value the
-        client does not recognise rather than a decoding error. `label` is a
-        sentence fit to show under the post as it is.
+        `reason` is a short code -- following, interest, similar, discovery,
+        new_creator, popular or fresh -- sent as a plain string so a reason added
+        later is a value the client does not recognise rather than a decoding
+        error. `label` is a sentence fit to show under the post as it is.
       properties:
         reason:
           type: string
@@ -10891,6 +11200,28 @@ components:
         * `planned` - Planned
         * `active` - Active
         * `completed` - Completed
+    SuggestedPerson:
+      type: object
+      description: |-
+        Somebody the reader might want to follow, and why.
+
+        `reason` is a plain-string code -- engaged, mutual, similar, discipline,
+        new_creator or popular -- and `label` the sentence to show.
+      properties:
+        person:
+          allOf:
+          - $ref: '#/components/schemas/PublicRepbaseUser'
+          readOnly: true
+        reason:
+          type: string
+          readOnly: true
+        label:
+          type: string
+          readOnly: true
+      required:
+      - label
+      - person
+      - reason
     SurfaceEnum:
       enum:
       - for_you
@@ -10905,6 +11236,19 @@ components:
         * `discover` - Discover
         * `profile` - Profile
         * `other` - Other
+    Topic:
+      type: object
+      description: A topic, by its code and the name to show for it.
+      properties:
+        topic:
+          type: string
+          readOnly: true
+        label:
+          type: string
+          readOnly: true
+      required:
+      - label
+      - topic
     TrainingStats:
       type: object
       description: |-

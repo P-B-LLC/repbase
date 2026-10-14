@@ -6,8 +6,8 @@ from django.core.files.base import ContentFile, File
 from django.core.files.storage import default_storage
 from django.db import transaction
 
-from .media_cleanup import delete_pending_media
-from .models import PendingMediaDeletion
+from .media_cleanup import delete_pending_media, queue_media_deletion
+from .models import PendingMediaDeletion, RepbaseUser, profile_photo_path
 from .photos import feed_variant
 
 
@@ -76,3 +76,34 @@ def staged_files(files):
             if job is not None:
                 delete_pending_media(job.pk)
         raise
+
+
+def replace_profile_photo(profile, decoded, extension):
+    """Make `decoded` the profile's photo, and queue the old one for deletion.
+
+    Staged like a post's photo, under a lock on the profile. It used to delete
+    the old file and save the new one with no lock, so uploads sent at the same
+    time each wrote a file and only the last was kept on the row: ten at once
+    left nine files on disk that no row, and so no cleanup, would ever reach.
+    """
+    name = profile_photo_path(profile, f'photo{extension}')
+    with staged_files([('profile_photo', name, decoded)]) as stored:
+        locked = RepbaseUser.objects.select_for_update().get(pk=profile.pk)
+        previous = locked.profile_photo.name if locked.profile_photo else None
+        locked.profile_photo = stored['profile_photo']
+        locked.save(update_fields=['profile_photo', 'updated_at'])
+        if previous:
+            queue_media_deletion(previous)
+    return locked
+
+
+def remove_profile_photo(profile):
+    """Clear the profile's photo; the file goes once that has committed."""
+    with transaction.atomic():
+        locked = RepbaseUser.objects.select_for_update().get(pk=profile.pk)
+        previous = locked.profile_photo.name if locked.profile_photo else None
+        if previous:
+            locked.profile_photo = None
+            locked.save(update_fields=['profile_photo', 'updated_at'])
+            queue_media_deletion(previous)
+    return locked

@@ -103,6 +103,17 @@ if REDIS_URL:
             'OPTIONS': {'socket_connect_timeout': 3, 'socket_timeout': 3},
         }
     }
+else:
+    # Django's default, with room. Its stock ceiling is 300 entries, and one
+    # For You ranking shares counts for several hundred posts through the
+    # cache -- at 300 each ranking would evict the last, and development
+    # would measure a page that recomputes everything every time.
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'OPTIONS': {'MAX_ENTRIES': 20000},
+        }
+    }
 
 TEMPLATES = [
     {
@@ -344,6 +355,13 @@ REST_FRAMEWORK = {
         'upload': os.environ.get('REPBASE_THROTTLE_UPLOAD', '20/hour'),
         # View events arrive in batches from a scrolling feed.
         'impression': os.environ.get('REPBASE_THROTTLE_IMPRESSION', '600/hour'),
+        # A route upload writes up to 20,000 rows. The app sends one per
+        # session, plus a retry or two when the connection drops.
+        'route': os.environ.get('REPBASE_THROTTLE_ROUTE', '30/hour'),
+        # A profile photo is decoded in full and, where moderation is on, sent
+        # to the classifier: the same work a post's photo costs, which
+        # `post` bounds at sixty an hour. This had only the per-user ceiling.
+        'photo': os.environ.get('REPBASE_THROTTLE_PHOTO', '30/hour'),
     },
 }
 

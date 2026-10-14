@@ -161,8 +161,13 @@ def remove_video(post):
 
 
 def set_review(videos, status_value, reviewer):
-    """Record a moderator's decision on clips, for the admin actions."""
-    return videos.update(
-        status=status_value, reviewed_at=timezone.now(), reviewed_by=reviewer
-    )
+    """Record a moderator's decision on clips, for the admin actions. The
+    decision is audited first (`core.moderation_audit`), so a rejection
+    outlives the clip if its author deletes it."""
+    from .moderation_audit import record_clip_review
 
+    with transaction.atomic():
+        record_clip_review(reviewer, videos, status_value)
+        return videos.update(
+            status=status_value, reviewed_at=timezone.now(), reviewed_by=reviewer
+        )

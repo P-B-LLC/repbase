@@ -35,6 +35,7 @@ class ReceiptAndGearReviewTests(RepbaseAPITestMixin, APITestCase):
     def test_expired_retry_cannot_duplicate_a_saved_task(self):
         key = str(uuid.uuid4())
         body = dict(title='Walk', scheduled_date='2026-09-13', kind='task', category='other')
+
         def send(payload):
             return self.client.post('/api/v1/planner/', payload, format='json', HTTP_IDEMPOTENCY_KEY=key)
         first = send(body)

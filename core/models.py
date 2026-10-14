@@ -439,10 +439,6 @@ class WorkoutTemplate(models.Model):
             )
         ]
 
-    @property
-    def tracks_distance(self):
-        return self.workout_type in self.DISTANCE_TYPES
-
     def __str__(self):
         return self.name
 
@@ -2900,18 +2896,6 @@ class PostVideo(models.Model):
     def __str__(self):
         return f"video on post {self.post_id} ({self.status})"
 
-    def viewable_by(self, profile):
-        """Whether this reader is shown the clip itself.
-
-        Approved clips go to whoever may see the post; the post's visibility
-        has already decided that by the time this is asked. A clip still
-        waiting, or refused, is its author's alone -- they need to see that
-        it is waiting, and nobody else needs to see it at all.
-        """
-        if self.status == self.Status.APPROVED:
-            return True
-        return profile is not None and self.post.author_id == profile.pk
-
 
 #: What a day starts with when someone first opens it. Four is what the app has
 #: always drawn, and it lives here now rather than there: the screens are meant
@@ -3410,6 +3394,19 @@ class PostView(models.Model):
     surface = models.CharField(
         max_length=20, choices=Surface.choices, default=Surface.OTHER
     )
+    #: Why the For You page showed it, when that is where it was first seen:
+    #: one of `core.recommendations.REASONS`, or blank. Recorded by the
+    #: server from what it served, never taken from the client, so the
+    #: report can say whether discovery or similar taste is earning its slots.
+    reason = models.CharField(max_length=20, blank=True, default="")
+    #: What the For You ranking knew about this post for this reader when it
+    #: first showed it -- the score's parts before weighting, and the slot
+    #: -- as a list of numbers in `core.ranking_model.FEATURES` order. What
+    #: the learned ranking model is trained on, against what the reader then
+    #: did. Recorded by the server, never taken from the client; kept and
+    #: deleted with the row, so it lives no longer than the viewing history
+    #: it belongs to.
+    features = models.JSONField(null=True, blank=True, default=None)
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(default=timezone.now)
 
@@ -3427,15 +3424,30 @@ class PostView(models.Model):
 
 
 class PostFeedback(models.Model):
-    """A reader saying they do not want to see something like this.
+    """A reader telling the For You page what they think of something like
+    this post.
 
-    Explicit, and kept apart from views, because it is the strongest negative
-    signal there is and it has to be undoable: "not interested" pressed by
-    mistake has to come back off.
+    Explicit, and kept apart from views, because these are the clearest
+    signals there are and they have to be undoable: a button pressed by
+    mistake has to come back off. One row per reader and post, so the three
+    are mutually exclusive -- saying "more like this" about a post you had
+    marked "not interested" replaces it.
+
+    - **not interested**: this post, and posts like it and its author, less.
+    - **fewer like this**: posts like it less -- its kind of content, much
+      more than its author.
+    - **more like this**: posts like it, and to a lesser degree its author,
+      more.
     """
 
     class Kind(models.TextChoices):
         NOT_INTERESTED = "not_interested", "Not interested"
+        FEWER = "fewer_like_this", "Show fewer like this"
+        MORE = "more_like_this", "Show more like this"
+
+    #: The kinds that turn a post down: it leaves the reader's page, and it
+    #: counts against the post with everybody (`core.recommendations`).
+    REJECTING = (Kind.NOT_INTERESTED, Kind.FEWER)
 
     viewer = models.ForeignKey(
         RepbaseUser, on_delete=models.CASCADE, related_name="post_feedback"
@@ -3454,6 +3466,156 @@ class PostFeedback(models.Model):
 
     def __str__(self):
         return f"{self.viewer_id}: {self.kind} on post {self.post_id}"
+
+
+#: How long viewing history and "not interested" are kept. The ranking reads
+#: back this far and no further, so nothing older does anything but sit there
+#: describing what somebody once looked at. `prune_expired_rows` deletes it.
+RECOMMENDATION_HISTORY_DAYS = 90
+
+#: How long a dismissed suggestion stays dismissed. Long enough that the same
+#: face does not come back next week; not so long that someone you had no
+#: reason to follow in March can never be suggested again.
+SUGGESTION_DISMISSAL_DAYS = 180
+
+
+class RecommendationPreferences(models.Model):
+    """How somebody wants their For You page made.
+
+    A row only once they change something: every default is what the page
+    does anyway, and the ranking reads an unsaved instance when there is no
+    row, so opening the page never writes.
+    """
+
+    viewer = models.OneToOneField(
+        RepbaseUser, on_delete=models.CASCADE, related_name="recommendation_preferences"
+    )
+    #: Off means the page stops using what the reader does -- likes, views,
+    #: follows, onboarding answers -- and orders posts by quality, popularity
+    #: and freshness alone. What they have already seen is still moved down,
+    #: and what they hid stays hidden.
+    personalized = models.BooleanField(default=True)
+    #: Topics never to be shown, from `core.recommendations.HIDEABLE_TOPICS`.
+    #: A list of strings rather than rows: there are eight, and the whole set
+    #: is read and written at once.
+    hidden_topics = models.JSONField(default=list, blank=True)
+    #: Topics the reader added as interests of their own, from
+    #: `core.recommendations.addable_topics`. They count as though named
+    #: during onboarding, and are shown as the reader's own choice.
+    added_topics = models.JSONField(default=list, blank=True)
+    #: Everything the reader did before this stops counting as taste. Set by
+    #: "start fresh", which also deletes their viewing history -- that exists
+    #: only to make recommendations. Likes and comments are not deleted: they
+    #: are the reader's own content, shown to other people, and simply stop
+    #: counting toward the page.
+    history_cleared_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"recommendation preferences for {self.viewer_id}"
+
+
+class PostEngagementStats(models.Model):
+    """One post's standing with everybody, kept up to date by a job.
+
+    The same figures `core.recommendations.engagement_for` works out --
+    every action as rows and as trusted people, views, long views,
+    completions, scroll-pasts and "not interested" -- written down by
+    `refresh_feed_stats` (on a timer, every few minutes) instead of worked out
+    during somebody's request. The ranking reads a row while it is fresh and
+    of the current shape, and works the figures out itself otherwise, so a
+    stopped job slows the page down rather than breaking it.
+
+    Counts and rates about a post, never about who: nothing here names a
+    viewer or says what any one person did.
+    """
+
+    post = models.OneToOneField(
+        Post, on_delete=models.CASCADE, primary_key=True, related_name="engagement_stats"
+    )
+    likes = models.PositiveIntegerField(default=0)
+    comments = models.PositiveIntegerField(default=0)
+    shares = models.PositiveIntegerField(default=0)
+    saves = models.PositiveIntegerField(default=0)
+    impressions = models.PositiveIntegerField(default=0)
+    long_views = models.PositiveIntegerField(default=0)
+    completions = models.PositiveIntegerField(default=0)
+    trusted_likes = models.FloatField(default=0)
+    trusted_comments = models.FloatField(default=0)
+    trusted_shares = models.FloatField(default=0)
+    trusted_saves = models.FloatField(default=0)
+    skips = models.FloatField(default=0)
+    dismissals = models.FloatField(default=0)
+    #: The shape of the counting that wrote this row. A row written by an
+    #: older way of counting is never read as this one.
+    version = models.PositiveSmallIntegerField(default=1)
+    computed_at = models.DateTimeField(db_index=True)
+
+    def __str__(self):
+        return f"stats for post {self.post_id}"
+
+
+class RankingModel(models.Model):
+    """A ranking model learned from what people did with what For You
+    showed them (`core.ranking_model`).
+
+    Two logistic regressions over the same features -- how likely a reader is
+    to engage with a post (like, comment, save, share, "more like this"), and
+    how likely to turn it down (scroll past, "not interested", "fewer like
+    this") -- with the feature scaling they were trained with, and how well
+    they did on readers held out of training. Aggregate numbers only: nothing
+    here names a reader or a post.
+
+    At most one is active. `train_ranking_model` makes a new one active only
+    when it beat the rules on the held-out readers.
+    """
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    #: The feature names, in order, that the lists below follow.
+    features = models.JSONField(default=list)
+    means = models.JSONField(default=list)
+    scales = models.JSONField(default=list)
+    engage_weights = models.JSONField(default=list)
+    engage_bias = models.FloatField(default=0.0)
+    reject_weights = models.JSONField(default=list)
+    reject_bias = models.FloatField(default=0.0)
+    #: Sample counts and held-out quality, the rules' included.
+    metrics = models.JSONField(default=dict)
+    is_active = models.BooleanField(default=False)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+        constraints = [
+            models.UniqueConstraint(
+                fields=("is_active",), condition=models.Q(is_active=True), name="one_active_ranking_model"
+            )
+        ]
+
+    def __str__(self):
+        return f"ranking model {self.pk} ({'active' if self.is_active else 'inactive'})"
+
+
+class SuggestionDismissal(models.Model):
+    """A reader saying "not this person" to a suggested account.
+
+    Kept for SUGGESTION_DISMISSAL_DAYS, then pruned. Only ever read to leave
+    that person out of the reader's own suggestions; nobody is told.
+    """
+
+    viewer = models.ForeignKey(
+        RepbaseUser, on_delete=models.CASCADE, related_name="dismissed_suggestions"
+    )
+    person = models.ForeignKey(RepbaseUser, on_delete=models.CASCADE, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("viewer", "person"), name="one_dismissal_per_pair")
+        ]
+        indexes = [models.Index(fields=("viewer", "-created_at"))]
+
+    def __str__(self):
+        return f"{self.viewer_id} dismissed suggestion {self.person_id}"
 
 
 #: How many questions one profile may answer. Three keeps a profile readable

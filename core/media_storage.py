@@ -28,4 +28,3 @@ class ReservedNameFileSystemStorage(ReservedNameMixin, FileSystemStorage):
 
 class ReservedNameInMemoryStorage(ReservedNameMixin, InMemoryStorage):
     """Same name contract for isolated tests; never used for persisted data."""
-    pass

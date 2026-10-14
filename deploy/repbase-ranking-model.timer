@@ -1,0 +1,11 @@
+[Unit]
+Description=Train the Rytivo For You ranking model once a day
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=1800
+Persistent=true
+Unit=repbase-ranking-model.service
+
+[Install]
+WantedBy=timers.target

@@ -21,7 +21,7 @@ python3.14 -m venv .venv            # Python 3.14 is what CI uses; 3.12+ works
 .venv/bin/python manage.py test core
 ```
 
-About three minutes for ~815 tests (a minute with `--parallel 4`). Useful variations:
+About three and a half minutes for ~960 tests (under a minute and a half with `--parallel 4`). Useful variations:
 
 ```sh
 .venv/bin/python manage.py test core.test_recommendations      # one module
@@ -74,7 +74,13 @@ You page, video uploads and the security audit:
 | `test_auth_flows` | Registration (validation, duplicates, weak and huge passwords, username and display-name rules), sign-in (no account oracle, suspended accounts), sign-out and token rotation, per-address and per-username limits, the spoofed `X-Forwarded-For` bypass, nothing secret in logs or responses |
 | `test_content_creation` | Publishing each kind of post through the API, server-built snapshots, refusing other people's sources, every invalid field, editing and deleting only your own, photo uploads (type from bytes, location metadata removed, oversize, non-images, decompression bombs), comments and their limits |
 | `test_video_uploads` | The MP4/QuickTime inspector against real encoder output and against forged durations, oversize pictures, box bombs, truncation and random damage; the upload endpoint (415/413/400/404/401/503), metadata removal, replacing and deleting files, Range requests, takedowns, review before publication, the moderator queue and its permissions |
-| `test_recommendations` | Topic, scoring, ranking and cursor units; different people get different pages; the page responds to likes, follows, views and "not interested"; new accounts; every eligibility rule; paging; constant query count as content grows; impressions; the quality report; the populated page against the schema |
+| `test_recommendations` | Topic, scoring, exploration, ranking, reason, experiment and cursor units; different people get different pages, and interest beats exploration across seeds; momentum, similar taste (never on one person's likes) and new creators; the next page follows what was just liked or dismissed; nothing already acted on comes back; new accounts; every eligibility rule and hidden topics; paging, retries and expired sessions; the reader's controls (interests, hiding topics, personalisation off, starting fresh); viewing-history retention and its deploy check; constant query count as content grows, for first and later pages; impressions and their recorded reasons; the quality report per reason, action, clip, experiment arm and return rate; the populated page and preferences against the schema |
+| `test_suggestions` | People to follow: each source and its wording, the most personal reason winning, taste neighbours never suggested themselves, "followed by" counting only open profiles; everyone who must be left out (self, followed, requested, blocked, closed, suspended, quiet, dismissed); dismissing and undoing; personalisation off; bounded work; the response against the schema |
+| `test_feed_integrity` | Whose engagement counts: suspended, brand-new, bursting and single-minded accounts and the author's own; comments, reposts and saves once per person, never hidden or from someone the author blocked; a like ring buying neither the page, the trend nor anybody's taste (and leading the page with trust off); the moderation cooldown for strangers but not followers, its end and its undoing, rejected clips; every moderation path (admin actions and change form, report queue, clip review, access portal) writing the same audit row and its undo, the record outliving the post, the cached list dropped only once a decision commits; bait and pitch captions and ordinary ones left alone |
+| `test_recommendation_signals` | Value per view with saves and shares ahead of likes; other people's skip and not-interested rates, and nothing for a post with no record; rewatching; watching recorded only for real clips and never past their end; exercise interests from a known vocabulary, their reason and their place in the interests list; fatigue and who it never applies to; followed authors' share of the page; a wider spread for readers who said nothing yet; old cached rank states; the diversity section of `feed_report`; "more like this" and "fewer like this" (one choice per post, the reader's own posts refused, reposts meaning the original, fewer counted with the crowd protections, more never counted for anybody else); added interests (the offer, one chip per name, declared and shaping the page, the newest choice winning over hidden topics, kept after leaving the offer, surviving a fresh start) |
+| `test_feed_stats` | The per-post counts job: it writes what the ranking would count, the ranking reads it in one query, later runs catch what changed, a run stopped half way leaves nothing behind, a lost record of the last run looks back further, a post deleted mid-count is left out (also with real commits), every row comes round in time whatever the window, stale and old-shaped rows are never read, the page is the same without the job, and `core.W009` |
+| `test_ranking_model` | The learned part: AUC and a logistic fit that finds the signal; what each For You impression records (latest serving wins, the database keeps the first impression, real NULLs), deleted with the history; the gate (too little data, no better than the rules, a model that learned only the slot); one active model and pruning; a model names nobody; the training command and `feed_report` |
+| `test_feed_evaluation` | A simulated community with known tastes, a like ring, bait, a moderated author and new creators, run through the real ranking before and after this ranking: integrity exposure falls, nothing manipulated reaches anybody's top three, utility (overall and cold-start) does not fall. `FEED_EVAL_REPORT=1` prints every figure; `FEED_EVAL_ABLATION=1` measures each new part; `FEED_EVAL_LEARNED=1` trains a model on the community's own record and measures the page with it |
 | `test_reporting` | Reporting posts end to end, privacy of report detail, limits, a moderator's takedown reaching every feed and the photo itself, suspensions hiding content |
 | `test_security` | The staff-only member list, closed profiles' sub-lists, IDOR across every owner-scoped resource, malformed filters (no 500s), injection-shaped search text, security headers and CORS, CSRF for cookie sessions, error-report redaction, production-only settings |
 | `test_security_audit` | The October 2026 audit, one class per finding: planning horizons that one request could fill the database through, sign-in limits on Django's own pages (admin, browsable API, insights) and behind the proxy, per-account password-reset limits, no superuser bypass in the app API, ownerless gyms, gym members hiding closed profiles, the password needed to change email, bounded batches and numbers, long food searches, gunicorn listening on loopback |
@@ -106,7 +112,7 @@ Starts the backend from `../repbase` (or `RYTIVO_BACKEND_DIR`) with its
 SQLite file and media directory in the system temp folder, then drives it with
 the real web client: sign-up and sign-in, posting, cross-account refusals, a
 video upload with byte-range playback, For You with dismissal and impressions,
-paging, reporting and sign-out. It skips itself, saying why, when the backend
+more and fewer like this, added interests, paging, reporting and sign-out. It skips itself, saying why, when the backend
 is not there. `config.test_e2e` refuses to start without its two environment
 variables, so it cannot be pointed at the development database.
 
@@ -129,7 +135,9 @@ Needs a Swift toolchain. Building the app itself needs Xcode 26.
    so apply the change rather than copying the file over it — a unified diff
    of the old and new backend contract applies cleanly with `patch`.
 3. iOS: copy it to `IOS-Frontend/API/openapi.yaml` and run
-   `bash Scripts/generate-api-client.sh` on a Mac with Xcode, then build.
+   `bash Scripts/generate-api-client.sh` on a Mac with Xcode, then build. Without
+   a Mac, the iOS repository's "Generate API client artifact" workflow can be run
+   on the branch; its artifact is the regenerated `API/GeneratedSources`.
 
 Additive changes -- a new endpoint, a new nullable response field -- do not
 break a client generated from the previous contract: both clients ignore keys

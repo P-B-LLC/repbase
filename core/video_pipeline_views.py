@@ -137,7 +137,10 @@ class PlaybackEventRequest(serializers.Serializer):
 class PlaybackEvent(APIView):
     permission_classes = [IsAuthenticated]
     throttle_classes = [ScopedRateThrottle]
-    throttle_scope = 'upload'
+    # Not 'upload': the app sends one of these per clip played, and sharing
+    # that budget meant watching twenty clips in an hour refused the next
+    # real upload with 429.
+    throttle_scope = 'impression'
 
     @extend_schema(request=PlaybackEventRequest, responses={204: None})
     def post(self, request):
