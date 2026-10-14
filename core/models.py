@@ -3489,6 +3489,46 @@ class RecommendationPreferences(models.Model):
         return f"recommendation preferences for {self.viewer_id}"
 
 
+class PostEngagementStats(models.Model):
+    """One post's standing with everybody, kept up to date by a job.
+
+    The same figures `core.recommendations.engagement_for` works out --
+    every action as rows and as trusted people, views, long views,
+    completions, scroll-pasts and "not interested" -- written down by
+    `refresh_feed_stats` (on a timer, every few minutes) instead of worked out
+    during somebody's request. The ranking reads a row while it is fresh and
+    of the current shape, and works the figures out itself otherwise, so a
+    stopped job slows the page down rather than breaking it.
+
+    Counts and rates about a post, never about who: nothing here names a
+    viewer or says what any one person did.
+    """
+
+    post = models.OneToOneField(
+        Post, on_delete=models.CASCADE, primary_key=True, related_name="engagement_stats"
+    )
+    likes = models.PositiveIntegerField(default=0)
+    comments = models.PositiveIntegerField(default=0)
+    shares = models.PositiveIntegerField(default=0)
+    saves = models.PositiveIntegerField(default=0)
+    impressions = models.PositiveIntegerField(default=0)
+    long_views = models.PositiveIntegerField(default=0)
+    completions = models.PositiveIntegerField(default=0)
+    trusted_likes = models.FloatField(default=0)
+    trusted_comments = models.FloatField(default=0)
+    trusted_shares = models.FloatField(default=0)
+    trusted_saves = models.FloatField(default=0)
+    skips = models.FloatField(default=0)
+    dismissals = models.FloatField(default=0)
+    #: The shape of the counting that wrote this row. A row written by an
+    #: older way of counting is never read as this one.
+    version = models.PositiveSmallIntegerField(default=1)
+    computed_at = models.DateTimeField(db_index=True)
+
+    def __str__(self):
+        return f"stats for post {self.post_id}"
+
+
 class SuggestionDismissal(models.Model):
     """A reader saying "not this person" to a suggested account.
 

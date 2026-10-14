@@ -1226,12 +1226,22 @@ def _count_engagement(post_ids, now=None):
 
 
 def engagement_for(post_ids, now=None):
-    """{post id: Engagement}, shared across readers for STATS_TTL_SECONDS.
-    The key carries a version, so counts cached by an earlier shape of
-    Engagement are never read back as this one."""
-    return _cached_many(
-        "stats5", post_ids, lambda ids: _count_engagement(ids, now), STATS_TTL_SECONDS
-    )
+    """{post id: Engagement}.
+
+    From the table `refresh_feed_stats` keeps (`core.feed_stats`) where a
+    post has a fresh row; otherwise worked out here and shared across readers
+    for STATS_TTL_SECONDS, as it always was. The cache key carries a
+    version, so counts cached by an earlier shape of Engagement are never
+    read back as this one."""
+    from .feed_stats import read_fresh
+
+    found = read_fresh(post_ids, now)
+    missing = [pk for pk in post_ids if pk not in found]
+    if missing:
+        found.update(_cached_many(
+            "stats5", missing, lambda ids: _count_engagement(ids, now), STATS_TTL_SECONDS
+        ))
+    return found
 
 
 def _count_followers(author_ids):

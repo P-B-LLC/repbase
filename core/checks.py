@@ -293,3 +293,33 @@ def for_you_configuration_is_valid(app_configs, **kwargs):
             id='core.E009',
         )]
     return []
+
+
+@register(deploy=True)
+def feed_stats_are_kept_up(app_configs, **kwargs):
+    """The per-post counts table is being refreshed, once it has been set up.
+
+    An empty table is not a warning: the job is optional, and without it the
+    ranking works the counts out itself. A table whose newest row is older
+    than the ranking will read means the timer was set up and has stopped --
+    For You is then quietly doing the slow thing on every cold request.
+    """
+    from .feed_stats import FRESH_SECONDS, staleness
+
+    try:
+        age = staleness()
+    except Exception:
+        return []
+    if age is None or age <= FRESH_SECONDS:
+        return []
+    return [
+        Warning(
+            f'The For You per-post counts were last refreshed {int(age // 60)} minutes ago.',
+            hint=(
+                'The repbase-feed-stats timer (python manage.py refresh_feed_stats) does not '
+                'appear to be running. For You still works, counting during requests, but '
+                'slower. See "Performance" in RECOMMENDATIONS.md.'
+            ),
+            id='core.W009',
+        )
+    ]
