@@ -1,5 +1,45 @@
 # Social moderation release gate
 
+## Release handoff — 14 October 2026
+
+- Reporting and moderator review merged to `main` in PR #28, merge
+  `a806e48bee0ed60bfe5ef3385289d920e717ba16`.
+- Production verified at tested commit `92ed27583d0fc77a3e4d356ab92515356e1c2769`:
+  service active, health 200, unauthenticated `/access/reports/` redirects to login.
+  Operator deployment output confirms migration `0070_post_report_distinct_reasons`.
+- Post report uniqueness is now `(post, reporter, reason)`: retries do not replace
+  original details; distinct reasons are allowed. Existing authenticated endpoint,
+  500-character details limit, visibility checks and report throttling remain.
+- Administration → Reports (`/access/reports/`) shows the post caption, author,
+  date, visibility, photo/video preview and shared workout/meal/planner snapshot.
+  Reposts show original context; comment reports show the parent post. Only shared
+  snapshots are shown, not the author's private source logs. Reporter identity is
+  omitted. Unplayable video is explicitly marked unavailable, not approved.
+- Keep content records `no_action`; Remove from community records `hidden` and
+  hides content. Decisions require a reason and are audited. These are existing
+  pending/reviewed states, not a new claim/under-review assignment system.
+- Changes: `core/models.py`, `core/views.py`, migration 0070,
+  `core/access_moderation.py`, `core/access_portal.py`,
+  `core/templates/access/{reports,review_post}.html`, reporting/access tests.
+- Validation: 41 targeted tests; full CI run 38435727099 passed standard tests,
+  PostgreSQL tests and dependency audit. Native companion is IOS-Frontend PR #28,
+  merged at `949be5cf3519f781b0635e7c5b82b981d2e22421`.
+- Still required: rebuilt/distributed iOS app and end-to-end moderator/media QA.
+  No TestFlight distribution was performed. Removal retains the post row but
+  later deletion may cascade reports; this is not immutable evidence storage.
+- Production still acknowledges `core.E006` for limited beta; automated video
+  moderation is also bypassed (`core.W008`). Neither protection is solved here.
+- HTTPS review: public HTTP redirects to HTTPS; HTTPS works. Public root response
+  lacked Strict-Transport-Security on 14 October. Django also warns that
+  SECURE_SSL_REDIRECT is disabled and SECURE_HSTS_SECONDS is zero. Before fixing,
+  verify nginx overwrites X-Forwarded-Proto and app ports cannot bypass it; otherwise
+  enabling redirect can cause loops. Configure HSTS at the edge for static and API
+  responses, start with a short max-age, and inventory subdomains before applying
+  includeSubDomains/preload. `config.settings` currently enables includeSubDomains
+  whenever HSTS seconds is positive; do not blindly set that environment value.
+  `config.production` has different defaults; do not switch settings modules
+  without auditing its other requirements. No TLS settings changed in this release.
+
 Apple guideline 1.2 requires filtering, reporting with timely action, user
 blocking, and published contact information. This implementation supports those
 requirements; neither the classifier nor passing tests guarantees App Review approval.
@@ -53,8 +93,9 @@ address nobody answers is worse than none. The owner must
 confirm it is monitored and assign a primary moderator plus backup. No account,
 mailbox or staff credential has been created by this implementation.
 
-1. Use Django admin Post reports and Comment reports. Queues default to unresolved,
-   oldest first. Each report is deduplicated per reporter and target. Reporter
+1. Use Administration → Reports; Django admin remains available for privileged
+   operators. Queues default to unresolved, oldest first. Post reports are
+   deduplicated per reporter, target and reason; comments per reporter and target. Reporter
    identity/detail is not returned publicly. Replies can be reported too.
 2. For a genuine violation, hide the post/comment, review related content and
    repeated conduct, and suspend an abusive account through auth User.is_active
