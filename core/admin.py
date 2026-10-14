@@ -43,6 +43,7 @@ from .models import (
     WorkoutSession,
     WorkoutTemplate,
 )
+from .moderation_audit import record_hide
 from .videos import set_review
 
 
@@ -210,6 +211,7 @@ class PostReportAdmin(admin.ModelAdmin):
     @transaction.atomic
     def hide_reported_posts(self, request, queryset):
         posts = Post.objects.filter(reports__in=queryset).distinct()
+        record_hide(request.user, posts, hide=True)
         hidden = posts.update(is_hidden=True, hidden_at=timezone.now())
         # Every report against a post just hidden is settled by that, not only
         # the rows that happened to be selected.
@@ -226,6 +228,7 @@ class PostReportAdmin(admin.ModelAdmin):
     @transaction.atomic
     def unhide_reported_posts(self, request, queryset):
         posts = Post.objects.filter(reports__in=queryset).distinct()
+        record_hide(request.user, posts, hide=False)
         shown = posts.update(is_hidden=False, hidden_at=None)
         count = self._resolve(request, queryset, PostReport.Resolution.NO_ACTION)
         self.message_user(
@@ -279,12 +282,17 @@ class PostAdmin(admin.ModelAdmin):
     # read-only moderator could take posts down and put them back. The
     # report admin above already required change permission; this did not.
     @admin.action(description="Hide", permissions=["change"])
+    @transaction.atomic
     def hide_posts(self, request, queryset):
+        # Written down first, where it outlives the post (core.moderation_audit).
+        record_hide(request.user, queryset, hide=True)
         count = queryset.update(is_hidden=True, hidden_at=timezone.now())
         self.message_user(request, f"{count} post(s) hidden.")
 
     @admin.action(description="Unhide", permissions=["change"])
+    @transaction.atomic
     def unhide_posts(self, request, queryset):
+        record_hide(request.user, queryset, hide=False)
         count = queryset.update(is_hidden=False, hidden_at=None)
         self.message_user(request, f"{count} post(s) restored.")
 

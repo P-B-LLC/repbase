@@ -265,20 +265,21 @@ def recently_moderated_authors(now=None):
     MODERATION_COOLDOWN_DAYS. A short list, so the ranking can leave them out
     with a plain IN rather than a correlated subquery on every candidate.
 
-    Read from three places:
+    Read from the audit of moderation decisions (`core.moderation_audit`),
+    which every path writes -- the access portal, the admin's hide and
+    unhide, clip review -- and which outlives the post: an author who
+    deletes the post a moderator hid does not delete the decision with it,
+    and a decision that was undone has its own record saying so. The newest
+    decision on each post and on its clip is what counts.
 
-    - posts still hidden by a moderator (`hidden_at` is cleared by undoing
-      it, which lifts the cooldown);
-    - clips still rejected;
-    - the access portal's audit of hide decisions, which outlives the post:
-      an author who deletes the post a moderator hid does not delete the
-      decision with it. A decision whose post is still there and no longer
-      hidden was undone, and does not count.
-
-    A takedown made in the Django admin, or a rejected clip the author then
-    deletes, leaves no record that outlives the post, so deleting it ends
-    the cooldown early (see RECOMMENDATIONS.md, "Known limits")."""
-    from .access_models import AccessAudit
+    Decisions made before every path wrote one have no undo record, so for
+    those the post's own state is read as well: a post hidden in the window
+    that is hidden still, a clip rejected in the window that is rejected
+    still, and an audited hide whose post is still there and shown again,
+    which was undone. An undo written down since needs no such guess, so
+    undoing and then deleting a post no longer puts its author back under
+    the cooldown."""
+    from .moderation_audit import CLIP_REJECTED, HIDE, latest_decisions
 
     found = cache.get("for-you:moderated")
     if found is None:
@@ -291,19 +292,24 @@ def recently_moderated_authors(now=None):
             PostVideo.objects.filter(status=PostVideo.Status.REJECTED, reviewed_at__gte=since)
             .values_list("post__author_id", flat=True)
         )
-        decisions = {}
-        for subject, target in AccessAudit.objects.filter(
-            action="moderation_hide", created_at__gte=since, subject__startswith="post:", target__isnull=False,
-        ).values_list("subject", "target_id"):
-            try:
-                decisions[int(subject.split(":", 1)[1])] = target
-            except ValueError:
-                continue
-        if decisions:
-            undone = set(
-                Post.objects.filter(pk__in=list(decisions), is_hidden=False).values_list("pk", flat=True)
-            )
-            users = {target for post_id, target in decisions.items() if post_id not in undone}
+        standing = {
+            key: target for key, (action, target) in latest_decisions(since).items()
+            if action in (HIDE, CLIP_REJECTED)
+        }
+        if standing:
+            # A hidden post that is still there and shown again was undone
+            # before undos were written down. (Every clip decision has been
+            # audited, approvals included, since clips were first audited:
+            # a clip rejection with no approval after it stands, even if the
+            # clip was deleted or replaced by one still waiting for review.)
+            hides = [post for post, family in standing if family == "post"]
+            shown = set(
+                Post.objects.filter(pk__in=hides, is_hidden=False).values_list("pk", flat=True)
+            ) if hides else set()
+            users = {
+                target for (post, family), target in standing.items()
+                if not (family == "post" and post in shown)
+            }
             authors |= set(RepbaseUser.objects.filter(user_id__in=users).values_list("pk", flat=True))
         found = sorted(authors)
         cache.set("for-you:moderated", found, MODERATED_TTL_SECONDS)

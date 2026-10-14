@@ -455,3 +455,95 @@ class BaitTests(ForYouTestCase):
         _, token = self.reader("meal_prepper", [], emphasis="Nutrition")
         top = self.ids(self.feed(token, page_size=30))
         self.assertLess(top.index(honest.pk), top.index(bait.pk))
+
+
+# ------------------------------------------------ every decision written down
+
+class ModerationAuditTests(ForYouTestCase):
+    """Every path a moderator takes writes the same record, which outlives
+    the post, and an undo writes its own -- so the cooldown follows what was
+    decided, not what happens to be left in the database."""
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        from unittest import mock
+
+        from django.contrib import admin as django_admin
+        from django.contrib.auth import get_user_model
+        from django.test import RequestFactory
+
+        from .admin import PostAdmin, PostReportAdmin, PostVideoAdmin
+
+        self.moderator = get_user_model().objects.create_superuser("mod", "mod@example.com", "StrongPass!234")
+        self.request = RequestFactory().post("/admin/")
+        self.request.user = self.moderator
+        self.post_admin = PostAdmin(Post, django_admin.site)
+        from .models import PostReport
+
+        self.report_admin = PostReportAdmin(PostReport, django_admin.site)
+        self.video_admin = PostVideoAdmin(PostVideo, django_admin.site)
+        for model_admin in (self.post_admin, self.report_admin, self.video_admin):
+            patcher = mock.patch.object(model_admin, "message_user")
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.author = self.cooks[1]
+        self.target = meal_post(self.author)
+        self.other_post = next(post for post in self.meals if post.author == self.author)
+
+    def eligible(self, viewer):
+        return set(recommendations.eligible_posts(viewer).values_list("pk", flat=True))
+
+    def audits(self):
+        from .access_models import AccessAudit
+
+        return list(AccessAudit.objects.filter(subject=f"post:{self.target.pk}").order_by("pk").values_list("action", flat=True))
+
+    def test_an_admin_takedown_is_written_down_and_outlives_the_post(self):
+        self.post_admin.hide_posts(self.request, Post.objects.filter(pk=self.target.pk))
+        self.assertEqual(self.audits(), ["moderation_hide"])
+        stranger, _ = self.reader("admin_stranger")
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger), "the decision reaches For You at once")
+        self.target.delete()
+        cache.clear()
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger), "deleting the post keeps the decision")
+
+    def test_an_undo_is_written_down_and_survives_deleting_the_post(self):
+        posts = Post.objects.filter(pk=self.target.pk)
+        self.post_admin.hide_posts(self.request, posts)
+        self.post_admin.unhide_posts(self.request, posts)
+        self.assertEqual(self.audits(), ["moderation_hide", "moderation_unhide"])
+        self.target.delete()
+        cache.clear()
+        stranger, _ = self.reader("forgiven_stranger")
+        self.assertIn(self.other_post.pk, self.eligible(stranger))
+
+    def test_hiding_what_is_already_hidden_decides_nothing(self):
+        posts = Post.objects.filter(pk=self.target.pk)
+        self.post_admin.hide_posts(self.request, posts)
+        self.post_admin.hide_posts(self.request, posts)
+        self.assertEqual(self.audits(), ["moderation_hide"])
+
+    def test_the_report_queue_actions_are_written_down_too(self):
+        from .models import PostReport
+
+        report = PostReport.objects.create(post=self.target, reporter=self.runners[0], reason="spam")
+        queue = PostReport.objects.filter(pk=report.pk)
+        self.report_admin.hide_reported_posts(self.request, queue)
+        self.report_admin.unhide_reported_posts(self.request, queue)
+        self.assertEqual(self.audits(), ["moderation_hide", "moderation_unhide"])
+
+    def test_a_rejected_clip_outlives_the_clip_and_an_approval_lifts_it(self):
+        clip = video(self.target, status=PostVideo.Status.PENDING)
+        clips = PostVideo.objects.filter(pk=clip.pk)
+        self.video_admin.reject_clips(self.request, clips)
+        self.assertEqual(self.audits(), ["clip_rejected"])
+        clip.delete()
+        cache.clear()
+        stranger, _ = self.reader("clip_stranger")
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger), "deleting the clip keeps the decision")
+        replacement = video(self.target, status=PostVideo.Status.PENDING)
+        cache.clear()
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger), "a new clip waiting for review lifts nothing")
+        self.video_admin.approve_clips(self.request, PostVideo.objects.filter(pk=replacement.pk))
+        self.assertIn(self.other_post.pk, self.eligible(stranger))
