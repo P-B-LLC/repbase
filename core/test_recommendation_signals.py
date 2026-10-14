@@ -521,6 +521,10 @@ class AddedInterestTests(ForYouTestCase):
         topics = [item["topic"] for item in data["addable_topics"]]
         self.assertEqual(topics[:len(recommendations.HIDEABLE_TOPICS)], list(recommendations.HIDEABLE_TOPICS))
         self.assertIn("discipline:powerlifting", topics)
+        labels = [item["label"] for item in data["addable_topics"]]
+        self.assertEqual(len(labels), len(set(labels)), "one chip per name")
+        self.assertNotIn("discipline:running", topics, "running the kind of post is offered instead")
+        self.assertNotIn("discipline:other", topics)
         self.assertIn("exercise:bench press", topics, "the community's most posted exercise")
         self.assertIn("exercise:deadlift", topics, "the catalogue")
         self.assertEqual(data["added_topics"], [])

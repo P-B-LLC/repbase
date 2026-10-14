@@ -543,13 +543,25 @@ def addable_topics():
     them: the topics that can also be hidden, the disciplines, then the
     exercises the most people have posted lately. A known list, so an added
     interest is always something posts can be matched against."""
-    coarse = list(HIDEABLE_TOPICS)
-    disciplines = [f"discipline:{value}" for value, _ in RepbaseUser.TrainingStyle.choices]
+    disciplines = [
+        f"discipline:{value}"
+        for value, _ in RepbaseUser.TrainingStyle.choices
+        # "Other" says nothing anybody could want more of.
+        if value != RepbaseUser.TrainingStyle.OTHER
+    ]
     popularity = exercise_popularity()
     exercises = [
         f"exercise:{key}" for key in sorted(popularity, key=lambda key: (-popularity[key], key))
     ][:ADDABLE_EXERCISES]
-    return coarse + disciplines + exercises
+    # One chip per name, the first kept: "Running" the kind of post is what
+    # a reader means, so "Running" the kind of athlete is not offered too.
+    offered, names = [], set()
+    for topic in [*HIDEABLE_TOPICS, *disciplines, *exercises]:
+        name = topic_name(topic).casefold()
+        if name not in names:
+            names.add(name)
+            offered.append(topic)
+    return offered
 
 
 def topic_name(topic):
