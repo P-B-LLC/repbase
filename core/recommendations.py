@@ -524,6 +524,26 @@ _TOPIC_NAMES = {
 }
 
 
+#: How many of the most-posted exercises are offered as interests to add.
+ADDABLE_EXERCISES = 40
+#: How many interests a reader may add.
+MAX_ADDED_TOPICS = 30
+
+
+def addable_topics():
+    """[topic code] a reader may add as an interest, in the order to offer
+    them: the topics that can also be hidden, the disciplines, then the
+    exercises the most people have posted lately. A known list, so an added
+    interest is always something posts can be matched against."""
+    coarse = list(HIDEABLE_TOPICS)
+    disciplines = [f"discipline:{value}" for value, _ in RepbaseUser.TrainingStyle.choices]
+    popularity = exercise_popularity()
+    exercises = [
+        f"exercise:{key}" for key in sorted(popularity, key=lambda key: (-popularity[key], key))
+    ][:ADDABLE_EXERCISES]
+    return coarse + disciplines + exercises
+
+
 def topic_name(topic):
     return _TOPIC_NAMES.get(topic, topic.split(":", 1)[-1].replace("_", " "))
 
@@ -582,7 +602,17 @@ def exercise_vocabulary(now=None):
     anybody else's posts anyway. The names as written are kept so a
     candidate source can match them exactly, which an index can help with
     and a lowercased comparison cannot."""
-    found = cache.get("for-you:exercises")
+    return _exercise_vocabulary(now)["names"]
+
+
+def exercise_popularity(now=None):
+    """{lowercased exercise name: how many people posted it lately} for the
+    vocabulary -- what to offer first when a reader adds an interest."""
+    return _exercise_vocabulary(now)["people"]
+
+
+def _exercise_vocabulary(now=None):
+    found = cache.get("for-you:exercises2")
     if found is None:
         now = now or timezone.now()
         spellings, people = {}, {}
@@ -606,7 +636,8 @@ def exercise_vocabulary(now=None):
             key = _exercise_key(name)
             if key:
                 found[key] = sorted(set(found.get(key, ())) | set(spellings.get(key, ())) | {name})
-        cache.set("for-you:exercises", found, VOCABULARY_TTL_SECONDS)
+        found = {"names": found, "people": {key: len(people.get(key, ())) for key in found}}
+        cache.set("for-you:exercises2", found, VOCABULARY_TTL_SECONDS)
     return found
 
 
@@ -767,12 +798,17 @@ class InterestProfile:
         return [topic for _, topic in sorted(positive, reverse=True)[:count]]
 
 
-def declared_topics(viewer):
+def declared_topics(viewer, preferences=None):
     """(every topic somebody named for themselves, the ones they literally
     chose). Onboarding answers and profile disciplines both imply more than
     they say -- Strength means lifting and five disciplines -- and the
-    ranking uses all of it; only the first part is the reader's own words."""
+    ranking uses all of it; only the first part is the reader's own words.
+    Interests the reader added on the page are their own words exactly."""
     topics, chosen = set(), set()
+    if preferences is not None:
+        added = {topic for topic in preferences.added_topics or () if isinstance(topic, str)}
+        topics.update(added)
+        chosen.update(added)
     choice = Personalization.objects.filter(repbase_user=viewer).first()
     if choice is not None:
         for answer in choice.training_types or []:
@@ -988,7 +1024,7 @@ def build_profile(viewer, weights=None, now=None, preferences=None):
         if is_explicit and weight > 0 and post_id not in explicit:
             explicit.append(post_id)
 
-    declared, chosen = declared_topics(viewer)
+    declared, chosen = declared_topics(viewer, preferences)
     for topic in declared:
         topic_tally[topic] += weights.declared
 

@@ -497,3 +497,70 @@ class MoreAndFewerTests(ForYouTestCase):
         call_command("feed_report", "--json", stdout=output)
         actions = json.loads(output.getvalue())["actions"]
         self.assertEqual((actions["more_like_this_rate"], actions["fewer_like_this_rate"]), (0.5, 0.5))
+
+
+class AddedInterestTests(ForYouTestCase):
+    """Readers can add interests of their own, from a known list, and the
+    page takes them as their own words."""
+
+    PREFERENCES = "/api/v1/social/for-you/preferences/"
+
+    def setUp(self):
+        super().setUp()
+        cache.clear()
+        Exercise.objects.create(name="Deadlift", created_by=None)
+
+    def patch(self, token, body):
+        self.authenticate(token)
+        return self.client.patch(self.PREFERENCES, body, format="json")
+
+    def test_what_can_be_added_comes_in_order(self):
+        _, token = self.reader("browsing_interests", [])
+        self.authenticate(token)
+        data = self.client.get(self.PREFERENCES).data
+        topics = [item["topic"] for item in data["addable_topics"]]
+        self.assertEqual(topics[:len(recommendations.HIDEABLE_TOPICS)], list(recommendations.HIDEABLE_TOPICS))
+        self.assertIn("discipline:powerlifting", topics)
+        self.assertIn("exercise:bench press", topics, "the community's most posted exercise")
+        self.assertIn("exercise:deadlift", topics, "the catalogue")
+        self.assertEqual(data["added_topics"], [])
+        labels = {item["topic"]: item["label"] for item in data["addable_topics"]}
+        self.assertEqual(labels["exercise:deadlift"], "Deadlift")
+
+    def test_an_added_interest_is_the_readers_own_and_shapes_the_page(self):
+        profile, token = self.reader("adds_swimming_and_meals", [])
+        response = self.patch(token, {"added_topics": ["kind:meal", "exercise:deadlift"]})
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["added_topics"], ["kind:meal", "exercise:deadlift"])
+        interests = {item["topic"]: item for item in response.data["interests"]}
+        self.assertTrue(interests["kind:meal"]["declared"])
+        self.assertTrue(interests["exercise:deadlift"]["declared"])
+        top = self.top(token, 6)
+        self.assertGreaterEqual(self.share(top, self.meals), 3)
+
+    def test_only_known_topics_and_never_hidden_and_added_at_once(self):
+        _, token = self.reader("careless_adder", [])
+        self.assertEqual(self.patch(token, {"added_topics": ["exercise:made up thing"]}).status_code, 400)
+        both = self.patch(token, {"added_topics": ["kind:meal"], "hidden_topics": ["kind:meal"]})
+        self.assertEqual(both.status_code, 400)
+        self.assertEqual(self.patch(token, {"hidden_topics": ["kind:meal"]}).status_code, 200)
+        self.assertEqual(self.patch(token, {"added_topics": ["kind:meal"]}).status_code, 400,
+                         "already hidden: unhide it first")
+        too_many = [topic for topic in recommendations.addable_topics()][:31]
+        self.assertEqual(self.patch(token, {"added_topics": too_many}).status_code, 400)
+
+    def test_starting_fresh_keeps_them_and_turning_personalisation_off_ignores_them(self):
+        profile, token = self.reader("keeps_choices", [])
+        self.patch(token, {"added_topics": ["kind:meal"]})
+        self.authenticate(token)
+        after = self.client.delete("/api/v1/social/for-you/history/").data
+        self.assertEqual(after["added_topics"], ["kind:meal"])
+        off = self.patch(token, {"personalized": False}).data
+        self.assertEqual(off["interests"], [])
+        self.assertEqual(off["added_topics"], ["kind:meal"], "kept, for when it is turned back on")
+
+    def test_an_added_exercise_brings_its_own_source(self):
+        profile, token = self.reader("deadlift_curious", [])
+        self.patch(token, {"added_topics": ["exercise:bench press"]})
+        found = recommendations.candidates(profile, build_profile(profile))
+        self.assertTrue(any("detail" in item.sources for item in found))

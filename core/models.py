@@ -3492,6 +3492,10 @@ class RecommendationPreferences(models.Model):
     #: A list of strings rather than rows: there are eight, and the whole set
     #: is read and written at once.
     hidden_topics = models.JSONField(default=list, blank=True)
+    #: Topics the reader added as interests of their own, from
+    #: `core.recommendations.addable_topics`. They count as though named
+    #: during onboarding, and are shown as the reader's own choice.
+    added_topics = models.JSONField(default=list, blank=True)
     #: Everything the reader did before this stops counting as taste. Set by
     #: "start fresh", which also deletes their viewing history -- that exists
     #: only to make recommendations. Likes and comments are not deleted: they

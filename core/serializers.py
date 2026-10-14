@@ -3424,20 +3424,43 @@ class ForYouPreferencesSerializer(serializers.Serializer):
     interests = InterestSerializer(many=True, read_only=True)
     #: Every topic that may be hidden, in the order to offer them.
     hideable_topics = TopicSerializer(many=True, read_only=True)
+    #: Topic codes the reader added as interests of their own, each one of
+    #: `addable_topics` when it was added.
+    added_topics = serializers.ListField(child=serializers.CharField(), read_only=True)
+    #: Every topic that may be added as an interest, in the order to offer
+    #: them: what can be hidden, the disciplines, then the exercises most
+    #: people are posting lately.
+    addable_topics = TopicSerializer(many=True, read_only=True)
 
 
 class UpdateForYouPreferencesSerializer(serializers.Serializer):
-    """A change to the reader's For You choices. Either field may be left out.
+    """A change to the reader's For You choices. Any field may be left out.
 
     Topics are plain strings checked here rather than an enum in the
     contract, so a topic added later is not a value an older app cannot send
-    or decode.
+    or decode. A topic cannot be both hidden and added.
     """
 
     personalized = serializers.BooleanField(required=False)
     hidden_topics = serializers.ListField(
         child=serializers.CharField(max_length=40), required=False, allow_empty=True, max_length=20
     )
+    added_topics = serializers.ListField(
+        child=serializers.CharField(max_length=160), required=False, allow_empty=True, max_length=30
+    )
+
+    def validate_added_topics(self, value):
+        from .recommendations import addable_topics
+
+        offered = addable_topics()
+        unknown = sorted(set(value) - set(offered))
+        if unknown:
+            raise serializers.ValidationError(
+                f"Not a topic that can be added: {', '.join(unknown)}. "
+                "Use any of `addable_topics` from the preferences."
+            )
+        # Once each, in the order they were given.
+        return list(dict.fromkeys(value))
 
     def validate_hidden_topics(self, value):
         from .recommendations import HIDEABLE_TOPICS

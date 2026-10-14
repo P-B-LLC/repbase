@@ -21,6 +21,7 @@ from rest_framework.views import APIView
 from .models import PostFeedback, PostView, RecommendationPreferences, RepbaseUser, SuggestionDismissal
 from .recommendations import (
     HIDEABLE_TOPICS,
+    addable_topics,
     BadCursor,
     build_profile,
     forget_reasons,
@@ -201,6 +202,8 @@ def _preferences_payload(viewer, preferences=None):
         "history_cleared_at": preferences.history_cleared_at,
         "interests": interests(profile),
         "hideable_topics": [{"topic": topic, "label": topic_label(topic)} for topic in HIDEABLE_TOPICS],
+        "added_topics": list(preferences.added_topics or ()),
+        "addable_topics": [{"topic": topic, "label": topic_label(topic)} for topic in addable_topics()],
     }).data
 
 
@@ -225,8 +228,10 @@ class ForYouPreferencesView(WritesAreSocialMixin, APIView):
         request=UpdateForYouPreferencesSerializer,
         responses={200: ForYouPreferencesSerializer},
         description=(
-            "Turn personalisation on or off, or replace the list of hidden "
-            "topics. Either field may be left out. Takes effect on the next "
+            "Turn personalisation on or off, replace the list of hidden "
+            "topics, or replace the list of interests the reader added "
+            "(each one of `addable_topics`). Any field may be left out. A "
+            "topic cannot be both hidden and added. Takes effect on the next "
             "page ranked."
         ),
     )
@@ -240,6 +245,11 @@ class ForYouPreferencesView(WritesAreSocialMixin, APIView):
             )
             for name, value in body.validated_data.items():
                 setattr(preferences, name, value)
+            both = sorted(set(preferences.hidden_topics or ()) & set(preferences.added_topics or ()))
+            if both:
+                raise ValidationError({
+                    "added_topics": f"Hidden and added at once: {', '.join(both)}. Unhide it or leave it out."
+                })
             preferences.save()
         return Response(_preferences_payload(viewer, preferences))
 
