@@ -90,6 +90,28 @@ class RecordingTests(ForYouTestCase):
         self.client.post(IMPRESSIONS, send, format="json")
         self.assertEqual(PostView.objects.get(viewer=profile, post_id=page[2]).features, first)
 
+    def test_the_latest_serving_before_the_impression_is_the_one_recorded(self):
+        profile, token = self.reader("served_twice", [])
+        page = self.ids(self.feed(token, page_size=3))
+        width = len(FEATURES) + 1
+        recommendations.remember_features(profile, {page[0]: [1.0] * width})
+        recommendations.remember_features(profile, {page[0]: [2.0] * width})
+        self.client.post(IMPRESSIONS, {"events": [{"post": page[0], "dwell_ms": 3000, "surface": "for_you"}]},
+                         format="json")
+        self.assertEqual(PostView.objects.get(viewer=profile, post_id=page[0]).features, [2.0] * width)
+
+    def test_an_impression_without_features_leaves_room_for_one_with(self):
+        profile, token = self.reader("cache_missed", [])
+        page = self.ids(self.feed(token, page_size=3))
+        recommendations.forget_reasons(profile)
+        send = {"events": [{"post": page[1], "dwell_ms": 3000, "surface": "for_you"}]}
+        self.client.post(IMPRESSIONS, send, format="json")
+        self.assertTrue(PostView.objects.filter(viewer=profile, post_id=page[1], features__isnull=True).exists(),
+                        "SQL NULL, not JSON null")
+        recommendations.remember_features(profile, {page[1]: [3.0] * (len(FEATURES) + 1)})
+        self.client.post(IMPRESSIONS, send, format="json")
+        self.assertEqual(PostView.objects.get(viewer=profile, post_id=page[1]).features, [3.0] * (len(FEATURES) + 1))
+
     def test_starting_fresh_deletes_it_with_the_history(self):
         profile, token = self.reader("forgets", [])
         page = self.ids(self.feed(token, page_size=3))
@@ -181,6 +203,28 @@ class TrainingTests(ForYouTestCase):
             model = ranking_model.train()
         self.assertFalse(model.is_active)
         self.assertIn("did not beat", model.metrics["gate"])
+
+    def test_a_model_that_learned_only_the_slot_does_not_pass(self):
+        """Readers here act on where a post sits and nothing else. Served, a
+        model never knows the slot, so it has nothing to offer."""
+        dice = random.Random(11)
+        rows = []
+        for view in PostView.objects.filter(viewer__in=self.viewers).select_related("post"):
+            raw = {name: dice.gauss(0, 1) for name in ranking_model.SCORE_FEATURES}
+            raw["rules"] = dice.gauss(0, 1)
+            position = dice.randrange(0, 40)
+            view.features = feature_row(raw, discovery=position % 5 == 4, position=position)
+            view.skipped = position >= 3
+            rows.append(view)
+        PostView.objects.bulk_update(rows, ["features", "skipped"])
+        PostLike.objects.filter(user__in=self.viewers).delete()
+        PostLike.objects.bulk_create([
+            PostLike(post_id=view.post_id, user_id=view.viewer_id) for view in rows if not view.skipped
+        ])
+        model = ranking_model.train()
+        self.assertGreater(model.metrics["test_decided"], 0)
+        self.assertFalse(model.is_active, model.metrics)
+        self.assertLess(model.metrics["model_auc"], model.metrics["rules_auc"] + ranking_model.MIN_GAIN)
 
     def test_one_active_model_and_old_ones_go(self):
         first = ranking_model.train()

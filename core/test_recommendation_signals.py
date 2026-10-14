@@ -13,6 +13,7 @@
 """
 
 from datetime import timedelta
+from unittest import mock
 
 from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
@@ -547,11 +548,36 @@ class AddedInterestTests(ForYouTestCase):
         self.assertEqual(self.patch(token, {"added_topics": ["exercise:made up thing"]}).status_code, 400)
         both = self.patch(token, {"added_topics": ["kind:meal"], "hidden_topics": ["kind:meal"]})
         self.assertEqual(both.status_code, 400)
-        self.assertEqual(self.patch(token, {"hidden_topics": ["kind:meal"]}).status_code, 200)
-        self.assertEqual(self.patch(token, {"added_topics": ["kind:meal"]}).status_code, 400,
-                         "already hidden: unhide it first")
-        too_many = [topic for topic in recommendations.addable_topics()][:31]
-        self.assertEqual(self.patch(token, {"added_topics": too_many}).status_code, 400)
+        offered = recommendations.addable_topics()
+        too_many = (offered * 31)[:31]
+        response = self.patch(token, {"added_topics": too_many})
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("added_topics", response.data)
+
+    def test_the_newest_choice_wins_between_hidden_and_added(self):
+        _, token = self.reader("changes_mind", [])
+        self.patch(token, {"added_topics": ["kind:meal", "type:running"]})
+        # An app that knows nothing of added interests can still hide one.
+        hidden = self.patch(token, {"hidden_topics": ["kind:meal"]}).data
+        self.assertEqual(hidden["hidden_topics"], ["kind:meal"])
+        self.assertEqual(hidden["added_topics"], ["type:running"])
+        added = self.patch(token, {"added_topics": ["type:running", "kind:meal"]}).data
+        self.assertEqual(added["hidden_topics"], [])
+        self.assertEqual(added["added_topics"], ["type:running", "kind:meal"])
+
+    def test_an_interest_that_left_the_offer_stays_the_readers_own(self):
+        profile, token = self.reader("keeps_a_rare_one", [])
+        self.patch(token, {"added_topics": ["exercise:deadlift"]})
+        with mock.patch.object(recommendations, "ADDABLE_EXERCISES", 0):
+            self.authenticate(token)
+            data = self.client.get(self.PREFERENCES).data
+            offered = [item["topic"] for item in data["addable_topics"]]
+            self.assertIn("exercise:deadlift", offered, "still shown, so it can be taken off")
+            kept = self.patch(token, {"added_topics": ["exercise:deadlift", "kind:meal"]})
+            self.assertEqual(kept.status_code, 200, kept.data)
+            self.assertEqual(self.patch(token, {"added_topics": ["kind:meal"]}).status_code, 200)
+            again = self.patch(token, {"added_topics": ["exercise:deadlift"]})
+            self.assertEqual(again.status_code, 400, "once taken off, it is only offered again if it is offered")
 
     def test_starting_fresh_keeps_them_and_turning_personalisation_off_ignores_them(self):
         profile, token = self.reader("keeps_choices", [])

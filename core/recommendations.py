@@ -1,10 +1,11 @@
 """The For You page: what to show somebody, in what order, and why.
 
-Rules rather than a model, on purpose. There is not yet enough interaction
-data here to train anything worth trusting, and a learned ranking nobody can
-read is a ranking nobody can debug, explain to a user, or defend to a
-moderator. Every number below has a name, a default and a sentence saying
-what it does, and `FOR_YOU_WEIGHTS` in settings can move any of them.
+Rules first, on purpose. A ranking nobody can read is a ranking nobody can
+debug, explain to a user, or defend to a moderator. Every number below has a
+name, a default and a sentence saying what it does, and `FOR_YOU_WEIGHTS` in
+settings can move any of them. One part, `learned`, comes from a small model
+trained on the page's own record (`core.ranking_model`); it is 0 until a
+model has beaten these rules on readers it did not learn from.
 
 ## The pipeline
 
@@ -70,9 +71,11 @@ first page, and the first like starts making it theirs.
 
 ## The reader's say
 
-`RecommendationPreferences` lets a reader hide topics, clear what the page
-has learned, or turn personalisation off, in which case the page is ordered
-by quality, popularity and freshness alone. See `RECOMMENDATIONS.md`.
+`RecommendationPreferences` lets a reader add interests, hide topics, clear
+what the page has learned, or turn personalisation off, in which case the
+page is ordered by quality, popularity and freshness alone. On any post they
+can say "more like this", "fewer like this" or "not interested". See
+`RECOMMENDATIONS.md`.
 """
 
 import hashlib
@@ -2185,12 +2188,16 @@ def _features_key(viewer_id):
 def remember_features(viewer, rows):
     """{post id: what the ranking knew about it} for posts just served, kept
     beside their reasons until the impression that records them arrives.
-    The first ranking that served a post is the one that counts."""
+
+    The latest serving wins, as with reasons: a post served low on a page
+    nobody scrolled and then at the top after a refresh was seen at the top.
+    Once an impression has recorded a row, the database keeps it."""
     if not rows:
         return
     known = cache.get(_features_key(viewer.pk)) or {}
     for pk, row in rows.items():
-        known.setdefault(pk, row)
+        known.pop(pk, None)
+        known[pk] = row
     if len(known) > SERVED_MEMORY:
         known = dict(list(known.items())[-SERVED_MEMORY:])
     cache.set(_features_key(viewer.pk), known, SERVED_TTL_SECONDS)
@@ -2370,7 +2377,11 @@ def _upsert_views(viewer, entries, now):
             # and psycopg would send an enum member by its name.
             str(entry["surface"]),
             str(entry.get("reason") or ""),
-            features_field.get_db_prep_value(entry.get("features"), connection),
+            # A real NULL when there is nothing to record, never JSON null,
+            # which COALESCE would keep and so stop a later impression from
+            # recording what it knew.
+            None if entry.get("features") is None
+            else features_field.get_db_prep_value(entry["features"], connection),
             first_seen,
             last_seen,
         ]
@@ -2389,7 +2400,8 @@ def _upsert_views(viewer, entries, now):
         f"ELSE {current} END, "
         f"completed = ({table}.completed OR excluded.completed), "
         f"skipped = excluded.skipped, "
-        # The first ranking that showed it is what it is learned from.
+        # The first impression that recorded what the ranking knew is the
+        # one learned from.
         f"features = COALESCE({table}.{ops.quote_name('features')}, excluded.{ops.quote_name('features')}), "
         f"last_seen_at = excluded.last_seen_at"
     )

@@ -260,6 +260,8 @@ class PostAdmin(admin.ModelAdmin):
     ordering = ("-created_at",)
     inlines = (PostReportInline,)
     actions = ("hide_posts", "unhide_posts")
+    # Set with is_hidden, never by hand: the moderation cooldown counts from it.
+    readonly_fields = ("hidden_at",)
 
     def get_queryset(self, request):
         return (
@@ -281,6 +283,15 @@ class PostAdmin(admin.ModelAdmin):
     # who can open the list at all -- view permission is enough -- so a
     # read-only moderator could take posts down and put them back. The
     # report admin above already required change permission; this did not.
+    @transaction.atomic
+    def save_model(self, request, obj, form, change):
+        # Hiding from the change form is a moderation decision like the
+        # actions', and is written down the same way.
+        if change and "is_hidden" in form.changed_data:
+            record_hide(request.user, Post.objects.filter(pk=obj.pk), hide=obj.is_hidden)
+            obj.hidden_at = timezone.now() if obj.is_hidden else None
+        super().save_model(request, obj, form, change)
+
     @admin.action(description="Hide", permissions=["change"])
     @transaction.atomic
     def hide_posts(self, request, queryset):

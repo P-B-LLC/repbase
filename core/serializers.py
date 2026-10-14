@@ -3438,7 +3438,9 @@ class UpdateForYouPreferencesSerializer(serializers.Serializer):
 
     Topics are plain strings checked here rather than an enum in the
     contract, so a topic added later is not a value an older app cannot send
-    or decode. A topic cannot be both hidden and added.
+    or decode. A topic is hidden or added, never both: a change to one list
+    takes its topics out of the other, and a change to both at once may not
+    put a topic in each.
     """
 
     personalized = serializers.BooleanField(required=False)
@@ -3452,8 +3454,10 @@ class UpdateForYouPreferencesSerializer(serializers.Serializer):
     def validate_added_topics(self, value):
         from .recommendations import addable_topics
 
-        offered = addable_topics()
-        unknown = sorted(set(value) - set(offered))
+        # What is offered changes as exercises come and go from the most
+        # posted; one the reader already added stays theirs to keep.
+        offered = set(addable_topics()) | set(self.context.get("added_topics", ()))
+        unknown = sorted(set(value) - offered)
         if unknown:
             raise serializers.ValidationError(
                 f"Not a topic that can be added: {', '.join(unknown)}. "

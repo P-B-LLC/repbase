@@ -14,6 +14,7 @@ should not recommend off it -- whatever that engagement says.
 """
 
 from datetime import timedelta
+from unittest import mock
 
 from django.core.cache import cache
 from django.test import SimpleTestCase, override_settings
@@ -545,5 +546,47 @@ class ModerationAuditTests(ForYouTestCase):
         replacement = video(self.target, status=PostVideo.Status.PENDING)
         cache.clear()
         self.assertNotIn(self.other_post.pk, self.eligible(stranger), "a new clip waiting for review lifts nothing")
-        self.video_admin.approve_clips(self.request, PostVideo.objects.filter(pk=replacement.pk))
+        # The cached list is dropped when the decision commits.
+        with self.captureOnCommitCallbacks(execute=True):
+            self.video_admin.approve_clips(self.request, PostVideo.objects.filter(pk=replacement.pk))
         self.assertIn(self.other_post.pk, self.eligible(stranger))
+
+    def test_the_cached_list_is_dropped_only_once_the_decision_commits(self):
+        stranger, _ = self.reader("waiting_stranger")
+        self.assertIn(self.other_post.pk, self.eligible(stranger))
+        with self.captureOnCommitCallbacks() as callbacks:
+            self.post_admin.hide_posts(self.request, Post.objects.filter(pk=self.target.pk))
+            self.assertIn(self.other_post.pk, self.eligible(stranger), "not before it commits")
+        for callback in callbacks:
+            callback()
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger))
+
+    def test_hiding_from_the_change_form_is_written_down_too(self):
+        form_class = self.post_admin.get_form(self.request, self.target, change=True)
+        data = {field: getattr(self.target, field) for field in form_class.base_fields}
+        data.update(author=self.target.author_id, is_hidden=True)
+        form = form_class(data=data, instance=self.target)
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertNotIn("hidden_at", form.base_fields, "set with the flag, not by hand")
+        with self.captureOnCommitCallbacks(execute=True):
+            self.post_admin.save_model(self.request, form.save(commit=False), form, change=True)
+        self.target.refresh_from_db()
+        self.assertTrue(self.target.is_hidden)
+        self.assertIsNotNone(self.target.hidden_at)
+        self.assertEqual(self.audits(), ["moderation_hide"])
+        stranger, _ = self.reader("form_stranger")
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger))
+
+    def test_a_hide_from_the_access_portal_reaches_for_you_at_once(self):
+        from django.contrib.auth import get_user_model
+
+        from . import access_moderation
+        from .models import PostReport
+
+        stranger, _ = self.reader("portal_stranger")
+        self.assertIn(self.other_post.pk, self.eligible(stranger), "the list is cached now")
+        report = PostReport.objects.create(post=self.target, reporter=self.runners[0], reason="spam")
+        moderator = get_user_model().objects.get(pk=self.moderator.pk)
+        with mock.patch.object(access_moderation, "require"), self.captureOnCommitCallbacks(execute=True):
+            access_moderation.decide_report(moderator, "post", report.pk, "hide", "spam")
+        self.assertNotIn(self.other_post.pk, self.eligible(stranger))

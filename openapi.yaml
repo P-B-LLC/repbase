@@ -4597,10 +4597,11 @@ paths:
           description: ''
     patch:
       operationId: social_for_you_preferences_partial_update
-      description: Turn personalisation on or off, replace the list of hidden topics,
+      description: 'Turn personalisation on or off, replace the list of hidden topics,
         or replace the list of interests the reader added (each one of `addable_topics`).
-        Any field may be left out. A topic cannot be both hidden and added. Takes
-        effect on the next page ranked.
+        Any field may be left out. A topic is hidden or added, never both: replacing
+        one list takes its topics out of the other, and a topic may not be in both
+        when both are sent. Takes effect on the next page ranked.'
       tags:
       - social
       requestBody:
@@ -8785,7 +8786,9 @@ components:
 
         Topics are plain strings checked here rather than an enum in the
         contract, so a topic added later is not a value an older app cannot send
-        or decode. A topic cannot be both hidden and added.
+        or decode. A topic is hidden or added, never both: a change to one list
+        takes its topics out of the other, and a change to both at once may not
+        put a topic in each.
       properties:
         personalized:
           type: boolean

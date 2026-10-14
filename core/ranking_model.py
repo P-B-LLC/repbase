@@ -28,7 +28,9 @@ read what it does:
   so nobody's habits leak from training into testing -- and asks of them the
   question the page answers: does the score put what people took (engaged)
   above what they turned down? It compares the rules' own total with the
-  rules plus this model, as the page would rank by them. A new model becomes
+  rules plus this model, as the page would rank by them -- the slot held at
+  its average, exactly as when serving, so a model that learned only where
+  things sit on the page cannot pass. A new model becomes
   the active one only with enough data behind it and a held-out AUC at least
   MIN_GAIN better than the rules alone. Otherwise the previous model (or
   none) stays, and the `learned` part is 0.
@@ -278,7 +280,11 @@ def train(now=None, activate=True, seed=0):
         from .recommendations import FeedWeights
 
         weight = FeedWeights.from_settings().learned
-        test_rows = [scaled(sample[1][:RULES], means, scales) for sample in testing]
+        # Judged as it would be served: the slot is not known when a post is
+        # scored, so the held-out rows see the average one too. Scored with
+        # their real slots, a model that had learned only where things sit
+        # on the page would pass, and then rank on nothing.
+        test_rows = [as_served(sample[1][:RULES], means, scales) for sample in testing]
         engaged = [1 if sample[2] else 0 for sample in testing]
         turned_down = [1 if sample[3] else 0 for sample in testing]
         p_engage = [predict(engage_weights, engage_bias, row) for row in test_rows]
@@ -368,13 +374,19 @@ def active_model():
     return found if found.get("id") is not None else None
 
 
+def as_served(row, means, scales):
+    """A recorded row standardised the way a candidate is scored: its
+    score's parts as they were, its slot the average one (a standardised 0),
+    because the slot is not known until the page is put in order."""
+    score = len(SCORE_FEATURES)
+    return scaled(row[:score], means[:score], scales[:score]) + [0.0] * len(SLOT_FEATURES)
+
+
 def value(model, raw):
     """P(engage) - REJECT_COST x P(turn down) for a candidate, from its
-    score's parts before weighting. The slot is not known yet, so the model
-    sees the average one (a standardised 0)."""
+    score's parts before weighting."""
     row = [float(raw.get(name, 0.0)) for name in SCORE_FEATURES]
-    means, scales = model["means"], model["scales"]
-    standard = scaled(row, means[:len(SCORE_FEATURES)], scales[:len(SCORE_FEATURES)]) + [0.0] * len(SLOT_FEATURES)
+    standard = as_served(row, model["means"], model["scales"])
     engage = predict(*model["engage"], standard)
     reject = predict(*model["reject"], standard)
     return engage - REJECT_COST * reject

@@ -4,6 +4,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied, ValidationError
 
+from . import moderation_audit
 from .access import AccessConflict, require
 from .access_models import AccessAudit, AccessPolicyLock
 from .models import PostReport, CommentReport
@@ -60,3 +61,7 @@ def decide_report(actor, kind, report_id, decision, reason):
     AccessAudit.objects.create(actor=actor, target=content.author.user,
                                action='moderation_' + decision, subject=f'{kind}:{content.pk}',
                                before=before, after=dict(is_hidden=content.is_hidden), reason=reason)
+    if hide and kind == 'post':
+        # The author's posts leave For You now, not when the cached list of
+        # moderated authors runs out (core.feed_integrity).
+        moderation_audit.changed()

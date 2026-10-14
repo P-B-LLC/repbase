@@ -203,8 +203,18 @@ def _preferences_payload(viewer, preferences=None):
         "interests": interests(profile),
         "hideable_topics": [{"topic": topic, "label": topic_label(topic)} for topic in HIDEABLE_TOPICS],
         "added_topics": list(preferences.added_topics or ()),
-        "addable_topics": [{"topic": topic, "label": topic_label(topic)} for topic in addable_topics()],
+        "addable_topics": [
+            {"topic": topic, "label": topic_label(topic)} for topic in offered_to(preferences)
+        ],
     }).data
+
+
+def offered_to(preferences):
+    """What a reader may add: the offer, and whatever they already added that
+    has since left it, so it can still be seen and taken off."""
+    offered = addable_topics()
+    known = set(offered)
+    return offered + [topic for topic in preferences.added_topics or () if topic not in known]
 
 
 class ForYouPreferencesView(WritesAreSocialMixin, APIView):
@@ -231,25 +241,38 @@ class ForYouPreferencesView(WritesAreSocialMixin, APIView):
             "Turn personalisation on or off, replace the list of hidden "
             "topics, or replace the list of interests the reader added "
             "(each one of `addable_topics`). Any field may be left out. A "
-            "topic cannot be both hidden and added. Takes effect on the next "
-            "page ranked."
+            "topic is hidden or added, never both: replacing one list takes "
+            "its topics out of the other, and a topic may not be in both "
+            "when both are sent. Takes effect on the next page ranked."
         ),
     )
     def patch(self, request):
         viewer = profile_for(request.user)
-        body = UpdateForYouPreferencesSerializer(data=request.data)
-        body.is_valid(raise_exception=True)
         with transaction.atomic():
             preferences, _ = RecommendationPreferences.objects.select_for_update().get_or_create(
                 viewer=viewer
             )
-            for name, value in body.validated_data.items():
+            body = UpdateForYouPreferencesSerializer(
+                data=request.data, context={"added_topics": preferences.added_topics or ()},
+            )
+            body.is_valid(raise_exception=True)
+            change = body.validated_data
+            if "hidden_topics" in change and "added_topics" in change:
+                both = sorted(set(change["hidden_topics"]) & set(change["added_topics"]))
+                if both:
+                    raise ValidationError({
+                        "added_topics": f"Hidden and added at once: {', '.join(both)}. Choose one."
+                    })
+            elif "hidden_topics" in change:
+                # The newest choice wins -- which is also what lets an app that
+                # knows nothing of added interests hide one.
+                hidden = set(change["hidden_topics"])
+                preferences.added_topics = [t for t in preferences.added_topics or () if t not in hidden]
+            elif "added_topics" in change:
+                added = set(change["added_topics"])
+                preferences.hidden_topics = [t for t in preferences.hidden_topics or () if t not in added]
+            for name, value in change.items():
                 setattr(preferences, name, value)
-            both = sorted(set(preferences.hidden_topics or ()) & set(preferences.added_topics or ()))
-            if both:
-                raise ValidationError({
-                    "added_topics": f"Hidden and added at once: {', '.join(both)}. Unhide it or leave it out."
-                })
             preferences.save()
         return Response(_preferences_payload(viewer, preferences))
 

@@ -21,6 +21,7 @@ stays rejected:
 """
 
 from django.core.cache import cache
+from django.db import transaction
 
 from .access_models import AccessAudit
 
@@ -41,9 +42,11 @@ FAMILIES = {
 ADMIN_REASON = "Django admin"
 
 
-def _changed():
-    """A decision reaches the For You page now, not in a minute."""
-    cache.delete("for-you:moderated")
+def changed():
+    """A decision reaches the For You page now, not in a minute -- once it
+    has committed, so a ranking in between cannot cache the list without
+    it for another minute."""
+    transaction.on_commit(lambda: cache.delete("for-you:moderated"))
 
 
 def record_post_decisions(actor, rows, action, reason=ADMIN_REASON):
@@ -61,7 +64,7 @@ def record_post_decisions(actor, rows, action, reason=ADMIN_REASON):
     ]
     if entries:
         AccessAudit.objects.bulk_create(entries)
-        _changed()
+        changed()
     return len(entries)
 
 
