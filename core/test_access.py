@@ -145,6 +145,35 @@ class AccessTests(RepbaseAPITestMixin, APITestCase):
         with self.assertRaises(PermissionDenied):
             assign_roles(actor, self.admin, ['owner'], 0, '')
 
+    def test_review_portal_shows_exact_post_and_private_reason(self):
+        from django.test import Client
+        from .fixtures_for_tests import workout_post
+        post = workout_post(self.admin_profile)
+        post.caption = '<script>alert("unsafe")</script>'
+        post.save(update_fields=['caption'])
+        report = PostReport.objects.create(post=post, reporter=self.profile,
+                                          reason='harassment', detail='Private report context')
+        browser = Client()
+        browser.force_login(self.member)
+        self.assertEqual(browser.get('/access/reports/').status_code, 403)
+        self.change(['moderator'])
+        response = browser.get('/access/reports/')
+        self.assertContains(response, f'Post #{post.pk}')
+        self.assertContains(response, 'Private report context')
+        self.assertContains(response, 'Shared Workout details')
+        self.assertContains(response, 'Keep content')
+        self.assertContains(response, 'Remove from community')
+        self.assertNotContains(response, '<script>')
+        self.assertIn('no-store', response['Cache-Control'])
+        result = browser.post('/access/reports/', {'report_id': report.pk,
+                              'decision': 'no_action', 'reason': 'Reviewed; allowed'})
+        self.assertEqual(result.status_code, 302)
+        report.refresh_from_db()
+        post.refresh_from_db()
+        self.assertEqual(report.resolution, 'no_action')
+        self.assertFalse(post.is_hidden)
+        self.assertTrue(AccessAudit.objects.filter(action='moderation_no_action').exists())
+
     def test_inactive_grant_denied(self):
         self.member.is_active = False
         self.member.save()

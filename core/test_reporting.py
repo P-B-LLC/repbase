@@ -32,12 +32,42 @@ class ReportingAPostTests(RepbaseAPITestMixin, APITestCase):
 
     def test_a_report_is_filed_once_and_a_second_press_is_not_an_error(self):
         first = self.report(detail="They keep messaging me")
-        second = self.report(reason="spam")
+        second = self.report(detail="Retry must not replace the original context")
         self.assertEqual((first.status_code, second.status_code), (201, 200))
         self.assertFalse(first.data["already_reported"])
         self.assertTrue(second.data["already_reported"])
         stored = PostReport.objects.get()
         self.assertEqual((stored.reason, stored.reporter), ("harassment", self.reporter))
+        self.assertEqual(stored.detail, "They keep messaging me")
+
+    def test_distinct_violations_are_stored_but_each_reason_is_idempotent(self):
+        self.assertEqual(self.report(reason="harassment").status_code, 201)
+        self.assertEqual(self.report(reason="spam").status_code, 201)
+        self.assertEqual(self.report(reason="spam").status_code, 200)
+        self.assertEqual(PostReport.objects.count(), 2)
+
+    def test_every_supported_reason_accepts_optional_context(self):
+        for reason in PostReport.Reason.values:
+            with self.subTest(reason=reason):
+                self.assertEqual(self.report(reason=reason, detail="Optional context").status_code, 201)
+        self.assertEqual(PostReport.objects.count(), len(PostReport.Reason.values))
+
+    def test_database_rejects_duplicate_reason_even_outside_endpoint(self):
+        from django.db import IntegrityError, transaction
+        self.report()
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PostReport.objects.create(post=self.post, reporter=self.reporter, reason="harassment")
+
+    def test_reporter_cannot_review_reports_or_read_the_queue(self):
+        self.report(detail="confidential")
+        report = PostReport.objects.get()
+        self.assertEqual(self.client.get('/api/v1/administration/reports/?kind=post').status_code, 403)
+        self.assertEqual(self.client.post(
+            f'/api/v1/administration/reports/post/{report.pk}/decision/',
+            {'decision': 'no_action', 'reason': 'not authorized'}, format='json'
+        ).status_code, 403)
+        report.refresh_from_db()
+        self.assertIsNone(report.reviewed_at)
 
     def test_the_detail_stays_private(self):
         response = self.report(detail="private context for the moderator")

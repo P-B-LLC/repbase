@@ -14,7 +14,7 @@ from rest_framework.exceptions import APIException
 
 from .access import assign_roles, capabilities, role_state
 from .access_views import user_data
-from .access_moderation import decide_report, open_reports, report_data
+from .access_moderation import decide_report, open_reports, report_review_data
 from .analytics import InsightsLoginView, allowed
 from .models import RepbaseUser
 from .account_controls import change_account_status
@@ -148,5 +148,5 @@ def reports(request):
         kind = kind if kind in ('post', 'comment') else 'post'
         rows = open_reports(kind)
     page = Paginator(rows, 20).get_page(request.GET.get('page'))
-    page.object_list = [report_data(row, kind) for row in page.object_list]
+    page.object_list = [report_review_data(row, kind, request) for row in page.object_list]
     return render(request, 'access/reports.html', dict(page=page, kind=kind, error=error), status=status)
