@@ -109,6 +109,7 @@ from .models import (
     PostMeal,
     PostMealEntry,
     PostPlannerEntry,
+    PostVideo,
     PostWorkout,
     PostWorkoutExercise,
     food_meals_for_day,
@@ -3341,6 +3342,12 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
     There is no superuser bypass here, unlike `scope_to_owner`. `private` is a
     user's word for author-only, and an account with a staff flag is still a
     reader.
+
+    A media post with nothing yet to show is its author's alone, whatever its
+    visibility says. Its clip is still uploading, processing or waiting for
+    review, or failed, and a caption over an empty frame is not what anybody
+    else was meant to see. It reaches its readers the moment the clip is ready
+    and approved, with no second publish.
     """
     follows_author = Follow.objects.filter(
         follower=viewer,
@@ -3349,6 +3356,16 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
     blocked_either_way = Block.objects.filter(
         Q(blocker=viewer, blocked=OuterRef("author"))
         | Q(blocker=OuterRef("author"), blocked=viewer)
+    )
+    watchable_clip = PostVideo.objects.filter(
+        post=OuterRef("pk"),
+        processing_state="ready",
+        status=PostVideo.Status.APPROVED,
+    )
+    has_something_to_show = (
+        ~Q(kind=Post.Kind.MEDIA)
+        | (Q(image__isnull=False) & ~Q(image=""))
+        | Q(Exists(watchable_clip))
     )
     result = queryset.annotate(
         viewer_follows_author=Exists(follows_author),
@@ -3380,6 +3397,7 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
                 Q(visibility=Post.Visibility.PUBLIC)
                 | Q(visibility=Post.Visibility.FOLLOWERS, viewer_follows_author=True)
             )
+            & has_something_to_show
         )
     )
     if include_reposts:
@@ -3720,8 +3738,9 @@ def create_post_from_source(
         snapshot_workout(post, source, shows_weights=shows_weights)
     elif kind == Post.Kind.MEAL:
         snapshot_meal(post, source, cooking_instructions=cooking_instructions)
-    else:
+    elif kind == Post.Kind.PLANNER:
         snapshot_planner(post, source)
+    # A media post has no snapshot: its photo or clip is the post.
     return post
 
 
@@ -3857,7 +3876,12 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
         description=(
             "Post a workout, meal or planner entry the requester owns. The "
             "server reads the source and builds the snapshot; the request names "
-            "the object and never carries its contents."
+            "the object and never carries its contents.\n\n"
+            "Or post a photo or a clip on its own, with `kind` `media` and no "
+            "`source_id`. Send the photo here; send a clip next to "
+            "`posts/{id}/video/`, saying so with `expects_video`. A media post "
+            "with nothing yet to show -- its clip uploading, processing or "
+            "waiting for review -- is visible to its author alone."
         ),
     ),
     partial_update=extend_schema(
@@ -4573,7 +4597,12 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         payload.is_valid(raise_exception=True)
         author = self.owner_profile()
         kind = payload.validated_data["kind"]
-        source = source_for(author, kind, payload.validated_data["source_id"])
+        # A media post is made from nothing recorded; the serializer has
+        # already refused a source_id on one and required it on the rest.
+        source = (
+            None if kind == Post.Kind.MEDIA
+            else source_for(author, kind, payload.validated_data["source_id"])
+        )
         decoded = payload.validated_data.get("decoded_image")
         extension = payload.validated_data.get("image_extension", ".jpg")
         if settings.MEDIA_SCREENING_ENABLED and decoded:
@@ -4589,7 +4618,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             {
                 "caption": payload.validated_data.get("caption", ""),
                 "cooking_instructions": payload.validated_data.get("cooking_instructions", ""),
-                "source": public_text_for_source(source, kind),
+                "source": public_text_for_source(source, kind) if source else {},
             },
             image=None if settings.MEDIA_SCREENING_ENABLED else decoded,
             request=request,

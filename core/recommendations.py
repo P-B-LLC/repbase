@@ -529,6 +529,7 @@ _TOPIC_NAMES = {
     "kind:workout": "workouts",
     "kind:meal": "meals and recipes",
     "kind:planner": "planning",
+    "kind:media": "photos and videos",
     "type:lifting": "lifting",
     "type:running": "running",
     "type:biking": "cycling",

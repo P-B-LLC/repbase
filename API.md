@@ -38,7 +38,7 @@ List responses are paginated with `count`, `next`, `previous`, and `results` fie
 
 ## Social
 
-- `/api/v1/social/posts/` — posts the reader may see; create one from your own session, meal or planner entry
+- `/api/v1/social/posts/` — posts the reader may see; create one from your own session, meal or planner entry, or a photo or video post (`kind: media`, no `source_id`) that is a picture or a clip and a caption. A clip-only media post sends `expects_video: true` and is visible to its author alone until the clip is ready and approved
 - `/api/v1/social/feed/` — the people you follow, newest first (cursor paging)
 - `/api/v1/social/for-you/` — posts picked for you from everyone, each with a `recommendation` saying why (cursor paging)
 - `POST /api/v1/social/impressions/` — what was on screen and for how long, in batches of up to 50
