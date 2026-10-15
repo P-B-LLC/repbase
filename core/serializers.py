@@ -3498,20 +3498,34 @@ class CreatePostSerializer(serializers.Serializer):
     the snapshot from it, so no client can decide what a post says it did —
     accepting the content here would be accepting a five-hundred-kilogram squat
     from anyone who could type one.
+
+    A `media` post references nothing: it is a photo or a clip and a caption,
+    and since it carries no snapshot it makes no claim to check.
     """
 
-    #: The three kinds made from something of the author's. `repost` is not
-    #: among them: a repost is made by `posts/{id}/repost/` from somebody
-    #: else's post and has no source of its own. Accepting it here sent the
-    #: id down the planner branch of `source_for`, built a repost pointing at
-    #: nothing, and then failed with a 500 reading it back.
+    #: The three kinds made from something of the author's, and `media`, made
+    #: from a photo or a clip alone. `repost` is not among them: a repost is
+    #: made by `posts/{id}/repost/` from somebody else's post and has no
+    #: source of its own. Accepting it here sent the id down the planner
+    #: branch of `source_for`, built a repost pointing at nothing, and then
+    #: failed with a 500 reading it back.
     kind = serializers.ChoiceField(
         choices=[
             choice for choice in Post.Kind.choices
             if choice[0] != Post.Kind.REPOST
         ]
     )
-    source_id = serializers.IntegerField(min_value=1)
+    #: Required for a workout, meal or planner post and refused on a media
+    #: one, which is made from nothing recorded. Checked in `validate`, where
+    #: both fields are known.
+    source_id = serializers.IntegerField(
+        min_value=1,
+        required=False,
+        help_text=(
+            "The workout session, meal or planner entry to post. Required for "
+            "those kinds; leave it out of a media post."
+        ),
+    )
     caption = serializers.CharField(
         max_length=300,
         required=False,
@@ -3555,6 +3569,20 @@ class CreatePostSerializer(serializers.Serializer):
             "How the meal was made, for a meal post. Ignored for other kinds."
         ),
     )
+    #: Whether a clip will be uploaded to this post next, through
+    #: `posts/{id}/video/`. A clip cannot travel in this JSON, so a media post
+    #: without a photo says here that one is coming; without either it would
+    #: be a caption with nothing to show, and is refused. Ignored for the
+    #: other kinds, which have their snapshot to show while a clip is added.
+    expects_video = serializers.BooleanField(
+        required=False,
+        default=False,
+        help_text=(
+            "True when a clip will be uploaded to this post next. Required "
+            "for a media post without a photo, which stays visible only to "
+            "its author until the clip is ready to watch."
+        ),
+    )
 
     def validate_caption(self, value):
         return value.strip()
@@ -3563,11 +3591,29 @@ class CreatePostSerializer(serializers.Serializer):
         return value.strip()
 
     def validate(self, attrs):
-        # Only the photo is resolved here. See the note below on source_id.
+        # Whether there is a source to resolve, but not the resolving: see the
+        # note below on source_id.
+        if attrs["kind"] == Post.Kind.MEDIA:
+            if attrs.get("source_id") is not None:
+                raise serializers.ValidationError({
+                    "source_id": (
+                        "A photo or video post is not made from a workout, "
+                        "meal or planner entry. Post it as that kind instead."
+                    )
+                })
+        elif attrs.get("source_id") is None:
+            raise serializers.ValidationError(
+                {"source_id": "This field is required."}
+            )
+
         raw = attrs.get("image_base64") or ""
         if not raw:
             attrs.pop("image_base64", None)
             attrs.pop("content_type", None)
+            if attrs["kind"] == Post.Kind.MEDIA and not attrs.get("expects_video"):
+                raise serializers.ValidationError(
+                    {"image_base64": "Add a photo or a video to post."}
+                )
             return attrs
         if not attrs.get("content_type"):
             raise serializers.ValidationError(
