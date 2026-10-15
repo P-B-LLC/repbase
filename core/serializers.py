@@ -880,6 +880,27 @@ class CommunityFlairField(serializers.CharField):
         return self.get_default() if value is None else value
 
 
+def with_public_profiles(queryset, path=""):
+    """`queryset` with everything `PublicRepbaseUserSerializer` reads loaded up front.
+
+    The serializer reads the account (names), its access row (flair), the gym
+    and three short lists. Left to load lazily that is a query per relation
+    per person: a page of fifty followers was 160 queries, a user search 108,
+    and every comment author six. `path` leads from the queryset's model to
+    the profile -- "" when the queryset is of profiles, "author" for posts and
+    comments, and so on.
+
+    The access row is joined, not prefetched: most accounts have none, and a
+    join answers "none" for all of them in the same query.
+    """
+    prefix = f"{path}__" if path else ""
+    return queryset.select_related(
+        f"{prefix}user__accountaccess", f"{prefix}gym"
+    ).prefetch_related(
+        f"{prefix}disciplines", f"{prefix}prompts", f"{prefix}social_links"
+    )
+
+
 class PublicRepbaseUserSerializer(serializers.ModelSerializer):
     community_label = CommunityFlairField(source='user.accountaccess.public_label', read_only=True, default='')
     community_badge = CommunityFlairField(source='user.accountaccess.public_badge', read_only=True, default='')

@@ -43,6 +43,7 @@ from .models import (
     SuggestionDismissal,
     UserDiscipline,
 )
+from .serializers import with_public_profiles
 from .recommendations import (
     NEWCOMER_DAYS,
     WINDOW_DAYS,
@@ -197,16 +198,14 @@ def suggest_people(viewer, limit=10, now=None):
     shortlist = sorted(score, key=lambda person: (-score[person], person))[:limit * 4]
     allowed = {
         profile.pk: profile
-        for profile in RepbaseUser.objects.filter(
+        for profile in with_public_profiles(RepbaseUser.objects.filter(
             pk__in=shortlist, is_profile_public=True, user__is_active=True
-        )
+        ))
         # A private post is its author's alone, so it says nothing about
         # whether following them would show anybody anything.
         .filter(Exists(Post.objects.filter(
             author=OuterRef("pk"), created_at__gte=now - timedelta(days=ACTIVE_DAYS), is_hidden=False,
         ).exclude(visibility=Post.Visibility.PRIVATE)))
-        .select_related("user", "gym")
-        .prefetch_related("prompts", "social_links", "disciplines")
     }
     ranked = sorted(allowed, key=lambda person: (-score[person], person))[:limit]
     return [(allowed[person], *why(person)) for person in ranked]

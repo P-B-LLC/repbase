@@ -142,6 +142,7 @@ from .serializers import (
     ExerciseSerializer,
     LoginSerializer,
     PublicRepbaseUserSerializer,
+    with_public_profiles,
     RegisterSerializer,
     RepbaseUserSerializer,
     SessionExerciseSerializer,
@@ -987,11 +988,7 @@ class MePhotoView(APIView):
     )
 )
 class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
-    queryset = (
-        RepbaseUser.objects.select_related("user")
-        .prefetch_related("prompts", "social_links")
-        .order_by("-created_at")
-    )
+    queryset = with_public_profiles(RepbaseUser.objects.order_by("-created_at"))
     serializer_class = PublicRepbaseUserSerializer
     permission_classes = [IsAuthenticated]
     # Mass-following is how a spam account announces itself to everybody,
@@ -1176,10 +1173,9 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
         both ways, and the follow action refuses to remake them.
         """
         target = self.get_object()
-        follows = (
-            Follow.objects.filter(following=target, follower__user__is_active=True)
-            .select_related("follower__user", "follower__gym")
-            .prefetch_related("follower__disciplines")
+        follows = with_public_profiles(
+            Follow.objects.filter(following=target, follower__user__is_active=True),
+            "follower",
         )
         if not self._reader_may_read(target):
             # An empty page in the usual shape, so a client pages through it
@@ -1197,10 +1193,9 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
     def following(self, request, pk=None):
         """Who this user follows, most recently followed first."""
         target = self.get_object()
-        follows = (
-            Follow.objects.filter(follower=target, following__user__is_active=True)
-            .select_related("following__user", "following__gym")
-            .prefetch_related("following__disciplines")
+        follows = with_public_profiles(
+            Follow.objects.filter(follower=target, following__user__is_active=True),
+            "following",
         )
         if not self._reader_may_read(target):
             follows = follows.none()
@@ -1250,6 +1245,21 @@ class ExerciseViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(created_by=profile_for(self.request.user))
+
+
+class RangePagination(pagination.PageNumberPagination):
+    """Pages of fifty, or up to two hundred when the client asks for more.
+
+    The lists using this are read whole -- the days of a week or a month, a
+    session's sets -- and each page is a round trip the screen waits for in
+    turn. A month of planner tasks, or three weeks of meals, was two pages
+    read one after the other on every launch. `page_size` lets a client that
+    wants the whole range have it in one; without it nothing changes.
+    """
+
+    page_size = 50
+    page_size_query_param = "page_size"
+    max_page_size = 200
 
 
 class OwnedViewSetMixin:
@@ -1368,6 +1378,7 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     queryset = WorkoutSchedule.objects.select_related("owner", "workout")
     serializer_class = WorkoutScheduleSerializer
+    pagination_class = RangePagination
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
@@ -1516,6 +1527,7 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     queryset = FoodMeal.objects.prefetch_related("entries").select_related("owner")
     serializer_class = FoodMealSerializer
+    pagination_class = RangePagination
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
@@ -1544,23 +1556,28 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         One row per distinct name: the picker offers a food to reuse, and the
         same yoghurt logged nine times is one choice, not nine.
         """
-        entries = (
-            FoodEntry.objects
-            .filter(meal__owner=self.owner_profile())
-            .order_by("-created_at")
-        )
+        entries = FoodEntry.objects.filter(meal__owner=self.owner_profile())
+        # Chosen from names alone, then the chosen rows read whole. Building a
+        # full entry for every food ever logged, to keep a hundred of them,
+        # was the cost of this request: 35 ms at a year of meals, and growing
+        # with every one logged after.
         seen = set()
-        recent = []
-        for entry in entries:
-            key = entry.name.casefold()
+        chosen = []
+        for entry_id, name in (
+            entries.order_by("-created_at").values_list("id", "name").iterator(chunk_size=1000)
+        ):
+            key = name.casefold()
             if key in seen:
                 continue
             seen.add(key)
-            recent.append(entry)
+            chosen.append(entry_id)
             # Stated rather than silent: the picker searches this list, so its
             # length is part of the contract.
-            if len(recent) >= 100:
+            if len(chosen) >= 100:
                 break
+        by_id = entries.in_bulk(chosen)
+        # An entry deleted between the two reads is simply not offered.
+        recent = [by_id[entry_id] for entry_id in chosen if entry_id in by_id]
         return Response(RecentFoodSerializer(recent, many=True).data)
 
     @extend_schema(
@@ -1903,7 +1920,7 @@ class GymViewSet(viewsets.ModelViewSet):
         viewer = profile_for(request.user)
         follows = Follow.objects.filter(follower=viewer, following=OuterRef("pk"))
         people = (
-            without_blocked_authors(viewer, gym.members.select_related("user"), "pk")
+            without_blocked_authors(viewer, with_public_profiles(gym.members.all()), "pk")
             .filter(user__is_active=True)
             .filter(Q(pk=viewer.pk) | Q(is_profile_public=True) | Exists(follows))
             .order_by("user__username")
@@ -2007,6 +2024,7 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         "subtasks"
     )
     serializer_class = PlannerEntrySerializer
+    pagination_class = RangePagination
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
@@ -2320,18 +2338,39 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
 
         # Counted in the same query rather than per session. A history of a
         # hundred sessions would otherwise be a hundred extra counts.
+        #
+        # A correlated subquery, not a join counted with GROUP BY. The join
+        # grouped every set the account had ever logged before the page was
+        # cut, so a page of fifty cost as much as the whole history (24 ms of
+        # a 30 ms list at four hundred sessions); the subquery runs for the
+        # rows on the page only.
         .annotate(
-            logged_set_total=Count(
-                "session_exercises__sets",
-                filter=Q(session_exercises__sets__weight_kg__isnull=False)
-                | Q(session_exercises__sets__reps__isnull=False),
-                distinct=True,
-            )
+            logged_set_total=Coalesce(
+                Subquery(
+                    SetEntry.objects.filter(session_exercise__session=OuterRef("pk"))
+                    .filter(Q(weight_kg__isnull=False) | Q(reps__isnull=False))
+                    .order_by()
+                    .values("session_exercise__session")
+                    .annotate(total=Count("pk"))
+                    .values("total")
+                ),
+                0,
+            ),
         )
     )
     serializer_class = WorkoutSessionSerializer
     permission_classes = [IsAuthenticated]
     owner_lookup = "repbase_user"
+
+    def paginate_queryset(self, queryset):
+        # Whether each session on the page has a track at all, asked once for
+        # the page. A session without one has no stored summary, and its
+        # seven track values each asked for the (empty) points: 350 queries
+        # for a page of fifty lifting sessions. See WorkoutSession.note_tracks.
+        page = super().paginate_queryset(queryset)
+        if page is not None:
+            WorkoutSession.note_tracks(page)
+        return page
 
     @property
     def throttle_scope(self):
@@ -2410,11 +2449,10 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
             queryset = queryset.filter(workout_id=workout)
         if workout_name:
             queryset = queryset.filter(workout__name__iexact=workout_name)
-        # Same reason as the gym list: the logged_set_total annotation groups
-        # the query, which drops Meta.ordering and leaves history unordered
-        # while it is being paged. created_at is auto_now_add, so sessions
-        # written in the same instant -- an import, or a test -- share one,
-        # and the key breaks the tie in the same direction as the date.
+        # Explicit, with a tie-breaker: created_at is auto_now_add, so
+        # sessions written in the same instant -- an import, or a test --
+        # share one, and the key breaks the tie in the same direction as the
+        # date. Without it a page boundary could hand one session to two pages.
         return queryset.order_by("-created_at", "-pk")
 
     @transaction.atomic
@@ -2693,6 +2731,7 @@ class SetEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelVi
         "session_exercise__session__repbase_user"
     )
     serializer_class = SetEntrySerializer
+    pagination_class = RangePagination
     permission_classes = [IsAuthenticated]
     owner_lookup = "session_exercise__session__repbase_user"
 
@@ -4299,13 +4338,15 @@ class PostCommentViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.Mode
 
         readable = visible_posts_for(profile, Post.objects.all())
         queryset = (
-            visible_comments_for(profile, PostComment.objects.filter(post__in=readable))
-            .select_related("author", "author__user")
+            with_public_profiles(
+                visible_comments_for(profile, PostComment.objects.filter(post__in=readable)),
+                "author",
+            )
             .prefetch_related(
                 Prefetch(
                     "replies",
-                    queryset=visible_comments_for(profile, PostComment.objects.all()).select_related(
-                        "author", "author__user"
+                    queryset=with_public_profiles(
+                        visible_comments_for(profile, PostComment.objects.all()), "author"
                     ),
                 )
             )
@@ -4521,9 +4562,7 @@ class BlockViewSet(
     something this API answers, and a list would answer it.
     """
 
-    queryset = Block.objects.select_related(
-        "blocked__user", "blocked__gym"
-    ).prefetch_related("blocked__disciplines")
+    queryset = with_public_profiles(Block.objects.all(), "blocked")
     serializer_class = BlockSerializer
     permission_classes = [IsAuthenticated]
     owner_lookup = "blocker"

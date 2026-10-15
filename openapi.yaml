@@ -1173,6 +1173,12 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
       - in: query
         name: start
         schema:
@@ -2576,6 +2582,12 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
+        schema:
+          type: integer
       - in: query
         name: parent
         schema:
@@ -2975,6 +2987,12 @@ paths:
         required: false
         in: query
         description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
         schema:
           type: integer
       - in: query
@@ -3904,6 +3922,12 @@ paths:
         required: false
         in: query
         description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - name: page_size
+        required: false
+        in: query
+        description: Number of results to return per page.
         schema:
           type: integer
       - in: query

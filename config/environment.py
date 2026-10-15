@@ -27,8 +27,15 @@ def database(env, base_dir, *, production=False):
     if not raw:
         if production:
             raise ImproperlyConfigured('Production requires DATABASE_URL for PostgreSQL.')
+        # IMMEDIATE: a transaction takes SQLite's write lock when it begins, so
+        # a second writer waits its turn (the five-second busy timeout). The
+        # default, DEFERRED, reads first and upgrades later, and SQLite refuses
+        # that upgrade at once while another connection writes rather than
+        # risk a deadlock: two people saving at the same moment, or the app's
+        # stores loading side by side, was a "database is locked" 500 for one.
         return {'ENGINE': 'django.db.backends.sqlite3', 'NAME': base_dir / 'db.sqlite3',
-                'CONN_MAX_AGE': integer(env, 'DJANGO_CONN_MAX_AGE', 60), 'CONN_HEALTH_CHECKS': True}
+                'CONN_MAX_AGE': integer(env, 'DJANGO_CONN_MAX_AGE', 60), 'CONN_HEALTH_CHECKS': True,
+                'OPTIONS': {'transaction_mode': 'IMMEDIATE'}}
     try:
         url = urlsplit(raw)
         port = 5432 if url.port is None else url.port

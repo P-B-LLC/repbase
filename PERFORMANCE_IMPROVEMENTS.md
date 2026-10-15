@@ -304,3 +304,111 @@ saves the counting queries. 960 backend tests pass on SQLite and PostgreSQL 16.
   that.
 - **Not load-tested under concurrency.** The figures above are one request at
   a time.
+
+---
+
+# Performance: Lists of People, the Session List, Recent Foods, Range Pages, SQLite Writes
+
+**Status:** Done, not yet committed (branch `perf/app-wide-optimization`)
+**Date:** 2026-10-15
+**Area:** Backend / profile lists, training history, food picker, list paging, SQLite
+
+## Why
+
+Every endpoint either client calls was timed, with its queries counted, as one
+account with a year of history (460 sessions, 9,600 sets, 1,275 planner
+entries, 4,380 foods) in a community of 300 accounts and 7,560 posts. Five
+costs grew with the data rather than with the page:
+
+- every list of people looked up each person's access row (their flair) on
+  its own, and some lists also each person's prompts, links and disciplines;
+- the session list asked the point table for each of seven values per
+  lifting session, and counted every set the account had ever logged before
+  cutting the page;
+- the food picker's recent foods built a model for every food ever logged to
+  keep a hundred;
+- personal records built a model for every past set of each lift;
+- clients read some lists whole (a month of planner tasks, three weeks of
+  meals), fifty rows a page, one page after another.
+
+And one hazard, found while making the iOS app load its stores side by side:
+on SQLite, two write transactions at once failed one of them with "database is
+locked".
+
+## What Was Changed
+
+- `core/serializers.py`: `with_public_profiles(queryset, path)` loads what
+  `PublicRepbaseUserSerializer` reads -- account and access row joined, gym,
+  disciplines, prompts and social links prefetched. Used by the user list and
+  search, followers, following, gym members, comments and their replies,
+  blocks and suggested people.
+- `core/views.py` / `core/models.py`, session list:
+  - the logged-set count is a correlated subquery, so it runs for the page's
+    rows only (it was a join grouped over the whole history);
+  - the page is asked once whether any of its sessions without a stored
+    summary has a track (`WorkoutSession.note_tracks`); a session with none
+    reads nothing, and one that does reads its points once for all seven
+    values (`_track_points`).
+- `FoodMealViewSet.recent_foods`: chooses from `(id, name)` pairs, newest
+  first, stopping at a hundred, then reads those rows in one query. Same
+  answer: newest first, one per name ignoring case.
+- `WorkoutSession.personal_records`: sets prefetched per lift; the history is
+  read as `(weight, reps)` pairs.
+- `RangePagination`: planner, schedules, food meals and set entries take an
+  optional `page_size` (default 50, at most 200). Additive in `openapi.yaml`;
+  both clients now ask for 200 when reading a range whole.
+- `config/environment.py`: SQLite opens transactions `IMMEDIATE`, so a second
+  writer waits for the first (five-second busy timeout) instead of failing.
+  PostgreSQL is unaffected.
+
+## Verification
+
+Same data, same machine, median of 5 (SQLite) or 7 (PostgreSQL 16) runs:
+
+| Endpoint | SQLite before | SQLite after | PostgreSQL before | PostgreSQL after |
+| --- | --- | --- | --- | --- |
+| `GET /sessions/` (a page of 50) | 77.5 ms, 305 q | 7.7 ms, 5 q | 97.5 ms, 305 q | 6.7 ms, 5 q |
+| `GET /sessions/{id}/` (lifting) | 2.8 ms, 10 q | 1.8 ms, 4 q | 4.3 ms, 10 q | 2.6 ms, 4 q |
+| `GET /users/?search=` | 25.3 ms, 108 q | 10.3 ms, 9 q | 37.2 ms, 108 q | 12.5 ms, 9 q |
+| `GET /users/{id}/followers/` | 34.3 ms, 160 q | 10.4 ms, 13 q | 51.7 ms, 160 q | 13.7 ms, 13 q |
+| `GET /food/meals/recent-foods/` | 35.6 ms | 4.1 ms | 27.3 ms | 4.8 ms |
+| `GET /social/suggested-people/` | 31.0 ms, 41 q | 30.7 ms, 31 q | 43.7 ms, 41 q | 40.7 ms, 31 q |
+| `GET /social/comments/?post=` | 15.8 ms, 16 q | 15.4 ms, 11 q | 16.4 ms, 16 q | 15.8 ms, 11 q |
+| `GET /sessions/{id}/records/` | 7.8 ms, 22 q | 7.0 ms, 17 q | 16.4 ms, 22 q | 14.8 ms, 17 q |
+
+Every other endpoint measured was unchanged within noise. Response bodies of
+46 endpoints were compared before and after on identical data: identical, but
+for the `updated_at` of the nutrition goal row that a first read creates. For
+You and suggestions explore at random and were not compared.
+
+Writes at once, under gunicorn (2 workers, 4 threads) on SQLite, 40 rounds of
+the four requests the iOS app sends on launch (plan the week, read the planner
+range, open today's meals, record steps):
+
+| | All four at once | One after another |
+| --- | --- | --- |
+| `DEFERRED` (before) | 33 of 40 step writes answered 500 | no failures |
+| `IMMEDIATE` (after) | no failures | no failures |
+
+- 1,195 tests pass on SQLite and on PostgreSQL 16, including 17 new ones in
+  `core/test_query_costs.py`. Of those, the 7 cost and configuration tests
+  fail against the previous code, and the 10 behaviour tests (recent foods
+  and personal records had none) pass against both.
+- `manage.py check`, `makemigrations --check` and the contract diff are clean;
+  `Scripts/validate-contract.py` against a server holding the data above
+  found no disagreements.
+
+## Needs To Be Changed / Improved
+
+- **`GET /social/posts/` counts every visible post** on each page for the
+  page-number pagination (10 ms of 44 at 7,500 posts on PostgreSQL), and that
+  grows with the community. Cursor pagination, as the feed uses, would remove
+  it, but changes that endpoint's contract.
+- **For You** is unchanged: 106 ms warm and 211 ms with a cold cache on SQLite
+  at this size. Production's `config.settings` keeps the cache in each
+  worker's memory, and workers restart every thousand requests, so cold
+  rankings are common until Redis (`config.production`) is in place.
+- **Previous sets, training stats, exercise progress** (13 to 18 ms) sort the
+  account's whole set history; an index on sessions by owner and start time
+  would help most on SQLite, where without `ANALYZE` the planner picks the
+  status index. Not added, to keep this change free of migrations.

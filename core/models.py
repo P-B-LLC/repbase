@@ -40,10 +40,10 @@ class TrackValue:
     disagree with the first.
 
     Computing remains the fallback rather than being deleted. A session whose
-    summary was never written still answers correctly, just slowly, which is
-    the right way round: no route has ever been recorded against this
-    database, so the fallback is for rows that should not exist rather than a
-    path anything depends on.
+    summary was never written still answers correctly. Most such sessions have
+    no track at all -- every lifting session -- and the session list finds
+    that out for its whole page in one query, so they cost nothing more; see
+    WorkoutSession.note_tracks.
     """
 
     def __init__(self, compute):
@@ -718,6 +718,10 @@ class WorkoutSession(models.Model):
         self._forget_track_values()
 
     def _forget_track_values(self):
+        # The list's "no points" annotation describes the row as it was read,
+        # so it goes with everything else derived from that read.
+        self.__dict__.pop("has_route_points", None)
+        self.__dict__.pop("_track_points_cache", None)
         for field in self.ROUTE_SUMMARY_FIELDS:
             self.__dict__.pop(field, None)
         # The three that are derived from them, cached the ordinary way.
@@ -727,6 +731,42 @@ class WorkoutSession(models.Model):
             "moving_pace_seconds_per_km",
         ):
             self.__dict__.pop(field, None)
+
+    def _track_points(self):
+        """The GPS fixes, read once per instance for every value that needs them.
+
+        A session with no stored summary is nearly always a session with no
+        track: every lifting session is one. Each of the seven values used to
+        ask the database for the points itself, so a page of fifty such
+        sessions was 350 queries returning nothing. The session list sets
+        `has_route_points` (see `note_tracks`); when it says there are none,
+        nothing is read.
+        """
+        if getattr(self, "has_route_points", None) is False:
+            return []
+        points = self.__dict__.get("_track_points_cache")
+        if points is None:
+            points = self.__dict__["_track_points_cache"] = list(self.route_points.all())
+        return points
+
+    @staticmethod
+    def note_tracks(sessions):
+        """Tell each session without a stored summary whether it has a track.
+
+        One query for the lot, and none when every session has its summary:
+        a page of tracked sessions never touches the point table, and a page
+        of lifting sessions asks it once rather than seven times a session.
+        """
+        unsummarized = [session for session in sessions if session.route_summary is None]
+        if not unsummarized:
+            return
+        tracked = set(
+            SessionRoutePoint.objects.filter(session__in=unsummarized)
+            .values_list("session_id", flat=True)
+            .distinct()
+        )
+        for session in unsummarized:
+            session.has_route_points = session.pk in tracked
 
     @TrackValue
     def route_distance_km(self):
@@ -749,7 +789,7 @@ class WorkoutSession(models.Model):
         exactly that -- it re-fetches under select_for_update inside the
         transaction -- which is what makes this safe.
         """
-        points = list(self.route_points.all())
+        points = self._track_points()
         if len(points) < 2:
             return None
 
@@ -781,7 +821,7 @@ class WorkoutSession(models.Model):
         activity. Time before the first fix or after the last one belongs to
         the session, not to the route.
         """
-        points = list(self.route_points.all())
+        points = self._track_points()
         if len(points) < 2:
             return None
         span = (points[-1].recorded_at - points[0].recorded_at).total_seconds()
@@ -812,7 +852,7 @@ class WorkoutSession(models.Model):
         Anything slower than a slow walk counts as stopped, so waiting at a
         crossing does not drag the reported pace down.
         """
-        points = list(self.route_points.all())
+        points = self._track_points()
         if len(points) < 2:
             return None
 
@@ -854,7 +894,9 @@ class WorkoutSession(models.Model):
         cutoff = self.ended_at or timezone.now()
         records = []
 
-        for session_exercise in self.session_exercises.select_related("exercise"):
+        for session_exercise in (
+            self.session_exercises.select_related("exercise").prefetch_related("sets")
+        ):
             performed = [
                 entry
                 for entry in session_exercise.sets.all()
@@ -913,12 +955,14 @@ class WorkoutSession(models.Model):
             if estimate is None:
                 continue
 
+            # Pairs, not rows: this reads every set of the lift ever logged,
+            # and building a model for each was most of the request.
             previous_estimate = max(
                 (
                     value
                     for value in (
-                        estimated_one_rep_max(item.weight_kg, item.reps)
-                        for item in history
+                        estimated_one_rep_max(weight, reps)
+                        for weight, reps in history.values_list("weight_kg", "reps")
                     )
                     if value is not None
                 ),
@@ -970,7 +1014,7 @@ class WorkoutSession(models.Model):
         """Altitude readings with the sample-to-sample wobble averaged out."""
         raw = [
             float(point.altitude_m)
-            for point in self.route_points.all()
+            for point in self._track_points()
             if point.altitude_m is not None
         ]
         if len(raw) < 2:
@@ -982,7 +1026,7 @@ class WorkoutSession(models.Model):
         """Fastest speed reached, from the device's own speed readings."""
         speeds = [
             float(point.speed_mps)
-            for point in self.route_points.all()
+            for point in self._track_points()
             if point.speed_mps is not None
         ]
         if not speeds:
@@ -1000,7 +1044,7 @@ class WorkoutSession(models.Model):
         because that is the unit the app reads in, and a split has to be cut
         where it will be shown or the numbers describe a run nobody did.
         """
-        points = list(self.route_points.all())
+        points = self._track_points()
         if len(points) < 2:
             return []
 
