@@ -70,6 +70,20 @@ class LocalVideoTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(complete(job.pk, self.user.pk).state, 'queued')
         self.assertEqual(VideoJob.objects.count(), 1)
 
+    @override_settings(MEDIA_SCREENING_ENABLED=True)
+    def test_screening_waits_for_transcode_and_overrides_beta_bypass(self):
+        from .models import MediaScreeningJob
+        data = video_fixture('h264_faststart.mp4')
+        queue_local(self.post, ReceivedVideo(io.BytesIO(data), len(data), 'video/mp4'),
+                    consent_version=settings.MODERATION_CONSENT_VERSION)
+        self.post.refresh_from_db()
+        self.assertIsNone(self.post.published_at)
+        self.assertEqual(MediaScreeningJob.objects.get(post=self.post).state, 'waiting')
+        with mock.patch('core.video_pipeline.transcode', side_effect=self.fake_transcode):
+            self.assertTrue(process(claim()))
+        self.assertEqual(PostVideo.objects.get(post=self.post).status, 'pending')
+        self.assertEqual(MediaScreeningJob.objects.get(post=self.post).state, 'queued')
+
     def test_raw_endpoint_is_backwards_compatible_and_enforces_owner(self):
         data = video_fixture('h264_faststart.mp4')
         with mock.patch('core.video_pipeline.transcode') as encoder:

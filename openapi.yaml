@@ -7187,6 +7187,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        moderation_status:
+          type: string
+          readOnly: true
         updated_at:
           type: string
           format: date-time
@@ -7206,7 +7214,9 @@ components:
       - kind
       - like_count
       - meal
+      - moderation_status
       - planner
+      - published_at
       - recommendation
       - repost_count
       - repost_of
@@ -7749,6 +7759,10 @@ components:
         is_read:
           type: boolean
           readOnly: true
+        message:
+          type: string
+          nullable: true
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7764,6 +7778,7 @@ components:
       - id
       - is_read
       - kind
+      - message
     NotificationKindEnum:
       enum:
       - follow
@@ -7772,6 +7787,7 @@ components:
       - like
       - repost
       - comment
+      - moderation_rejected
       type: string
       description: |-
         * `follow` - Started following you
@@ -7780,6 +7796,7 @@ components:
         * `like` - Liked your post
         * `repost` - Reposted your post
         * `comment` - Commented on your post
+        * `moderation_rejected` - Your post was not published
     NullEnum:
       enum:
       - null
@@ -9368,6 +9385,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        moderation_status:
+          type: string
+          readOnly: true
         updated_at:
           type: string
           format: date-time
@@ -9383,7 +9408,9 @@ components:
       - kind
       - like_count
       - meal
+      - moderation_status
       - planner
+      - published_at
       - repost_count
       - repost_of
       - shows_weights
@@ -10748,6 +10775,11 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
       required:
       - author
       - caption
@@ -10758,6 +10790,7 @@ components:
       - kind
       - meal
       - planner
+      - published_at
       - video
       - workout
     SavedFoodIngredient:

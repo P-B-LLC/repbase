@@ -150,11 +150,16 @@ def taken_down(name):
         # rejects a clip has not necessarily hidden the workout it is on.
         return PostVideo.objects.filter(file=name).filter(
             Q(post__is_hidden=True) | Q(status=PostVideo.Status.REJECTED)
+            | ~Q(post__moderation_status='approved') | Q(post__published_at__isnull=True)
+            | Q(post__moderation_child_hold=True)
         ).exists()
     if not name.startswith('post-photos/'):
         return False
     return Post.objects.filter(
-        Q(image=name) | Q(feed_image=name), is_hidden=True
+        Q(image=name) | Q(feed_image=name)
+    ).filter(
+        Q(is_hidden=True) | ~Q(moderation_status='approved')
+        | Q(published_at__isnull=True) | Q(moderation_child_hold=True)
     ).exists()
 
 

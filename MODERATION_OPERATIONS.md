@@ -1,5 +1,160 @@
 # Social moderation release gate
 
+## WIP branch handoff — 16 October 2026
+
+The user authorized committing and pushing the current work branches for Mac
+validation, not merging to main or deploying. Backend branch:
+`work/moderation-fresh-start-2026-10-15`; iOS and web branches:
+`work/openai-moderation-ui-2026-10-16`. The earlier local-only statements below
+describe the validation checkpoints before this handoff.
+
+On a clean Mac iOS checkout, fetch origin, switch to the iOS work branch, pull
+with `--ff-only`, then run `bash Scripts/validate-moderation-ios.sh`.
+Generated Swift files intentionally remain outstanding in this WIP snapshot;
+the Mac must regenerate them before building. Review and commit the generated
+diff and any build fixes on the same work branch. Do not reset local Mac edits.
+No iOS build success or live OpenAI accuracy validation is claimed. Keep
+`MEDIA_SCREENING_ENABLED=false` until the remaining release gates pass.
+
+## OpenAI-only asynchronous media replacement — WIP, 16 October 2026
+
+Branch `work/moderation-fresh-start-2026-10-15`. Not deploy-ready. New upload
+integration is behind `MEDIA_SCREENING_ENABLED=false` by default. No production configuration
+changed, no external API tests or user-content transmissions performed.
+
+Implemented in this iteration:
+
+- `core/openai_media_moderation.py`: exact `omni-moderation-latest`, private image
+  bytes, existing disclosure/key/timeout settings, explicit consent and server
+  child-safety hold guard; decisions use only sexual score with a caller-supplied
+  threshold. Strict finite-score/image-coverage validation; bounded responses;
+  redirects prohibited; 429 retry hints retained; network failures never approve.
+- `core/moderation_frames.py`: FFmpeg first-frame/interval/scene-change sampling,
+  one-second default interval, 768-pixel bounding box, single-thread filters,
+  private temporary directory and frame-count/size/runtime bounds. Too many frames
+  fail rather than silently accepting partial coverage. Sampling cannot guarantee
+  detection of brief content between samples; audio is not moderated.
+- `core/media_publication.py` and migration `0076_media_publication_status`:
+  pending/flagged/approved/rejected status, generation tokens, `published_at`,
+  `reviewed_at`, explicit child-safety hold; locked shared approval/rejection path
+  and audit entries. Idempotent approval preserves its first publication timestamp.
+  Existing timestamps backfilled from `created_at`; no old posts made fresh.
+- `core/media_screening_jobs.py`, management command `process_media_screening`,
+  and migration 0078: durable jobs, leased claims, five-attempt bounded retry with
+  backoff/Retry-After, generation checks, persisted consent version and threshold,
+  safety recheck before each provider call. Only aggregate score/model evidence is
+  stored. Provider calls and frame extraction are outside database transactions.
+- Feature-gated integration: image creation, caption edits on media posts, legacy
+  video attach/replace, local/direct pipeline begin and transcode completion.
+  Videos wait for transcoding before screening. Beta video bypass cannot approve
+  this flow. Video removal invalidates stale jobs/review forms without approval;
+  a removed-media post held for review remains private for a moderator's decision.
+- `core/media_review_portal.py`, `access/media_review.html`: existing reports
+  dashboard gains a Media screening tab, full shared snapshot details, private
+  session-authorized previews, generation-bound Approve/Reject, confidential notes.
+  Child-held media has no preview/release here. Rejection writes one inbox notice
+  and uses the existing APNs outbox; reviewer identity and notes are not disclosed.
+- `published_at` now drives Post ordering/indexes (0077), feed pagination,
+  recommendation windows/age, repost history and feed-stat refresh. User and
+  interaction dates remain unchanged. Candidate.created_at is an internal legacy
+  name now populated from published_at. API schema includes publication/status
+  fields and a notification message; created_at remains the upload date.
+- Shared visibility and signed-media guards exclude nonapproved/child-held posts.
+  This does NOT establish that all production delivery paths have been audited.
+  Tests use mocked provider results; no live model accuracy claim is supported.
+
+Latest continuation checkpoint (16 October 2026):
+
+Dashboard continuation:
+
+- Shared responsive `/access/reports/?kind=media` workspace now provides flagged,
+  pending, approved and rejected queues with counts, oldest-first pagination,
+  private previews, screening evidence, confidential decision reasons and read-only
+  completed decisions. Own-post review controls are hidden; server checks remain authoritative.
+- iOS Settings uses the generated `myAccessRetrieve` contract to show a moderation
+  entry only when `capabilities.moderate` is true. It opens SFSafariViewController;
+  this is an embedded web dashboard, not a separate native review implementation.
+  Web Account uses the same capability to link to the dashboard. Both require
+  dashboard session sign-in; no app token is handed to the browser.
+- Authorization is checked on every dashboard/preview/decision request. Standard
+  and analytics-only accounts are denied; moderators, owners and superowners have
+  moderation access, as do active Django superusers under the existing policy.
+  Revocation applies immediately at the server, even if a client button is stale.
+- Fourteen publication/dashboard tests pass, including populated queue rendering,
+  the role matrix, approval/history and revocation. Web build and 47 tests pass.
+- New Mac runner: `bash Scripts/validate-moderation-ios.sh` in the iOS repository.
+  It regenerates the client, runs account-safety tests and builds for the simulator.
+  NOT executed here: Windows has no Xcode and the Mac connection is unavailable.
+  Generated bindings are still outstanding; do not describe the iOS build as passing.
+
+- Preserved all backend changes on `work/moderation-fresh-start-2026-10-15`.
+  iOS and web UI changes are on `work/openai-moderation-ui-2026-10-16`
+  in their respective repositories. No commits, pushes or production deployment.
+- Web API bindings regenerated; production build and all 47 web tests passed.
+  Pending/rejected status, publication dates and explicit media disclosure are wired.
+- iOS source integration includes pending/rejected cards, feed suppression,
+  publication dates, video consent and rejection notification routing. Generated
+  Swift bindings and Xcode compilation remain outstanding; Mac SSH is unavailable.
+  From the updated iOS repository on macOS run:
+  `bash Scripts/generate-api-client.sh`, `bash Scripts/test-account-safety.sh`, then
+  `xcodebuild -project "IOS Frontend/IOS Frontend.xcodeproj" -scheme "IOS Frontend" -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build`.
+  These local changes must first be transferred/pushed before another checkout can test them.
+- 39 tests passed with real FFmpeg and disposable PostgreSQL, including generated
+  video extraction/cleanup and concurrent job claims/conflicting decisions.
+  Runner: `deploy/verify-media-isolated.sh`; the temporary database was stopped
+  and destroyed by test teardown. Production code/database/services were untouched.
+- Subsequent 36-test local run passed, including two author-only status/privacy
+  regressions and four opt-in provider-command tests. Provider responses remain
+  mocked; these runs are not an accuracy evaluation or capacity benchmark.
+- `python manage.py check_media_provider --confirm-external-transfer` performs
+  ONE real request using a generated geometric JPEG only, with no database writes.
+  Requires securely configured `MODERATION_API_KEY` and confirmed disclosure.
+  It has NOT been run live: local credentials are absent and production secrets
+  are not accessible to the current connection. Never paste credentials in chat.
+- Consent default/client version is now `2026-10-16` for video-frame disclosure.
+  Coordinate backend/client rollout and any environment override; older clients
+  may need an update before submitting. Deploy backend contract additions before
+  clients that require the new response fields. Keep screening disabled until
+  client generation/build, live check, threshold evaluation and delivery audit pass.
+
+Required next before activation:
+
+Validation checkpoint (16 October 2026): 189-test regression run completed with
+186 passing and 3 skipped; the separately rerun 10-test publication/review suite
+also passed, including the newly added preview authorization and configuration
+gate cases. OpenAPI generation/validation, Django check, migration drift and
+diff whitespace checks passed. Provider calls and new video-frame evaluation
+are mocked; this does not validate model accuracy, PostgreSQL lock behavior,
+production storage, or a simulator build. All changes remain local on the branch;
+nothing has been pushed, installed, enabled, or deployed by this implementation.
+
+1. Install a SINGLE bounded worker process/timer initially; do not launch unbounded
+   parallel workers. Command: `python manage.py process_media_screening --limit 10`.
+   It refuses to run while the feature is disabled. Monitor failed/waiting jobs,
+   queue age, provider quotas, disk usage, and review turnaround before scaling.
+   Uninstalled examples: `deploy/repbase-media-screening.service` and `.timer`.
+   Validate the memory/CPU limits with the existing video encoder on the target
+   host first; they are starting bounds, not a capacity measurement. No database
+   writes to local SQLite are allowed by this service sandbox; use PostgreSQL.
+2. Finish iOS generated bindings and Mac build validation; manually verify both
+   clients against a staging backend, including pending-to-approved refresh.
+3. Audit signed media, processed video variants, thumbnails, notifications,
+   recommendations and private storage/nginx settings. Update API/client status
+   and timestamp contracts and consent for video frames, without exposing keys.
+4. Extend the passing PostgreSQL/FFmpeg checks with the full regression suite,
+   production-like storage validation and consented API accuracy evaluation.
+   Configure and validate thresholds before rollout; do not claim
+   ordinary swimwear will always pass a probabilistic model.
+
+No PhotoDNA implementation was found in this branch. No provider was added for
+child-safety screening. The explicit hold prevents this client from submitting
+known/suspected material when that hold is set; it is not a CSAM detector.
+Official reference: https://developers.openai.com/api/docs/guides/moderation .
+Existing synchronous text/profile controls below remain; the new sexual-score-only
+policy applies to queued post media when enabled. The default threshold 0.5 is
+an uncalibrated starting configuration, NOT a measured safety guarantee. Deployment
+check core.E013 validates prerequisites but cannot establish accuracy or worker health.
+
 Apple guideline 1.2 requires filtering, reporting with timely action, user
 blocking, and published contact information. This implementation supports those
 requirements; neither the classifier nor passing tests guarantees App Review approval.

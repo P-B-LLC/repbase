@@ -643,7 +643,7 @@ def _exercise_vocabulary(now=None):
         # three ways is still one person.
         for name, author in (
             PostWorkoutExercise.objects.filter(
-                post_workout__post__created_at__gte=now - timedelta(days=WINDOW_DAYS)
+                post_workout__post__published_at__gte=now - timedelta(days=WINDOW_DAYS)
             )
             .order_by().values_list("name", "post_workout__post__author_id").distinct()
         ):
@@ -958,8 +958,8 @@ def build_profile(viewer, weights=None, now=None, preferences=None):
             weights.save, True,
         )
     take(
-        Post.objects.filter(author=viewer, kind=Post.Kind.REPOST, created_at__gte=since)
-        .order_by("-created_at").values_list("repost_of_id", "created_at")[:HISTORY_LIMIT],
+        Post.objects.filter(author=viewer, kind=Post.Kind.REPOST, published_at__gte=since)
+        .order_by("-published_at").values_list("repost_of_id", "published_at")[:HISTORY_LIMIT],
         weights.share, True,
     )
 
@@ -1350,7 +1350,7 @@ def trending_post_ids(now=None):
         found = list(
             PostLike.objects.filter(
                 created_at__gte=now - timedelta(days=TRENDING_DAYS),
-                post__created_at__gte=now - timedelta(days=WINDOW_DAYS),
+                post__published_at__gte=now - timedelta(days=WINDOW_DAYS),
             )
             .filter(user__created_at__lte=new_since(now))
             .exclude(user_id__in=inactive_accounts())
@@ -1423,7 +1423,7 @@ def similar_tastes(viewer, profile, now=None):
     pairs = (
         PostLike.objects.filter(
             user_id__in=neighbours, created_at__gte=now - timedelta(days=WINDOW_DAYS),
-            post__created_at__gte=now - timedelta(days=WINDOW_DAYS),
+            post__published_at__gte=now - timedelta(days=WINDOW_DAYS),
         )
         .exclude(post_id__in=seeds).exclude(post__author=viewer)
         .order_by("-created_at").values_list("user_id", "post_id")[:NEIGHBOUR_LIKES]
@@ -1461,7 +1461,7 @@ def eligible_posts(viewer, now=None, hidden=()):
         visible_posts_for(viewer, Post.objects.all(), include_reposts=False)
         .exclude(kind=Post.Kind.REPOST)
         .exclude(author=viewer)
-        .filter(created_at__gte=now - timedelta(days=WINDOW_DAYS))
+        .filter(published_at__gte=now - timedelta(days=WINDOW_DAYS))
         .exclude(Exists(PostFeedback.objects.filter(viewer=viewer, post=OuterRef("pk"))))
         .exclude(Exists(PostReport.objects.filter(reporter=viewer, post=OuterRef("pk"))))
         # Something the reader already liked, commented on, saved or passed
@@ -1497,7 +1497,7 @@ def eligible_posts(viewer, now=None, hidden=()):
 
 
 _CANDIDATE_FIELDS = (
-    "pk", "author_id", "author__created_at", "kind", "created_at", "workout__workout_type",
+    "pk", "author_id", "author__created_at", "kind", "published_at", "workout__workout_type",
     "planner__category", "video__status", "open_reports", "caption",
 )
 
@@ -1582,7 +1582,7 @@ def _as_candidates(rows, similar, now):
         found.append(Candidate(
             pk=pk,
             author_id=row["author_id"],
-            created_at=row["created_at"],
+            created_at=row["published_at"],
             topics=topics_for(
                 row["kind"], row["workout__workout_type"], row["planner__category"],
                 has_video, disciplines.get(row["author_id"], ()),
@@ -1616,7 +1616,7 @@ def candidates(viewer, profile, now=None, similar=None):
     """Recent eligible posts from up to six sources, merged, each capped."""
     now = now or timezone.now()
     eligible = eligible_posts(viewer, now, profile.hidden)
-    newest = ("-created_at", "-id")
+    newest = ("-published_at", "-id")
     sources = [("fresh", eligible.order_by(*newest)[:POOL_SIZE])]
 
     if profile.followed:

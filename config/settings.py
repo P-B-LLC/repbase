@@ -512,7 +512,7 @@ MODERATION_CONTACT_EMAIL = os.getenv('MODERATION_CONTACT_EMAIL', 'support@rytivo
 # Bumped when what the consent dialog discloses changes. A client sending an
 # older version is refused, because agreement to the previous wording is not
 # agreement to this one.
-MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-09-15')
+MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-10-16')
 # How long a worker may be held waiting for the classifier.
 #
 # This is a capacity setting, not a patience setting. The provider call is
@@ -524,3 +524,6 @@ MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-09-15
 # Size it with WEB_CONCURRENCY together, not separately. See
 # HOSTED_CONFIGURATION.md.
 MODERATION_TIMEOUT_SECONDS = min(max(int(os.getenv('MODERATION_TIMEOUT_SECONDS', '8')), 1), 60)
+# Opt-in only after worker, client status UI, and private delivery validation.
+MEDIA_SCREENING_ENABLED = os.getenv('MEDIA_SCREENING_ENABLED', 'false').lower() == 'true'
+MEDIA_SCREENING_THRESHOLD = float(os.getenv('MEDIA_SCREENING_THRESHOLD', '0.5'))
