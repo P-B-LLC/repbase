@@ -3489,9 +3489,9 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         if self.action == 'retrieve':
             base = super().get_queryset()
             visible = visible_posts_for(profile, base).values('pk')
-            return annotate_social_counts(profile, base.filter(Q(pk__in=visible) | Q(author=profile)))
+            return annotate_social_counts(profile, base.filter(Q(pk__in=visible) | Q(author=profile, is_hidden=False)))
         if self.action == 'list' and id_param(self.request, 'author') == profile.pk:
-            return annotate_social_counts(profile, super().get_queryset().filter(author=profile))
+            return annotate_social_counts(profile, super().get_queryset().filter(author=profile, is_hidden=False))
 
         queryset = annotate_social_counts(
             profile, visible_posts_for(profile, super().get_queryset())

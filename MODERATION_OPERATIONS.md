@@ -1,5 +1,65 @@
 # Social moderation release gate
 
+## Prepared beta deployment — 17 October 2026
+
+User selected the existing beta backend. `deploy/deploy-moderation-beta.sh`
+requires root and an exact full SHA matching the current WIP branch head, stops
+on dirty checkout or enabled screening, creates a database backup using the
+verified server backup utility (version-matched pg_dump), then invokes the
+candidate's deploy script and checks health plus anonymous dashboard redirect.
+It does not install the screening worker or change moderation configuration.
+No check acknowledgement is supplied automatically. If core.E006 blocks this
+release, obtain explicit acknowledgement for this deployment before retrying.
+The server was read-only checked at e819ef6, clean and active. No deployment
+has been executed by this preparation. Migrations 0076–0078 are additive except
+index replacement; review traffic/lock impact during the deployment window.
+Screening-disabled means the new media queue can be empty; do not seed fake
+flagged content into real users' feeds. The older report workflow remains usable.
+Consent version 2026-10-16 requires compatible clients; inspect any server
+MODERATION_CONSENT_VERSION override before later enabling the provider flow.
+
+## Dashboard acceptance continuation — 17 October 2026
+
+- Mac evidence: the user completed generation, account-safety tests and the
+  simulator build, then pushed generated `Types.swift` as iOS commit `cbf6328`.
+  That commit has been fetched and fast-forwarded into the local iOS checkout.
+- Added `core/test_media_dashboard.py`: anonymous/disabled access, CSRF, invalid
+  decisions/reasons, duplicate rejection/audit/notification behavior, conflicting
+  decisions, own-post review prevention, private revision-bound image preview,
+  safety holds, queue filtering/pagination and caption escaping.
+- Broader validation found an actual takedown regression: the author-only status
+  exception allowed hidden posts in detail/profile results. `core/views.py` now
+  requires `is_hidden=False` for that exception. The 88-test local report/access/
+  publication/dashboard/push run passes with the fix. Web suite: 49 passing tests.
+- Isolated runner now includes 219 selected tests with real PostgreSQL/FFmpeg.
+  Final completed run: 218 passed, 1 skipped (explicit nginx delivery drill),
+  zero failures. Test database destroyed and isolated PostgreSQL stopped.
+  Prior attempts stopped for a streaming-test double-close, missing schema in
+  the transfer bundle and an SSH disconnect; those are not passing full runs.
+  Test fixtures use a fast hasher only in `config.test_postgres`, never production.
+
+### Manual iOS/web staging walkthrough still required
+
+1. Deploy the matching WIP backend to an explicitly approved test environment,
+   with synthetic accounts/media, no private user uploads. Keep live screening
+   disabled unless credentials/disclosure and provider checks are ready.
+2. Launch the validated iOS build, sign in as an authorized moderator or owner,
+   then Profile → Settings → Moderation dashboard. This opens a mobile web
+   dashboard in SFSafariViewController, with its own secure session sign-in.
+   Web entry: Account → Moderation → Open moderation dashboard.
+3. Confirm ordinary and analytics-only users cannot enter; revoke a moderator
+   while their page is open and verify the next decision is refused.
+4. Review synthetic image/video, caption and shared workout/meal/task details;
+   test all four queue tabs, empty states, pagination and mobile scrolling.
+5. Approve and verify publication once; reject and verify author inbox wording
+   without reviewer identity/notes. Check stale tabs, repeat submissions,
+   own-post review, safety holds and hidden-content protections.
+6. Confirm simulator/device video playback and real push delivery separately.
+   Automated database/outbox tests do not prove APNs delivery. Live OpenAI
+   connectivity/accuracy and installed reverse-proxy delivery remain separate gates.
+
+No staging URL is currently recorded and no production deployment was performed.
+
 ## WIP branch handoff — 16 October 2026
 
 The user authorized committing and pushing the current work branches for Mac
