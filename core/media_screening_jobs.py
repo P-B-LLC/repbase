@@ -70,13 +70,18 @@ def current_post(job):
         lease=job.lease, state='processing', lease_until__gt=timezone.now())
     if not live.update(lease_until=timezone.now() + timedelta(minutes=15)):
         raise Superseded()
-    post = Post.objects.get(pk=job.post_id)
+    post = Post.objects.select_related('author').get(pk=job.post_id)
     if post.moderation_generation != job.generation or post.moderation_status != 'pending':
         raise Superseded()
     if post.moderation_child_hold:
         raise MediaSafetyHold()
     if job.consent_version != settings.MODERATION_CONSENT_VERSION:
         raise MediaScreeningUnavailable()
+    from .models import ModerationConsent
+    choice = ModerationConsent.objects.filter(user_id=post.author.user_id).first()
+    if choice is not None and (not choice.granted or
+            choice.version != settings.MODERATION_ACCOUNT_CONSENT_VERSION):
+        raise Superseded()
     return post
 
 

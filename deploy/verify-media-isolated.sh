@@ -22,7 +22,7 @@ isolated env DJANGO_SETTINGS_MODULE=config.test_postgres TEST_POSTGRES_PORT=5544
     nice -n 15 /home/django/app/.venv/bin/python manage.py test \
     core.test_media_real_frames core.test_moderation_frames core.test_openai_media_moderation \
     core.test_media_publication core.test_media_screening_jobs core.test_media_dashboard \
-    core.test_media_provider_command core.test_reporting core.test_access \
+    core.test_media_provider_command core.test_safety_consent core.test_reporting core.test_access \
     core.test_media core.test_media_transfer core.test_push \
     core.test_video_pipeline core.test_video_delivery core.test_video_uploads \
     core.test_media_screening_concurrency core.test_video_concurrency \

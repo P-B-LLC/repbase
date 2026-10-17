@@ -2449,6 +2449,47 @@ paths:
                 items:
                   $ref: '#/components/schemas/ProfilePrompt'
           description: ''
+  /api/v1/me/safety-consent/:
+    get:
+      operationId: safetyConsentRetrieve
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafetyConsent'
+          description: ''
+    put:
+      operationId: safetyConsentUpdate
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafetyConsent'
+          description: ''
   /api/v1/me/social-links/:
     get:
       operationId: me_social_links_list
@@ -10793,6 +10834,29 @@ components:
       - published_at
       - video
       - workout
+    SafetyConsent:
+      type: object
+      properties:
+        version:
+          type: string
+          maxLength: 100
+        granted:
+          type: boolean
+      required:
+      - granted
+      - version
+    SafetyConsentRequest:
+      type: object
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        granted:
+          type: boolean
+      required:
+      - granted
+      - version
     SavedFoodIngredient:
       type: object
       properties:

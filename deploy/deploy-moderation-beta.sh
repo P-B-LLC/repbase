@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Dashboard-only beta rollout. Run as root; never enables automated screening.
+# Beta rollout. Screening activation is explicit in /etc/repbase.env.
 set -euo pipefail
 candidate="${1:?Pass the exact validated commit SHA}"
 [[ "$candidate" =~ ^[0-9a-f]{40}$ ]] || { echo 'A full commit SHA is required.' >&2; exit 1; }
@@ -20,7 +20,14 @@ run_configured() (
     set +a
     sudo -H -E -u django "$@"
 )
-run_configured "$app/.venv/bin/python" -c 'import os; assert os.getenv("MEDIA_SCREENING_ENABLED", "false").lower() != "true", "Disable automated screening before this dashboard-only rollout"'
+run_configured "$app/.venv/bin/python" -c '
+import os
+for name in ("MODERATION_ENABLED", "MODERATION_DISCLOSURE_CONFIRMED"):
+    if os.getenv(name, "false").lower() != "true":
+        raise SystemExit(name + " must be true in /etc/repbase.env before deploying")
+if not os.getenv("MODERATION_API_KEY", "").strip():
+    raise SystemExit("MODERATION_API_KEY is missing")
+'
 release_dir="$(mktemp -d /home/django/rytivo-dashboard-beta.XXXXXXXX)"
 chown django:django "$release_dir"
 chmod 700 "$release_dir"
@@ -35,4 +42,8 @@ test "$(git -C "$app" rev-parse HEAD)" = "$candidate"
 test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' https://rytivo.app/health/)" = 200
 test "$(curl --silent --show-error -o /dev/null -w '%{http_code}' 'https://rytivo.app/access/reports/?kind=media')" = 302
 echo 'Backend dashboard deployed; anonymous access redirects to sign-in.'
-echo 'No screening worker was installed or enabled. Complete authorized iOS review tests next.'
+if run_configured "$app/.venv/bin/python" -c 'import os, sys; sys.exit(0 if os.getenv("MEDIA_SCREENING_ENABLED", "false").lower() == "true" else 1)'; then
+    bash "$app/deploy/activate-media-screening.sh"
+else
+    echo 'MEDIA_SCREENING_ENABLED is false. Worker activation has not run.'
+fi

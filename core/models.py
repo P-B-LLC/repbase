@@ -21,6 +21,14 @@ from zoneinfo import ZoneInfo, available_timezones
 from django.utils import timezone
 
 
+class ModerationConsent(models.Model):
+    """Account-scoped permission; never inferred from legacy submission headers."""
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    version = models.CharField(max_length=100)
+    granted = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class TrackValue:
     """A number derived from a session's GPS track.
 

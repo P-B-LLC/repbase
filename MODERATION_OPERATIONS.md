@@ -362,3 +362,36 @@ Sources checked during implementation:
 - Updated iOS unsigned Simulator Release build succeeded on the validation Mac.
 - No live provider request, production deployment, physical-device verification,
   mailbox monitoring or scheduled queue alert was performed by these tests.
+
+## 17 October 2026 continuation: saved permission and activation
+
+- Migration 0079 adds an account-scoped, versioned safety-review preference.
+  GET/PUT `/api/v1/me/safety-consent/` is authenticated, private/no-store, and
+  session writes require CSRF. Legacy request headers never silently grant
+  persistent consent. Saved withdrawal overrides legacy headers.
+- Withdrawal cancels waiting/queued/claimed jobs and invalidates leases; an
+  already-sent provider request cannot be recalled, but cannot publish afterward.
+  Regrant does not resurrect cancelled jobs. New submission is required.
+- Local selected backend tests: 95 passed before the final in-flight-withdrawal
+  test was added. Final isolated PostgreSQL/real FFmpeg run: 229 tests, 228 passed,
+  one existing opt-in nginx delivery drill skipped. Provider responses mocked in
+  these tests; no live key or user media was used.
+- Remote checkout was read-only verified at e819ef6, repbase active, screening
+  timer absent. This is NOT a record of activation. Root access is still required.
+- Before root deployment, replace (do not duplicate) these entries in
+  `/etc/repbase.env`: MODERATION_ENABLED=true, MEDIA_SCREENING_ENABLED=true,
+  MODERATION_DISCLOSURE_CONFIRMED=true, VIDEO_MODERATION_BYPASS=false. Retain the
+  existing private MODERATION_API_KEY. Disclosure confirmation refers to the
+  implemented explicit permission and privacy wording, not a hidden terms clause.
+- `deploy/deploy-moderation-beta.sh <full validated SHA>` now supports explicit
+  screening activation after backup/deployment. It calls
+  `deploy/activate-media-screening.sh`, which checks migrations/config, sends one
+  synthetic geometric image to OpenAI, installs the bounded systemd worker/timer,
+  and restarts/checks the backend. It does not acknowledge E006 or print secrets.
+  Failure after code deployment leaves the new code deployed and pending media
+  private; fix the reported problem and rerun activation. Never turn screening
+  off as a worker-error workaround.
+- New iOS source requires Mac client generation/tests/build. Web build and 50
+  tests pass. No claim of live end-to-end moderation, calibrated accuracy, or
+  specialist child-safety detection. Rotate previously exposed infrastructure
+  credentials before wider beta access.
