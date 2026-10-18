@@ -2,6 +2,10 @@
 
 ## Main promotion — 17 October 2026
 
+- Full PR validation exposed and fixed the post-card response scope for likes/reposts
+  and a publication timestamp incorrectly editable/required in the admin change form.
+  Required CI must pass on the corrected head before promotion is complete.
+
 - User approved promotion after reporting the updated agreement flow works.
 - Production read-only verification: de27d1b deployed; repbase and the screening
   timer active. This promotion does not redeploy production or alter settings.

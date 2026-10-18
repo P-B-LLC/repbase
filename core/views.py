@@ -4106,8 +4106,14 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
 
     def _card(self, pk):
         """The post read back with its counts, as the feed would send it."""
-        post = annotate_social_counts(self.owner_profile(), posts_for_cards()).get(
-            pk=pk, author=self.owner_profile())
+        profile = self.owner_profile()
+        visible = visible_posts_for(profile, Post.objects.all()).values('pk')
+        # Authors can read their submission status before publication. Other
+        # readers still need normal feed visibility after a like or repost.
+        cards = annotate_social_counts(profile, posts_for_cards()).filter(
+            Q(author=profile) | Q(pk__in=visible)
+        )
+        post = get_object_or_404(cards, pk=pk)
         return self.get_serializer(post).data
 
     def create(self, request, *args, **kwargs):
