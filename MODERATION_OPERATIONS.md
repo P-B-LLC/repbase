@@ -1,5 +1,16 @@
 # Social moderation release gate
 
+## Main promotion — 17 October 2026
+
+- User approved promotion after reporting the updated agreement flow works.
+- Production read-only verification: de27d1b deployed; repbase and the screening
+  timer active. This promotion does not redeploy production or alter settings.
+- Fresh merge checks: 51 agreement/screening/publication/dashboard tests passed;
+  migration drift check passed. Earlier broader validation remains documented below.
+- Includes migration 0080, signup/sign-in agreement records, protected moderator
+  dashboard, screening workers and publication controls. Historical WIP notes
+  below describe development checkpoints, not current branch availability.
+
 ## Latest WIP — signup/sign-in agreements (17 October 2026)
 
 - User chose agreement acceptance at signup, and once after sign-in for existing
