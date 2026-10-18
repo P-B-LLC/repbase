@@ -6,6 +6,7 @@ import binascii
 from decimal import Decimal
 from zoneinfo import available_timezones
 
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, password_validation
 from django.contrib.auth.validators import ASCIIUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -1400,6 +1401,8 @@ MAX_SIGN_IN_PASSWORD_LENGTH = 4096
 
 
 class RegisterSerializer(serializers.Serializer):
+    agreement_version = serializers.CharField(max_length=100, required=False,
+        help_text='Version explicitly accepted using the signup Privacy Policy and agreements control. Omit for legacy clients; omission never records agreement acceptance.')
     username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
     password = serializers.CharField(
@@ -1412,6 +1415,11 @@ class RegisterSerializer(serializers.Serializer):
         check_new_username(value)
         if User.objects.filter(username__iexact=value).exists():
             raise serializers.ValidationError("This username is already in use.")
+        return value
+
+    def validate_agreement_version(self, value):
+        if value != settings.ACCOUNT_AGREEMENT_VERSION:
+            raise serializers.ValidationError('Please review the current Privacy Policy and agreements.')
         return value
 
     def validate_email(self, value):
@@ -1433,8 +1441,14 @@ class RegisterSerializer(serializers.Serializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        agreement = validated_data.pop('agreement_version', None)
         password = validated_data.pop("password")
         user = User.objects.create_user(password=password, **validated_data)
+        if agreement:
+            from .models import AccountAgreementAcceptance, ModerationConsent
+            AccountAgreementAcceptance.objects.create(user=user, version=agreement)
+            ModerationConsent.objects.create(user=user,
+                version=settings.MODERATION_ACCOUNT_CONSENT_VERSION, granted=True)
         return RepbaseUser.objects.create(user=user)
 
 

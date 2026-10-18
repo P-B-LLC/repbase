@@ -7,7 +7,39 @@ from rest_framework import serializers
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from .access_views import PrivateAccessView
-from .models import ModerationConsent, MediaScreeningJob
+from .models import ModerationConsent, MediaScreeningJob, AccountAgreementAcceptance
+
+
+class AccountAgreementSerializer(serializers.Serializer):
+    version = serializers.CharField(max_length=100)
+    accepted = serializers.BooleanField()
+
+
+class AccountAgreementView(PrivateAccessView):
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(operation_id='accountAgreementRetrieve', responses=AccountAgreementSerializer)
+    def get(self, request):
+        accepted = AccountAgreementAcceptance.objects.filter(user=request.user,
+            version=settings.ACCOUNT_AGREEMENT_VERSION).exists()
+        return Response(dict(version=settings.ACCOUNT_AGREEMENT_VERSION, accepted=accepted))
+
+    @extend_schema(operation_id='accountAgreementUpdate', request=AccountAgreementSerializer,
+                   responses=AccountAgreementSerializer)
+    @transaction.atomic
+    def put(self, request):
+        data = AccountAgreementSerializer(data=request.data)
+        data.is_valid(raise_exception=True)
+        if data.validated_data != dict(version=settings.ACCOUNT_AGREEMENT_VERSION, accepted=True):
+            raise serializers.ValidationError('Please accept the current Privacy Policy and agreements.')
+        get_user_model().objects.select_for_update().get(pk=request.user.pk)
+        _, created = AccountAgreementAcceptance.objects.get_or_create(user=request.user,
+            version=settings.ACCOUNT_AGREEMENT_VERSION)
+        if created:
+            ModerationConsent.objects.update_or_create(user=request.user, defaults=dict(
+                version=settings.MODERATION_ACCOUNT_CONSENT_VERSION, granted=True))
+        # Retrying acceptance must not undo a subsequent explicit withdrawal.
+        return Response(data.validated_data)
 
 
 class SafetyConsentSerializer(serializers.Serializer):

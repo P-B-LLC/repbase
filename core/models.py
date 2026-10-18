@@ -21,6 +21,16 @@ from zoneinfo import ZoneInfo, available_timezones
 from django.utils import timezone
 
 
+class AccountAgreementAcceptance(models.Model):
+    """Explicit acceptance of a particular signup agreement; never backfilled."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    version = models.CharField(max_length=100)
+    accepted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'version'], name='unique_account_agreement')]
+
+
 class ModerationConsent(models.Model):
     """Account-scoped permission; never inferred from legacy submission headers."""
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)

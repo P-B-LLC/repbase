@@ -1,5 +1,29 @@
 # Social moderation release gate
 
+## Latest WIP — signup/sign-in agreements (17 October 2026)
+
+- User chose agreement acceptance at signup, and once after sign-in for existing
+  accounts, instead of a separate pre-post OpenAI dialog. Disclosure remains in
+  the Privacy Policy. No existing account is backfilled as having accepted.
+- Migration 0080 stores immutable per-user/version acceptance with a timestamp.
+  Registration accepts optional `agreement_version` for legacy compatibility;
+  the new clients require a checkbox and send the current version. Acceptance
+  and the initial screening preference are saved in the signup transaction.
+- GET/PUT `/api/v1/me/agreements/` lets authenticated clients read/accept the
+  current version. Anonymous writes, stale versions, and session writes without
+  CSRF fail. Repeated acceptance does not reverse a subsequent withdrawal.
+- Tests: 65 selected consent/moderation tests passed; after two extra isolation/
+  rollback tests, the final 51-test agreement/publication/dashboard run passed.
+  Migration drift check passed. Web build and 51 tests passed. These are local
+  tests, not new production or Xcode validation.
+- Deploy backend and migration 0080 BEFORE the new clients. New clients fail
+  closed at the agreement screen if the endpoint is missing/unreachable. iOS
+  must regenerate Swift and run `Scripts/validate-moderation-ios.sh` on Mac.
+  The previous Mac success does not validate this new contract. Public web
+  `/legal/*.html` files must be deployed with the bundle.
+- Screening remains enabled in production from the prior release; this WIP
+  does not disable checks or change the provider. This revision is not deployed.
+
 ## Prepared beta deployment — 17 October 2026
 
 User selected the existing beta backend. `deploy/deploy-moderation-beta.sh`

@@ -2239,6 +2239,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/MyAccess'
           description: ''
+  /api/v1/me/agreements/:
+    get:
+      operationId: accountAgreementRetrieve
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountAgreement'
+          description: ''
+    put:
+      operationId: accountAgreementUpdate
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountAgreement'
+          description: ''
   /api/v1/me/highlights/:
     get:
       operationId: me_highlights_list
@@ -6208,6 +6249,29 @@ components:
       - next
       - previous
       - results
+    AccountAgreement:
+      type: object
+      properties:
+        version:
+          type: string
+          maxLength: 100
+        accepted:
+          type: boolean
+      required:
+      - accepted
+      - version
+    AccountAgreementRequest:
+      type: object
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        accepted:
+          type: boolean
+      required:
+      - accepted
+      - version
     AppRoleEnum:
       enum:
       - superowner
@@ -10513,6 +10577,13 @@ components:
     RegisterRequest:
       type: object
       properties:
+        agreement_version:
+          type: string
+          minLength: 1
+          description: Version explicitly accepted using the signup Privacy Policy
+            and agreements control. Omit for legacy clients; omission never records
+            agreement acceptance.
+          maxLength: 100
         username:
           type: string
           minLength: 1

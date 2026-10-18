@@ -514,6 +514,7 @@ MODERATION_CONTACT_EMAIL = os.getenv('MODERATION_CONTACT_EMAIL', 'support@rytivo
 # agreement to this one.
 MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-10-16')
 MODERATION_ACCOUNT_CONSENT_VERSION = '2026-10-17'
+ACCOUNT_AGREEMENT_VERSION = '2026-10-17'
 # How long a worker may be held waiting for the classifier.
 #
 # This is a capacity setting, not a patience setting. The provider call is

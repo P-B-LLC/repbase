@@ -47,8 +47,8 @@ class ModerationUnavailable(APIException):
 class ModerationConsentRequired(PermissionDenied):
     default_detail = {
         'detail': (
-            'This submission needs permission for safety review before it can be sent. '
-            'Update the app, then try again.'
+            'Review your account agreements or safety-review settings before sharing. '
+            'Nothing was submitted for review.'
         ),
         'code': 'moderation_consent_required',
     }
