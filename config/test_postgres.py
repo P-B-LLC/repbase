@@ -25,3 +25,6 @@ DATABASES = {'default': database({
 # a red job, and it arrives only once the suite runs long enough for the
 # timing to line up.
 DATABASES['default']['CONN_MAX_AGE'] = 0  # noqa: F405
+
+# Disposable fixtures only; avoid spending the integration run hashing passwords.
+PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']

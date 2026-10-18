@@ -133,8 +133,9 @@ def planner_entry(owner, title="Deload week", category="workout"):
 def aged(post, hours=0, minutes=0):
     """Backdate a post. created_at is auto_now_add, so it is set afterwards."""
     stamp = timezone.now() - timedelta(hours=hours, minutes=minutes)
-    Post.objects.filter(pk=post.pk).update(created_at=stamp)
+    Post.objects.filter(pk=post.pk).update(created_at=stamp, published_at=stamp)
     post.created_at = stamp
+    post.published_at = stamp
     return post
 
 

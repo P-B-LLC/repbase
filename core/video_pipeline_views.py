@@ -48,8 +48,12 @@ class UploadStart(APIView):
         post = get_object_or_404(Post, pk=post_id, author__user=request.user)
         data = UploadRequest(data=request.data)
         data.is_valid(raise_exception=True)
+        consent = None
+        if settings.MEDIA_SCREENING_ENABLED:
+            from .media_screening_jobs import submission_consent
+            consent = submission_consent(request)
         try:
-            job, policy = begin(post, data.validated_data['size_bytes'], data.validated_data['content_type'])
+            job, policy = begin(post, data.validated_data['size_bytes'], data.validated_data['content_type'], consent_version=consent)
         except ValueError as error:
             raise ValidationError(str(error))
         except Exception:

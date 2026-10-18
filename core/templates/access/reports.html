@@ -1,6 +1,6 @@
 {% extends 'access/base.html' %}{% block content %}
 <a href="{% url 'access-workspace' %}">← Administration</a><h1>Report review</h1>
-<nav><a href="?kind=post">Posts</a> · <a href="?kind=comment">Comments</a></nav>
+<nav><a href="?kind=post">Posts</a> · <a href="?kind=comment">Comments</a> · <a href="?kind=media">Media screening</a></nav>
 <p>Private moderator workspace. Removing content hides it from the community and retains the record. Keep content dismisses this report without changing the post.</p>
 {% if error %}<p role="alert">{{ error }}</p>{% endif %}
 {% for report in page %}<article>

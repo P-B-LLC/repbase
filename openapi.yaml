@@ -2239,6 +2239,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/MyAccess'
           description: ''
+  /api/v1/me/agreements/:
+    get:
+      operationId: accountAgreementRetrieve
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountAgreement'
+          description: ''
+    put:
+      operationId: accountAgreementUpdate
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountAgreement'
+          description: ''
   /api/v1/me/highlights/:
     get:
       operationId: me_highlights_list
@@ -2448,6 +2489,47 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ProfilePrompt'
+          description: ''
+  /api/v1/me/safety-consent/:
+    get:
+      operationId: safetyConsentRetrieve
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafetyConsent'
+          description: ''
+    put:
+      operationId: safetyConsentUpdate
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafetyConsent'
           description: ''
   /api/v1/me/social-links/:
     get:
@@ -6167,6 +6249,29 @@ components:
       - next
       - previous
       - results
+    AccountAgreement:
+      type: object
+      properties:
+        version:
+          type: string
+          maxLength: 100
+        accepted:
+          type: boolean
+      required:
+      - accepted
+      - version
+    AccountAgreementRequest:
+      type: object
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        accepted:
+          type: boolean
+      required:
+      - accepted
+      - version
     AppRoleEnum:
       enum:
       - superowner
@@ -7187,6 +7292,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        moderation_status:
+          type: string
+          readOnly: true
         updated_at:
           type: string
           format: date-time
@@ -7206,7 +7319,9 @@ components:
       - kind
       - like_count
       - meal
+      - moderation_status
       - planner
+      - published_at
       - recommendation
       - repost_count
       - repost_of
@@ -7749,6 +7864,10 @@ components:
         is_read:
           type: boolean
           readOnly: true
+        message:
+          type: string
+          nullable: true
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7764,6 +7883,7 @@ components:
       - id
       - is_read
       - kind
+      - message
     NotificationKindEnum:
       enum:
       - follow
@@ -7772,6 +7892,7 @@ components:
       - like
       - repost
       - comment
+      - moderation_rejected
       type: string
       description: |-
         * `follow` - Started following you
@@ -7780,6 +7901,7 @@ components:
         * `like` - Liked your post
         * `repost` - Reposted your post
         * `comment` - Commented on your post
+        * `moderation_rejected` - Your post was not published
     NullEnum:
       enum:
       - null
@@ -9368,6 +9490,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        moderation_status:
+          type: string
+          readOnly: true
         updated_at:
           type: string
           format: date-time
@@ -9383,7 +9513,9 @@ components:
       - kind
       - like_count
       - meal
+      - moderation_status
       - planner
+      - published_at
       - repost_count
       - repost_of
       - shows_weights
@@ -10445,6 +10577,13 @@ components:
     RegisterRequest:
       type: object
       properties:
+        agreement_version:
+          type: string
+          minLength: 1
+          description: Version explicitly accepted using the signup Privacy Policy
+            and agreements control. Omit for legacy clients; omission never records
+            agreement acceptance.
+          maxLength: 100
         username:
           type: string
           minLength: 1
@@ -10748,6 +10887,11 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
       required:
       - author
       - caption
@@ -10758,8 +10902,32 @@ components:
       - kind
       - meal
       - planner
+      - published_at
       - video
       - workout
+    SafetyConsent:
+      type: object
+      properties:
+        version:
+          type: string
+          maxLength: 100
+        granted:
+          type: boolean
+      required:
+      - granted
+      - version
+    SafetyConsentRequest:
+      type: object
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        granted:
+          type: boolean
+      required:
+      - granted
+      - version
     SavedFoodIngredient:
       type: object
       properties:
