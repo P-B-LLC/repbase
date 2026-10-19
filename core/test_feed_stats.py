@@ -13,6 +13,7 @@ and never the only way to a ranking.
 """
 
 from datetime import timedelta
+from io import StringIO
 from unittest import mock
 
 from django.core import checks
@@ -42,7 +43,7 @@ class FeedStatsTests(ForYouTestCase):
     def test_the_job_writes_what_the_ranking_would_work_out(self):
         PostLike.objects.create(post=self.post, user=self.runners[0])
         PostComment.objects.create(post=self.post, author=self.runners[1], body="nice")
-        call_command("refresh_feed_stats", stdout=open("/dev/null", "w"))
+        call_command("refresh_feed_stats", stdout=StringIO())
         row = PostEngagementStats.objects.get(post=self.post)
         expected = self.counts_without_the_table(self.post.pk)
         self.assertEqual((row.likes, row.comments, row.trusted_likes), (expected.likes, expected.comments, expected.trusted_likes))

@@ -109,8 +109,8 @@ def _ids(queryset, field="post_id"):
 
 def _active_since(since, window_start, now):
     """Posts inside the window that anything happened to since `since`."""
-    in_window = {"post__created_at__gte": window_start}
-    young = {"post__created_at__gte": max(window_start, now - timedelta(days=VIEWS_DAYS))}
+    in_window = {"post__published_at__gte": window_start}
+    young = {"post__published_at__gte": max(window_start, now - timedelta(days=VIEWS_DAYS))}
     found = set()
     found.update(_ids(PostLike.objects.filter(created_at__gte=since, **in_window)))
     found.update(_ids(PostComment.objects.filter(created_at__gte=since, **in_window)))
@@ -118,17 +118,17 @@ def _active_since(since, window_start, now):
     found.update(_ids(PostFeedback.objects.filter(created_at__gte=since, **in_window)))
     found.update(_ids(
         Post.objects.filter(
-            created_at__gte=since, repost_of__isnull=False, repost_of__created_at__gte=window_start,
+            published_at__gte=since, repost_of__isnull=False, repost_of__published_at__gte=window_start,
         ),
         "repost_of_id",
     ))
     for model in (WorkoutTemplate, SavedFoodMeal):
         found.update(_ids(
-            model.objects.filter(created_at__gte=since, source_post__created_at__gte=window_start),
+            model.objects.filter(created_at__gte=since, source_post__published_at__gte=window_start),
             "source_post_id",
         ))
     # New posts have no row yet.
-    found.update(_ids(Post.objects.filter(created_at__gte=since).exclude(kind=Post.Kind.REPOST), "pk"))
+    found.update(_ids(Post.objects.filter(published_at__gte=since).exclude(kind=Post.Kind.REPOST), "pk"))
     found.discard(None)
     return found
 
@@ -140,7 +140,7 @@ def refresh(now=None, full=False, limit=REFRESH_LIMIT, batch=BATCH):
     started = time.perf_counter()
     now = now or timezone.now()
     window_start = now - timedelta(days=WINDOW_DAYS)
-    window = Post.objects.filter(created_at__gte=window_start).exclude(kind=Post.Kind.REPOST)
+    window = Post.objects.filter(published_at__gte=window_start).exclude(kind=Post.Kind.REPOST)
 
     last_run = PostEngagementStats.objects.filter(version=STATS_VERSION).aggregate(at=Max("computed_at"))["at"]
     full = bool(full or last_run is None)
@@ -179,7 +179,7 @@ def refresh(now=None, full=False, limit=REFRESH_LIMIT, batch=BATCH):
         gone += lost
 
     pruned, _ = PostEngagementStats.objects.filter(
-        post__created_at__lt=window_start - timedelta(days=PRUNE_GRACE_DAYS)
+        post__published_at__lt=window_start - timedelta(days=PRUNE_GRACE_DAYS)
     ).delete()
     cache.set(_FINISHED_KEY, now, None)
     summary = {

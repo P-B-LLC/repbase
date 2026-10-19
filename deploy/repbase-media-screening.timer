@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll the Rytivo private media screening queue
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=10
+Unit=repbase-media-screening.service
+
+[Install]
+WantedBy=timers.target

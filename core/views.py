@@ -2831,7 +2831,7 @@ class FeedCursorPagination(pagination.CursorPagination):
     #: makes the order total: two posts written in the same instant would
     #: otherwise sit in whatever order the database felt like, and a boundary
     #: drawn between them would repeat one page's last row or skip it.
-    ordering = ("-created_at", "-id")
+    ordering = ("-published_at", "-id")
 
     def get_page_size(self, request):
         # Replaced rather than called and then checked: DRF runs the requested
@@ -2972,6 +2972,8 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
         # rather than inside them, so the author's own unconditional access
         # below cannot put it back.
         is_hidden=True
+    ).filter(
+        moderation_status='approved', published_at__isnull=False, moderation_child_hold=False
     ).filter(
         # Suspended. MODERATION_OPERATIONS.md suspends an abusive account by
         # clearing User.is_active, which stopped its token working and left
@@ -3544,6 +3546,15 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             # somebody's caption is not a capability this endpoint should have.
             # Attaching a clip is editing.
             return super().get_queryset().filter(author=profile)
+
+        # An author's private submission status is available on their own
+        # profile/detail only. Never widen the Following or For You feeds.
+        if self.action == 'retrieve':
+            base = super().get_queryset()
+            visible = visible_posts_for(profile, base).values('pk')
+            return annotate_social_counts(profile, base.filter(Q(pk__in=visible) | Q(author=profile, is_hidden=False)))
+        if self.action == 'list' and id_param(self.request, 'author') == profile.pk:
+            return annotate_social_counts(profile, super().get_queryset().filter(author=profile, is_hidden=False))
 
         queryset = annotate_social_counts(
             profile, visible_posts_for(profile, super().get_queryset())
@@ -4140,12 +4151,16 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             raise ValidationError(
                 {"video": "Send the video file as the request body, with a video Content-Type."}
             )
+        consent = None
+        if settings.MEDIA_SCREENING_ENABLED:
+            from .media_screening_jobs import submission_consent
+            consent = submission_consent(request)
         try:
             if settings.VIDEO_PIPELINE_ENABLED:
                 from .video_pipeline import queue_local
-                queue_local(post, received)
+                queue_local(post, received, consent_version=consent)
             else:
-                attach_video(post, received)
+                attach_video(post, received, consent_version=consent)
         except PublicationMediaError:
             raise ServiceUnavailable(
                 "Your video was not saved because storage is unavailable. Please retry."
@@ -4154,7 +4169,14 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
 
     def _card(self, pk):
         """The post read back with its counts, as the feed would send it."""
-        post = self.get_queryset().get(pk=pk)
+        profile = self.owner_profile()
+        visible = visible_posts_for(profile, Post.objects.all()).values('pk')
+        # Authors can read their submission status before publication. Other
+        # readers still need normal feed visibility after a like or repost.
+        cards = annotate_social_counts(profile, posts_for_cards()).filter(
+            Q(author=profile) | Q(pk__in=visible)
+        )
+        post = get_object_or_404(cards, pk=pk)
         return self.get_serializer(post).data
 
     def create(self, request, *args, **kwargs):
@@ -4173,6 +4195,9 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         )
         decoded = payload.validated_data.get("decoded_image")
         extension = payload.validated_data.get("image_extension", ".jpg")
+        if settings.MEDIA_SCREENING_ENABLED and decoded:
+            from .media_screening_jobs import submission_consent
+            submission_consent(request)
         # One call, covering everything that will be published -- the caption,
         # the photo, and the user-written text the snapshot will carry -- and
         # made before any transaction is open. This used to be two: the
@@ -4185,7 +4210,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                 "cooking_instructions": payload.validated_data.get("cooking_instructions", ""),
                 "source": public_text_for_source(source, kind) if source else {},
             },
-            image=decoded,
+            image=None if settings.MEDIA_SCREENING_ENABLED else decoded,
             request=request,
         )
         try:
@@ -4213,19 +4238,33 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             setattr(post, field, name)
         if media:
             post.save(update_fields=list(media))
+            if settings.MEDIA_SCREENING_ENABLED:
+                from .media_screening_jobs import enqueue, submission_consent
+                enqueue(post.pk, consent_version=submission_consent(self.request),
+                        threshold=settings.MEDIA_SCREENING_THRESHOLD)
         # Read back through the list queryset so the card returned from a create
         # is assembled by the code that assembles the card in the feed, rather
         # than by a second path that can disagree with it.
-        data = self.get_serializer(self.get_queryset().get(pk=post.pk)).data
+        data = self._card(post.pk)
         return Response(data, status=status.HTTP_201_CREATED)
 
     def partial_update(self, request, *args, **kwargs):
         post = self.get_object()
         payload = UpdatePostSerializer(data=request.data, partial=True, context={"request": request})
         payload.is_valid(raise_exception=True)
-        for field, value in payload.validated_data.items():
-            setattr(post, field, value)
-        post.save(update_fields=[*payload.validated_data, "updated_at"])
+        consent = None
+        if settings.MEDIA_SCREENING_ENABLED and 'caption' in payload.validated_data:
+            from .media_screening_jobs import submission_consent
+            consent = submission_consent(request)
+        with transaction.atomic():
+            post = Post.objects.select_for_update().get(pk=post.pk, author=self.owner_profile())
+            for field, value in payload.validated_data.items():
+                setattr(post, field, value)
+            post.save(update_fields=[*payload.validated_data, "updated_at"])
+            if consent and (post.image or getattr(post, 'video', None)):
+                from .media_screening_jobs import enqueue
+                enqueue(post.pk, consent_version=consent, threshold=settings.MEDIA_SCREENING_THRESHOLD)
+                post.refresh_from_db()
         return Response(self.get_serializer(post).data)
 
 
@@ -4435,7 +4474,8 @@ class NotificationViewSet(
     def get_queryset(self):
         viewer = profile_for(self.request.user)
         return without_blocked_authors(viewer, super().get_queryset().filter(recipient=viewer), 'actor').exclude(
-            comment__is_hidden=True).exclude(comment__parent__is_hidden=True).exclude(post__is_hidden=True).filter(
+            comment__is_hidden=True).exclude(comment__parent__is_hidden=True).exclude(
+                Q(post__is_hidden=True) & ~Q(kind=Notification.Kind.MODERATION_REJECTED)).filter(
             actor__user__is_active=True)
 
     @extend_schema(

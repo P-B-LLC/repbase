@@ -21,6 +21,24 @@ from zoneinfo import ZoneInfo, available_timezones
 from django.utils import timezone
 
 
+class AccountAgreementAcceptance(models.Model):
+    """Explicit acceptance of a particular signup agreement; never backfilled."""
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    version = models.CharField(max_length=100)
+    accepted_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['user', 'version'], name='unique_account_agreement')]
+
+
+class ModerationConsent(models.Model):
+    """Account-scoped permission; never inferred from legacy submission headers."""
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    version = models.CharField(max_length=100)
+    granted = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
 class TrackValue:
     """A number derived from a session's GPS track.
 
@@ -2261,6 +2279,7 @@ class Notification(models.Model):
         LIKE = "like", "Liked your post"
         REPOST = "repost", "Reposted your post"
         COMMENT = "comment", "Commented on your post"
+        MODERATION_REJECTED = "moderation_rejected", "Your post was not published"
 
     recipient = models.ForeignKey(
         RepbaseUser,
@@ -2612,20 +2631,48 @@ class Post(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    # Existing creation paths stay compatible until asynchronous upload wiring
+    # is enabled. Pending transitions explicitly clear published_at.
+    moderation_status = models.CharField(max_length=16, default='approved', choices=[
+        ('pending', 'Pending'), ('flagged', 'Flagged'), ('approved', 'Approved'),
+        ('rejected', 'Rejected')])
+    published_at = models.DateTimeField(default=timezone.now, null=True, db_index=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    moderation_generation = models.UUIDField(default=uuid.uuid4)
+    moderation_child_hold = models.BooleanField(default=False)
 
     class Meta:
-        ordering = ("-created_at", "-id")
+        ordering = ("-published_at", "-id")
         # Named in the order the feed reads them: narrowed to the people being
-        # followed, then walked backwards from a (created_at, id) cursor. The
+        # followed, then walked backwards from a (published_at, id) cursor. The
         # second index is the same walk without the author filter, which is what
         # a single profile's posts and any unfiltered page do.
         indexes = [
-            models.Index(fields=("author", "-created_at", "-id")),
-            models.Index(fields=("-created_at", "-id")),
+            models.Index(fields=("author", "-published_at", "-id")),
+            models.Index(fields=("-published_at", "-id")),
         ]
 
     def __str__(self):
         return f"{self.author}: {self.get_kind_display()}"
+
+
+class MediaScreeningJob(models.Model):
+    """Bounded durable work, one current revision per post; no raw provider data."""
+    post = models.OneToOneField(Post, on_delete=models.CASCADE, related_name='screening_job')
+    generation = models.UUIDField()
+    consent_version = models.CharField(max_length=100)
+    threshold = models.FloatField()
+    state = models.CharField(max_length=16, default='queued')
+    attempts = models.PositiveSmallIntegerField(default=0)
+    lease = models.UUIDField(null=True)
+    lease_until = models.DateTimeField(null=True)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    error_code = models.CharField(max_length=40, blank=True)
+    evidence = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [models.Index(fields=['state', 'next_attempt_at'])]
 
 
 class PendingMediaDeletion(models.Model):

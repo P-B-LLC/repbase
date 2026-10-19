@@ -16,7 +16,7 @@ from django.db import connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import Block, PushDelivery, PushDevice
+from .models import Block, PushDelivery, PushDevice, Notification
 
 MAX_ATTEMPTS = 5
 
@@ -76,7 +76,10 @@ class APNsClient:
                 "apns-expiration": str(int(time.time()) + 3600),
             },
             json={
-                "aps": {"alert": {"title": "Rytivo", "body": "You have new community activity."}, "sound": "default"},
+                "aps": {"alert": {"title": "Rytivo", "body": (
+                    "Your post was not published after review."
+                    if delivery.notification.kind == Notification.Kind.MODERATION_REJECTED
+                    else "You have new community activity.")}, "sound": "default"},
                 "accountID": delivery.notification.recipient_id,
                 "route": "community", "notificationID": delivery.notification_id,
             },
@@ -115,7 +118,8 @@ def deliver(claim, provider):
         | Q(blocker_id=notification.recipient_id, blocked_id=notification.actor_id)
     ).exists()
     hidden = PushDelivery.objects.filter(pk=delivery.pk).filter(
-        Q(notification__post__is_hidden=True) | Q(notification__comment__is_hidden=True)
+        (Q(notification__post__is_hidden=True) & ~Q(notification__kind=Notification.Kind.MODERATION_REJECTED))
+        | Q(notification__comment__is_hidden=True)
         | Q(notification__comment__parent__is_hidden=True)
         | Q(notification__recipient__user__is_active=False)
     ).exists()

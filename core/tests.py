@@ -340,7 +340,9 @@ class NotificationTests(RepbaseAPITestMixin, APITestCase):
     # ------------------------------------------------------------- who hears
 
     def test_a_like_reaches_the_author(self):
-        self.like_as(self.other_token)
+        response = self.like_as(self.other_token)
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['id'], self.post.id)
         rows = self.mine(self.author_token)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["kind"], "like")

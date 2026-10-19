@@ -6,6 +6,7 @@ import binascii
 from decimal import Decimal
 from zoneinfo import available_timezones
 
+from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model, password_validation
 from django.contrib.auth.validators import ASCIIUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -1421,6 +1422,8 @@ MAX_SIGN_IN_PASSWORD_LENGTH = 4096
 
 
 class RegisterSerializer(serializers.Serializer):
+    agreement_version = serializers.CharField(max_length=100, required=False,
+        help_text='Version explicitly accepted using the signup Privacy Policy and agreements control. Omit for legacy clients; omission never records agreement acceptance.')
     username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
     password = serializers.CharField(
@@ -1433,6 +1436,11 @@ class RegisterSerializer(serializers.Serializer):
         check_new_username(value)
         if User.objects.filter(username__iexact=value).exists():
             raise serializers.ValidationError("This username is already in use.")
+        return value
+
+    def validate_agreement_version(self, value):
+        if value != settings.ACCOUNT_AGREEMENT_VERSION:
+            raise serializers.ValidationError('Please review the current Privacy Policy and agreements.')
         return value
 
     def validate_email(self, value):
@@ -1454,8 +1462,14 @@ class RegisterSerializer(serializers.Serializer):
 
     @transaction.atomic
     def create(self, validated_data):
+        agreement = validated_data.pop('agreement_version', None)
         password = validated_data.pop("password")
         user = User.objects.create_user(password=password, **validated_data)
+        if agreement:
+            from .models import AccountAgreementAcceptance, ModerationConsent
+            AccountAgreementAcceptance.objects.create(user=user, version=agreement)
+            ModerationConsent.objects.create(user=user,
+                version=settings.MODERATION_ACCOUNT_CONSENT_VERSION, granted=True)
         return RepbaseUser.objects.create(user=user)
 
 
@@ -2786,6 +2800,8 @@ class PostVideoSerializer(serializers.ModelSerializer):
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_url(self, video):
         """Signed, like a photo's: the link is the authorisation."""
+        if video.post.moderation_status != 'approved' or video.post.moderation_child_hold:
+            return None
         if video.processing_state != 'ready':
             return None
         if video.variants:
@@ -2797,6 +2813,8 @@ class PostVideoSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_thumbnail_url(self, video):
+        if video.post.moderation_status != 'approved' or video.post.moderation_child_hold:
+            return None
         if video.processing_state != 'ready' or video.status != 'approved' or not video.thumbnail_key:
             return None
         from .video_pipeline_views import asset_url
@@ -2804,6 +2822,8 @@ class PostVideoSerializer(serializers.ModelSerializer):
 
     @extend_schema_field(VideoVariantSerializer(many=True))
     def get_variants(self, video):
+        if video.post.moderation_status != 'approved' or video.post.moderation_child_hold:
+            return []
         if video.processing_state != 'ready' or video.status != 'approved':
             return []
         from .video_pipeline_views import asset_url
@@ -2850,6 +2870,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
     image_url = serializers.SerializerMethodField()
     feed_image_url = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
+    published_at = serializers.DateTimeField(read_only=True, allow_null=True)
 
     class Meta:
         model = Post
@@ -2865,6 +2886,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
             "meal",
             "planner",
             "created_at",
+            "published_at",
         ]
         read_only_fields = fields
 
@@ -3083,6 +3105,8 @@ class PostSerializer(serializers.ModelSerializer):
     author = PublicRepbaseUserSerializer(read_only=True)
     kind = serializers.CharField(read_only=True)
     visibility = serializers.CharField(read_only=True)
+    published_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    moderation_status = serializers.CharField(read_only=True)
     # The reverse one-to-one raises rather than returning None when the snapshot
     # is a different kind, which DRF turns into a null for a field that says it
     # allows one. Saying so is also what puts the null in the schema.
@@ -3152,6 +3176,8 @@ class PostSerializer(serializers.ModelSerializer):
             "viewer_saved",
             "repost_of",
             "created_at",
+            "published_at",
+            "moderation_status",
             "updated_at",
         ]
         read_only_fields = [
@@ -3185,6 +3211,8 @@ class PostSerializer(serializers.ModelSerializer):
         Absolute for the reason a profile photo's is: the app talks to the
         API from a different origin than the one serving the file.
         """
+        if post.moderation_status != 'approved' or post.moderation_child_hold:
+            return None
         return signed_media_url(post.image, self.context.get("request"))
 
     @extend_schema_field(serializers.CharField(allow_null=True))
@@ -3195,6 +3223,8 @@ class PostSerializer(serializers.ModelSerializer):
         field and be right about every post, including the ones made before
         the smaller copy existed.
         """
+        if post.moderation_status != 'approved' or post.moderation_child_hold:
+            return None
         return feed_image_url_for(post, self.context.get("request"))
 
     @extend_schema_field(PostVideoSerializer(allow_null=True))
@@ -3707,6 +3737,13 @@ class NotificationSerializer(serializers.ModelSerializer):
         source="comment.body", read_only=True, allow_null=True, default=None
     )
     is_read = serializers.SerializerMethodField()
+    message = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_message(self, notification):
+        if notification.kind == Notification.Kind.MODERATION_REJECTED:
+            return 'Your post was not published after review because it did not meet our content policy.'
+        return None
 
     class Meta:
         model = Notification
@@ -3721,6 +3758,7 @@ class NotificationSerializer(serializers.ModelSerializer):
             "post",
             "comment_body",
             "is_read",
+            "message",
             "created_at",
         ]
 

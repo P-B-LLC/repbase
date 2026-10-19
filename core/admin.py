@@ -261,7 +261,7 @@ class PostAdmin(admin.ModelAdmin):
     inlines = (PostReportInline,)
     actions = ("hide_posts", "unhide_posts")
     # Set with is_hidden, never by hand: the moderation cooldown counts from it.
-    readonly_fields = ("hidden_at",)
+    readonly_fields = ("hidden_at", "published_at")
 
     def get_queryset(self, request):
         return (

@@ -24,6 +24,24 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.checks import Error, Warning, register
 
+
+@register(deploy=True)
+def async_media_screening_ready(app_configs, **kwargs):
+    if not settings.MEDIA_SCREENING_ENABLED:
+        return []
+    import math
+    import shutil
+    threshold = settings.MEDIA_SCREENING_THRESHOLD
+    ready = (type(threshold) in (int, float) and math.isfinite(threshold)
+             and 0 < threshold <= 1 and settings.MODERATION_API_KEY
+             and settings.MODERATION_DISCLOSURE_CONFIRMED
+             and shutil.which('ffmpeg') and shutil.which('ffprobe'))
+    if ready:
+        return []
+    return [Error('Asynchronous media screening is not configured safely.',
+        hint='Configure the key, disclosure, finite threshold in (0,1], ffmpeg and ffprobe. Keep the feature disabled until validation is complete.',
+        id='core.E013')]
+
 # Suffixes that cannot receive mail: .local is reserved for mDNS, .localhost
 # never leaves the machine, and .invalid/.example/.test are reserved by
 # RFC 2606. Most providers refuse to relay a From address on any of them, so
