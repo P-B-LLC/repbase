@@ -33,6 +33,7 @@ Token rotation invalidates the token used for the request and returns a replacem
 - `/api/v1/set-entries/` — actual weight and repetitions
 - `/api/v1/body-weight/` — historical body-weight measurements
 - `/api/v1/progress/exercises/{exercise_id}/` — exercise progress points
+- `/api/v1/me/guide/{surface}/` — whether the welcome guide has been finished in the `ios` or `web` app; `PUT {"completed": true}` stops it opening by itself there. Accounts that existed before the guide are already marked finished
 
 List responses are paginated with `count`, `next`, `previous`, and `results` fields.
 

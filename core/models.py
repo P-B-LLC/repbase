@@ -39,6 +39,31 @@ class ModerationConsent(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
 
+class GuideCompletion(models.Model):
+    """An account having finished, or skipped, the welcome guide in one app.
+
+    One row per app rather than one per account: the iPhone app and the
+    website are laid out differently, so the tour of one does not show
+    somebody round the other. A missing row is what makes the guide open by
+    itself; replaying it from settings needs no row at all. Accounts that
+    existed before the guide were given both rows by its migration, so only
+    new accounts are shown round.
+    """
+
+    class Surface(models.TextChoices):
+        IOS = "ios", "iPhone app"
+        WEB = "web", "Website"
+
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    surface = models.CharField(max_length=8, choices=Surface.choices)
+    completed_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["user", "surface"], name="unique_guide_completion"),
+        ]
+
+
 class TrackValue:
     """A number derived from a session's GPS track.
 
