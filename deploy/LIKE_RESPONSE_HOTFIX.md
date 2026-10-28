@@ -15,8 +15,11 @@ to diagnose this. Journal access required root; the failure was reproduced
 locally using the deployed query, not claimed from an unreadable live traceback.
 
 The fix already exists in main at `42281fd`, but was not deployed. This branch
-backports only its `_card` change onto the exact deployed base. It does not
-bring along the pending schedule, ranking, UI, admin or dependency changes.
+backports its `_card` change onto the exact deployed base. Full validation
+also exposed two pre-existing baseline issues. The user explicitly approved
+including the already-tested Pillow 13.0.0 security upgrade and one-line
+`published_at` admin read-only correction. No pending schedule, ranking or
+UI changes are included.
 
 ## Repair and regression coverage
 
@@ -31,9 +34,11 @@ bring along the pending schedule, ranking, UI, admin or dependency changes.
   retries/unlikes/counts, followers-only access, blocks, unpublished/hidden/
   moderated content, privacy changes, deleted posts and anonymous requests.
 
-Validation on this isolated tree: 69 focused tests passed (`test_post_likes`,
-`NotificationTests`, `test_content_creation`, `test_reporting`), with a
-disposable SQLite database and media directory. Restoring the deployed
+Validation on the initial isolated tree: 69 focused tests passed. After the
+two explicitly approved additions, 77 passed (`test_post_likes`,
+`NotificationTests`, `test_content_creation`, `test_reporting`,
+`ModerationAuditTests`), with a disposable SQLite database and media directory.
+Restoring the deployed
 owner-only query in memory reproduces the friend's-post failure. Full Linux
 and PostgreSQL CI evidence belongs in the validation PR, not inferred from
 these local tests.
@@ -42,22 +47,26 @@ these local tests.
 
 `deploy-like-response-hotfix.sh` is root-run only, accepts a pinned full commit
 SHA, and refuses an unexpected current release, dirty checkout or changes
-outside this hotfix's allowlist. It installs no dependencies, runs no
-migrations, and changes no environment settings. Existing deploy checks still
-run; no checks are acknowledged or disabled by this helper.
+outside this hotfix's allowlist. It upgrades only Pillow to 13.0.0 without
+installing other dependencies, runs no migrations, and changes no environment
+settings. Existing deploy checks still run; no checks are acknowledged or
+disabled by this helper.
 
 It restarts only the backend, verifies the health/API probes and records the
 release. On failure after switching, it attempts to restore and restart the
-original revision. There are no data changes to reverse.
+original code revision. The security upgrade is retained during code rollback;
+it does not silently reinstall vulnerable Pillow. There are no data changes
+to reverse.
 
 Main and TestFlight are not changed. The backup/deployed-base branch is only
 a rollback reference and validation-PR base, not a release branch to merge.
 Deploy only a reviewed, validated SHA after the operator authorizes it.
 
-The deployed Pillow 12.3.0 dependency has a separately known audit issue;
-this code-only hotfix deliberately does not claim to fix it. The already
-validated Pillow upgrade remains on the integration branch. Do not silence
-the audit or describe a failing full check as green.
+The initial like-only candidate `8486cd1` inherited the deployed Pillow 12.3.0
+audit failure and moderation-admin form test failure. The approved additions
+correct those failures without suppressing checks. Do not treat that initial
+candidate as validated or deploy it; use the newer green candidate pinned in
+the validation PR and operator command.
 
 ## Post-deploy verification
 

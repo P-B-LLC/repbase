@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Root-only, code-only hotfix. No dependencies, migrations, or environment edits.
+# Root-only hotfix plus the approved Pillow security upgrade.
+# No other dependencies, migrations, or environment edits.
 # Usage: bash deploy/deploy-like-response-hotfix.sh <validated-full-commit-sha>
 set +x
 set -euo pipefail
@@ -50,15 +51,33 @@ while IFS= read -r path; do
     case "$path" in
         core/views.py) changed_view=1 ;;
         core/test_post_likes.py|deploy/deploy-like-response-hotfix.sh|deploy/LIKE_RESPONSE_HOTFIX.md) ;;
+        requirements.txt|core/admin.py|core/test_feed_integrity.py) ;;
         *) fail "Unexpected changed path: $path" ;;
     esac
 done <<< "$changed_paths"
 [[ $changed_view -eq 1 ]] || fail 'Expected response-readback fix is absent.'
+# Permit precisely the approved Pillow pin change, not a general dependency
+# refresh. The known base is immutable; every other requirements line matches.
+base_requirements="$(git_app show "$BASE:requirements.txt")"
+target_requirements="$(git_app show "$TARGET:requirements.txt")"
+expected_requirements="${base_requirements/Pillow==12.3.0/Pillow==13.0.0}"
+[[ $expected_requirements != "$base_requirements" && $target_requirements == "$expected_requirements" ]] \
+    || fail 'Requirements must change only Pillow==12.3.0 to Pillow==13.0.0.'
 cmp -s "$0" <(git_app show "$TARGET:deploy/deploy-like-response-hotfix.sh") || fail 'Helper does not match the validated commit.'
 [[ $(git_app rev-parse HEAD) == "$BASE" ]] && clean_checkout || fail 'Checkout changed during preflight.'
+pillow_version() {
+    sudo -H -u "$APP_USER" "$APP/.venv/bin/python" -I -c \
+        'from PIL import Image; Image.new("RGB", (1, 1)); print(Image.__version__)'
+}
+pillow_before="$(pillow_version)"
+case "$pillow_before" in
+    12.3.0|13.0.0) ;;
+    *) fail 'Unexpected installed Pillow version; stop and re-plan this hotfix.' ;;
+esac
 
 record="$(mktemp -d /var/lib/repbase-like-hotfix.XXXXXXXX)"
-printf 'base=%s\ntarget=%s\nstarted=%s\n' "$BASE" "$TARGET" "$(date -Is)" > "$record/release"
+printf 'base=%s\ntarget=%s\nstarted=%s\npillow_before=%s\n' \
+    "$BASE" "$TARGET" "$(date -Is)" "$pillow_before" > "$record/release"
 if [[ -f /etc/repbase-release ]]; then
     cp -p /etc/repbase-release "$record/previous-release"
 fi
@@ -95,7 +114,7 @@ wait_for_health() {
 }
 
 restore_on_failure() {
-    local code=$? restore_ref="$BASE" checkout_restored=0
+    local code=$? restore_ref="$BASE" checkout_restored=0 pillow_after
     trap - EXIT HUP INT TERM
     set +e
     if [[ $completed -eq 0 && $switched -eq 1 ]]; then
@@ -121,7 +140,14 @@ restore_on_failure() {
                 rm -f -- /etc/repbase-release
             fi
         fi
-        printf 'failed=%s\n' "$(date -Is)" >> "$record/release"
+        pillow_after="$(pillow_version 2>/dev/null)" || pillow_after=unavailable
+        printf 'failed=%s\npillow_after=%s\n' "$(date -Is)" "$pillow_after" >> "$record/release"
+        # Code rollback deliberately never reinstalls the vulnerable version.
+        if [[ $pillow_after == 13.0.0 ]]; then
+            echo 'Pillow 13.0.0 security upgrade retained; no dependency downgrade performed.' >&2
+        else
+            echo "Pillow after failure: $pillow_after. Review the dependency state; no downgrade performed." >&2
+        fi
     fi
     return "$code"
 }
@@ -133,6 +159,14 @@ trap 'exit 143' TERM
 echo "Release record: $record"
 switched=1
 git_app checkout --quiet --detach "$TARGET"
+echo 'Installing only Pillow 13.0.0; a code rollback will retain this security upgrade.'
+if [[ $pillow_before == 12.3.0 ]]; then
+    sudo -H -u "$APP_USER" "$APP/.venv/bin/python" -m pip --disable-pip-version-check --no-input \
+        install --quiet --no-deps --only-binary=:all: Pillow==13.0.0
+fi
+pillow_after="$(pillow_version)"
+printf 'pillow_after=%s\n' "$pillow_after" >> "$record/release"
+[[ $pillow_after == 13.0.0 ]] || fail 'Pillow 13.0.0 was not activated; stopping deployment.'
 echo 'Checking existing backend configuration (no acknowledgement/bypass flags).'
 run_app "$APP/.venv/bin/python" "$APP/manage.py" check --deploy
 systemctl restart repbase
