@@ -218,3 +218,35 @@ discovered 99 tests across two runs (96 passed, three real-FFmpeg tests skipped
 because FFmpeg/ffprobe were not installed). Dependency compatibility, Django
 system checks, and the production requirements security audit passed with no
 known vulnerabilities reported. Full CI evidence belongs to the exact PR head.
+
+## Own publications in For You (2026-10-28)
+
+The testing branch includes the reader's eligible published posts in For You.
+The newest eligible own post from the last 24 hours leads a fresh first page;
+it occupies a normal ranked slot and remains de-duplicated through cursor
+paging. The additional own-post candidate source is capped at 20. Private,
+unpublished, rejected, hidden, child-held and unapproved-video content remain
+excluded; no moderator or visibility rule is bypassed. Own impressions still
+do not affect recommendation learning. No migrations or API fields change.
+
+```sh
+python manage.py test core.test_recommendations core.test_recommendation_signals core.test_feed_integrity core.test_feed_stats core.test_ranking_model
+```
+
+`OwnPublicationTests` covers first-page confirmation and refresh, pending to
+approved transitions, privacy/publication gates, takedowns after ranking,
+pagination without duplicates or mid-session insertions, bounded candidates,
+and expiry of the reserved slot with normal author spacing. Client QA must
+also verify immediate insertion after a confirmed publish and that an older
+in-flight feed response cannot erase the new card. Full CI on SQLite and
+PostgreSQL remains required before promotion; this does not deploy the change.
+
+Local Windows validation: 243 recommendation/integrity/stats/model tests passed,
+then 31 own-publication/eligibility/paging tests passed after the final cached-page
+visibility checks. Schema generation is semantically unchanged; system checks,
+migration checks and diff hygiene passed. The full 1,268-test attempt did not
+produce a passing result: the existing production-settings test uses the POSIX
+path `/persistent/media`, which fails `Path.is_absolute()` on Windows, and the
+parallel runner then failed to pickle that traceback. Linux SQLite/PostgreSQL CI
+must supply the full-suite result. Temporary test databases were removed by the
+runner.

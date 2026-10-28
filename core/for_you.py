@@ -18,7 +18,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import PostFeedback, PostView, RecommendationPreferences, RepbaseUser, SuggestionDismissal
+from .models import Post, PostFeedback, PostVideo, PostView, RecommendationPreferences, RepbaseUser, SuggestionDismissal
 from .recommendations import (
     HIDEABLE_TOPICS,
     addable_topics,
@@ -127,6 +127,12 @@ class ForYouView(APIView):
         servable = annotate_social_counts(
             viewer,
             visible_posts_for(viewer, posts_for_cards().filter(pk__in=wanted)),
+        ).exclude(
+            # A published own post can be made private after this ranking.
+            # General author access must not keep it on the shared feed.
+            visibility=Post.Visibility.PRIVATE,
+        ).exclude(
+            Exists(PostVideo.objects.filter(post=OuterRef("pk")).exclude(status=PostVideo.Status.APPROVED))
         ).exclude(
             # Turned down since it was ranked. "More like this" stays where it
             # is: the reader wants it, and a retried page should show it.
