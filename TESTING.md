@@ -190,3 +190,31 @@ For an affected account, review the exact unfinished stale task IDs with the
 user, then remove only the confirmed obsolete tasks through the authenticated
 planner UI/API. Preserve completed records and unrelated/custom reminders.
 No production data repair, deployment, or merge is performed by this change.
+
+## Pillow security update (2026-10-28)
+
+The same testing branch pins Pillow 13.0.0 instead of 12.3.0. Production inherits
+this pin through `requirements-production.txt`; no audit exceptions, API changes,
+or changes to image-validation limits are included. This upgrade addresses the
+dependency-audit findings against the old pin. See the
+[upstream release notes](https://pillow.readthedocs.io/en/stable/releasenotes/13.0.0.html).
+
+Validate the installed version and dependency graph, then run the existing
+image-path regressions (synthetic media and mocked providers, no live screening):
+
+```sh
+python -c "import PIL; print(PIL.__version__)"
+pip check
+pip-audit -r requirements-production.txt
+python manage.py test core.test_content_creation.PostPhotoUploadTests core.tests.FeedSizedPhotoTests core.tests.PostsCarryBothPhotoSizesTests core.test_moderation_hardening core.test_moderation_safety core.test_openai_media_moderation core.test_moderation_frames core.test_media_real_frames core.test_media_provider_command core.test_beta_publication --noinput
+```
+
+The real frame tests need both FFmpeg and ffprobe; report their skips explicitly
+if unavailable. Full SQLite/PostgreSQL CI must pass on the new head before
+promotion. The testing-branch update does not upgrade a deployed server.
+
+Local validation on Python 3.14.3 / Pillow 13.0.0: the focused modules above
+discovered 99 tests across two runs (96 passed, three real-FFmpeg tests skipped
+because FFmpeg/ffprobe were not installed). Dependency compatibility, Django
+system checks, and the production requirements security audit passed with no
+known vulnerabilities reported. Full CI evidence belongs to the exact PR head.
