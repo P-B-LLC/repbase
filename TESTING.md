@@ -64,6 +64,21 @@ the clients (see "Contract changes" below).
 
 ## What the backend suite covers
 
+### Friend-post like response regression (2026-10-28)
+
+`core.test_post_likes` covers the HTTP-500 regression where `_card` readback
+incorrectly required the viewer to own the liked post. The live beta was
+still on `de27d1b`; the visibility-scoped correction from `42281fd` was already
+in this branch/main but not deployed. Replacing the correction in memory with
+the deployed query reproduces `Post.DoesNotExist` after the like is saved.
+The new ten-test suite verifies actual 200 responses and saved counts,
+idempotent likes/unlikes, follower permission, blocks, private/unpublished/
+moderated/deleted content, anonymous requests, and privacy changing before
+response readback. Keep these tests even after the isolated beta hotfix.
+
+Do not test likes against real members' posts as an automated deployment
+probe. Health 200 alone does not establish that an authenticated like works.
+
 The original suite (`core/tests.py` and the older `core/test_*.py` modules)
 covers training, food, the planner, saves and their recovery, moderation, media
 signing and deployment configuration. These modules were added with the For
