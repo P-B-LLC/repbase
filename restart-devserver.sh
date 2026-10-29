@@ -67,11 +67,8 @@ if [ -f "$PLIST" ]; then
         echo "launchd refused the job, so this is a plain process instead."
         echo "  It will not survive a reboot, and the agent will fight it for"
         echo "  the port if launchd recovers. Re-run this script then."
-        # The agent carries an environment; a bare nohup would not, and the
-        # food search would quietly fall back to a rate-limited demo key.
-        KEY="$(/usr/libexec/PlistBuddy -c \
-            'Print :EnvironmentVariables:USDA_FDC_API_KEY' "$PLIST" 2>/dev/null)"
-        USDA_FDC_API_KEY="$KEY" nohup "$REPO/.venv/bin/python" \
+        # Open Food Facts reads do not require an API key.
+        nohup "$REPO/.venv/bin/python" \
             manage.py runserver "127.0.0.1:$PORT" --noreload \
             >> "$LOG" 2>&1 < /dev/null &
         disown

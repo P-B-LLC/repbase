@@ -402,15 +402,7 @@ class PersonalizationView(APIView):
 
 
 class FoodSearchView(APIView):
-    """Look a food up in FoodData Central.
-
-    Proxied rather than called from the app, for four reasons that all point
-    the same way: the API key stays here; every device is not separately
-    telling a third party what its owner is eating; the results can be cached
-    against a rate limit that is shared by everybody; and the reading of the
-    upstream response -- which is where the wrong numbers come from -- happens
-    once, in one place, with tests around it.
-    """
+    """Cached Open Food Facts search/barcodes without forwarding user identity."""
 
     permission_classes = [IsAuthenticated]
     throttle_scope = "food_search"
@@ -423,13 +415,14 @@ class FoodSearchView(APIView):
                 type=str,
                 location=OpenApiParameter.QUERY,
                 required=True,
-                description="What to search for. Two characters or more.",
+                description="Submit a food/brand search (two characters minimum), or barcode: followed by a GTIN-8/12/13/14 product barcode. Do not search on every keystroke.",
             )
         ],
         responses={200: FoodSearchResultSerializer(many=True)},
         description=(
-            "Searches USDA FoodData Central and returns foods in the shape a "
-            "food entry is logged in. Results are cached for a week."
+            "Searches Open Food Facts or looks up a product barcode. Only records with "
+            "complete calories and macros are returned. Results are cached; empty means "
+            "not found or incomplete nutrition. Attribute Open Food Facts (ODbL)."
         ),
     )
     def get(self, request):
@@ -440,7 +433,12 @@ class FoodSearchView(APIView):
         if len(term) < 2:
             return Response([])
 
-        cached = FoodSearchCache.objects.filter(term=term).first()
+        try:
+            key = food_sources.cache_key(term)
+        except ValueError as error:
+            raise ValidationError({"q": str(error)})
+
+        cached = FoodSearchCache.objects.filter(term=key).first()
         if cached is not None and cached.is_fresh:
             return Response(cached.payload)
 
@@ -450,7 +448,7 @@ class FoodSearchView(APIView):
             # A stale answer beats no answer: the figures are reference data,
             # and a week-old calorie count for oats is still the calorie count
             # for oats.
-            if cached is not None:
+            if cached is not None and timezone.now() - cached.fetched_at < FoodSearchCache.RETENTION:
                 return Response(cached.payload)
             raise ServiceUnavailable(
                 "The food database could not be reached. You can still reuse a "
@@ -459,7 +457,7 @@ class FoodSearchView(APIView):
 
         payload = FoodSearchResultSerializer(foods, many=True).data
         FoodSearchCache.objects.update_or_create(
-            term=term, defaults={"payload": payload}
+            term=key, defaults={"payload": payload}
         )
         return Response(payload)
 

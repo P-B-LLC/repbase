@@ -1645,14 +1645,16 @@ paths:
   /api/v1/food/search/:
     get:
       operationId: food_search_list
-      description: Searches USDA FoodData Central and returns foods in the shape a
-        food entry is logged in. Results are cached for a week.
+      description: Searches Open Food Facts or looks up a product barcode. Only records
+        with complete calories and macros are returned. Results are cached; empty
+        means not found or incomplete nutrition. Attribute Open Food Facts (ODbL).
       parameters:
       - in: query
         name: q
         schema:
           type: string
-        description: What to search for. Two characters or more.
+        description: 'Submit a food/brand search (two characters minimum), or barcode:
+          followed by a GTIN-8/12/13/14 product barcode. Do not search on every keystroke.'
         required: true
       tags:
       - food

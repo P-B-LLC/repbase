@@ -4175,13 +4175,11 @@ class Personalization(models.Model):
 
 
 class FoodSearchCache(models.Model):
-    """What FoodData Central said about a search term, kept for a while.
+    """Provider-prefixed food catalogue responses and shared request gates.
 
-    Not an optimisation. FoodData Central rates by IP, and every request from
-    here leaves the same one, so the whole userbase shares a single allowance
-    of a thousand an hour. Without this, a few dozen people searching at once
-    would spend it and everybody's search would start failing at the same
-    moment. Cached, a term anyone has looked up recently costs nothing.
+    Open Food Facts limits requests by IP. Cached results avoid spending the
+    shared allowance. Provider prefixes prevent old USDA responses from being
+    reused. Gate rows contain only the next permitted request timestamp.
 
     Two clocks, deliberately far apart: LIFETIME decides when an answer is
     re-fetched, RETENTION decides when the row is deleted. See both below.
@@ -4189,14 +4187,13 @@ class FoodSearchCache(models.Model):
 
     #: When an answer stops being worth trusting and is fetched again.
     #:
-    #: A week, because the data is public-domain reference material that
-    #: changes on the timescale of a survey, not a day.
+    #: Community product data can change; users should verify the label.
     LIFETIME = timedelta(days=7)
 
     #: When a row stops being worth keeping at all, which is a different
     #: question and a much later answer.
     #:
-    #: Past LIFETIME a row is stale but not useless: when FoodData Central
+    #: Past LIFETIME a row is stale but not useless: when Open Food Facts
     #: cannot be reached, the search endpoint serves the stale payload rather
     #: than failing, because a week-old calorie count for oats is still the
     #: calorie count for oats. Pruning on LIFETIME would quietly delete that
