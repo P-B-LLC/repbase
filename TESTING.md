@@ -144,3 +144,72 @@ break a client generated from the previous contract: both clients ignore keys
 they do not know. Adding a value to an enum that appears in a *response* does
 break the generated Swift client, which decodes enums strictly; send new
 values as plain strings instead, as `Post.kind` does.
+
+## Workout schedule and planner synchronization (2026-10-28)
+
+The testing branch `work/testflight-calendar-sync-2026-10-28` adds migration
+`0081_plannerentry_source_schedule`. It records private provenance only for
+planner tasks newly created by `schedules/sync-planner/`; a manually authored
+task adopted for the same workout/date is never claimed as generated data.
+No API request/response fields change and no Swift client regeneration is needed.
+
+Removing a schedule now removes its untouched, unfinished generated task in
+the same transaction, including bulk clear, weekly-repeat cleanup, rotation
+changes, and workout deletion. Completed records, manual/adopted tasks, and
+generated tasks customized with details/steps are retained and detached.
+Ending a rotation closes its rule and removes only its own future untrained
+dates. Recorded/active sessions, past dates, other rotations, and manually
+scheduled workouts remain intact. Training dates use the account's time zone.
+Moving or replacing a scheduled workout updates its untouched generated task
+in place. Renaming a workout updates untouched generated titles. Manual,
+customized, and completed task details are never rewritten by those updates;
+moving their former schedule detaches them and can offer a new task at the new
+date. A task already authored at the destination is adopted without ownership.
+
+Focused validation:
+
+```sh
+python manage.py test core.test_schedule_planner_sync
+python manage.py makemigrations --check --dry-run
+python manage.py check
+```
+
+Run the focused tests again with `config.test_postgres` for real concurrent
+sync/removal validation; SQLite deliberately skips PostgreSQL row-lock tests.
+The full `core` suite and schema comparison remain release requirements.
+
+### Existing stale planner tasks need conservative review
+
+This migration deliberately does not guess ownership for legacy tasks. Older
+syncs created some tasks and adopted others, but stored no way to distinguish
+them. Already orphaned tasks may therefore remain after upgrading, as may
+customized reminders that the user explicitly changed. Do not bulk-delete all
+workout-category tasks or infer generated ownership from a matching title.
+
+For an affected account, review the exact unfinished stale task IDs with the
+user, then remove only the confirmed obsolete tasks through the authenticated
+planner UI/API. Preserve completed records and unrelated/custom reminders.
+No production data repair, deployment, or merge is performed by this change.
+
+### Narrow beta rollout validation
+
+The deployment candidate starts from the live like-response hotfix `8323bb9`,
+not the newer integration branch. See `deploy/CALENDAR_SYNC_HOTFIX.md` for
+the backup, maintenance window, scoped migration and rollback restrictions.
+It preserves the existing like response, moderation-admin and Pillow fixes.
+
+Run `core.test_calendar_sync_release` and `core.test_calendar_sync_shell`
+alongside `core.test_schedule_planner_sync` and `core.test_post_likes`.
+PostgreSQL CI must rehearse the actual migration and custom-format backup;
+Linux CI must exercise the shell's mocked success/failure paths. Local Windows
+skips are not evidence that those release checks passed. Only a draft PR whose
+merge tree equals the pinned deployment candidate is a valid release gate.
+Nothing in these tests deploys production, merges main or updates TestFlight.
+
+The first operator attempt exposed a systemd stop-state assumption that the
+initial command mocks did not model: terminated oneshot workers can be
+`failed/signal` with no remaining processes. Expanded shell tests now preserve
+that evidence and test process/job/cgroup checks plus independent unchanged-web
+recovery. CI additionally opts into `core.test_calendar_sync_systemd` on its
+isolated VM to reproduce the real state with a UUID-named dummy service.
+Never enable that privileged rehearsal on production or a shared server.
