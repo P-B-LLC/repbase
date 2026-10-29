@@ -4771,11 +4771,24 @@ paths:
   /api/v1/social/notifications/read/:
     post:
       operationId: social_notifications_read_create
-      description: Mark every notification as seen. Answers with what is left unread,
-        which is zero, so the caller has one shape to read whichever of these two
-        it called.
+      description: Mark supplied notification IDs as seen (at most 500). An empty
+        ids list changes nothing; omitting ids preserves legacy mark-all behavior.
+        Only the authenticated recipient's currently visible rows are changed. Returns
+        the actual remaining unread count. Clients must see supports_scoped_read=true
+        in a list response before sending ids.
       tags:
       - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationReadRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NotificationReadRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/NotificationReadRequest'
       security:
       - tokenAuth: []
       - cookieAuth: []
@@ -7874,6 +7887,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+        post_preview:
+          allOf:
+          - $ref: '#/components/schemas/NotificationPostPreview'
+          nullable: true
+          readOnly: true
+        supports_scoped_read:
+          type: boolean
+          readOnly: true
       required:
       - actor_first_name
       - actor_id
@@ -7904,6 +7925,43 @@ components:
         * `repost` - Reposted your post
         * `comment` - Commented on your post
         * `moderation_rejected` - Your post was not published
+    NotificationPostPreview:
+      type: object
+      description: Small, recipient-authorized context, never a second full post payload.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        kind:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        thumbnail_url:
+          type: string
+          readOnly: true
+          nullable: true
+        media_kind:
+          type: string
+          readOnly: true
+      required:
+      - id
+      - kind
+      - media_kind
+      - thumbnail_url
+      - title
+    NotificationReadRequest:
+      type: object
+      properties:
+        ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          description: Mark only these notification IDs as read. An empty list changes
+            nothing. Omit the body/ids for legacy mark-all behavior.
+          maxItems: 500
     NullEnum:
       enum:
       - null

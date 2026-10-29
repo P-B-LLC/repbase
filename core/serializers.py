@@ -3644,6 +3644,36 @@ class UnreadCountSerializer(serializers.Serializer):
     unread = serializers.IntegerField(read_only=True)
 
 
+class NotificationPostPreviewSerializer(serializers.Serializer):
+    """Small, recipient-authorized context, never a second full post payload."""
+
+    id = serializers.IntegerField(read_only=True)
+    kind = serializers.CharField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    thumbnail_url = serializers.CharField(read_only=True, allow_null=True)
+    # Plain strings keep new media types compatible with older generated clients.
+    media_kind = serializers.CharField(read_only=True)
+
+
+class NotificationReadSerializer(serializers.Serializer):
+    ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        required=False,
+        allow_empty=True,
+        max_length=500,
+        help_text=(
+            "Mark only these notification IDs as read. An empty list changes nothing. "
+            "Omit the body/ids for legacy mark-all behavior."
+        ),
+    )
+
+    def validate(self, attrs):
+        # A misspelled field must not accidentally become legacy mark-all.
+        if set(self.initial_data) - {"ids"}:
+            raise serializers.ValidationError("Only ids may be supplied.")
+        return attrs
+
+
 class NotificationSerializer(serializers.ModelSerializer):
     """One line of the notifications page.
 
@@ -3671,6 +3701,48 @@ class NotificationSerializer(serializers.ModelSerializer):
     )
     is_read = serializers.SerializerMethodField()
     message = serializers.SerializerMethodField()
+    post_preview = serializers.SerializerMethodField(required=False)
+    supports_scoped_read = serializers.SerializerMethodField(required=False)
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_supports_scoped_read(self, notification):
+        # Older backends ignore the body of read/ and mark every row. Clients
+        # must see this capability before sending the selective-read payload.
+        return True
+
+    @extend_schema_field(NotificationPostPreviewSerializer(allow_null=True))
+    def get_post_preview(self, notification):
+        if notification.kind == Notification.Kind.MODERATION_REJECTED:
+            return None
+        # The list view supplies only posts that passed recipient visibility
+        # checks in one bounded query. Standalone serialization fails closed;
+        # never fall back to an unguarded post relation or a query per row.
+        post = self.context.get("notification_preview_posts", {}).get(notification.post_id)
+        if post is None:
+            return None
+        source = post.repost_of if post.kind == Post.Kind.REPOST else post
+        if source is None:
+            return None
+        snapshot = getattr(source, {
+            Post.Kind.WORKOUT: "workout", Post.Kind.MEAL: "meal",
+            Post.Kind.PLANNER: "planner",
+        }.get(source.kind, ""), None)
+        title = source.caption.strip() or getattr(snapshot, "title", "") or getattr(snapshot, "name", "")
+        video = getattr(source, "video", None)
+        request = self.context.get("request")
+        if video is not None:
+            media_kind = "video"
+            thumbnail = PostVideoSerializer(context=self.context).get_thumbnail_url(video)
+        else:
+            media_kind = "photo" if source.image or source.feed_image else "none"
+            thumbnail = feed_image_url_for(source, request)
+        return NotificationPostPreviewSerializer({
+            "id": post.id,
+            "kind": source.kind,
+            "title": title[:120],
+            "thumbnail_url": thumbnail,
+            "media_kind": media_kind,
+        }).data
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_message(self, notification):
@@ -3693,6 +3765,8 @@ class NotificationSerializer(serializers.ModelSerializer):
             "is_read",
             "message",
             "created_at",
+            "post_preview",
+            "supports_scoped_read",
         ]
 
     @extend_schema_field(serializers.CharField(allow_null=True))

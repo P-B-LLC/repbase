@@ -157,6 +157,7 @@ from .serializers import (
     FollowRequestSerializer,
     FoodEntrySerializer,
     NotificationSerializer,
+    NotificationReadSerializer,
     UnreadCountSerializer,
     FoodMealSerializer,
     GymSerializer,
@@ -4461,10 +4462,46 @@ class NotificationViewSet(
 
     def get_queryset(self):
         viewer = profile_for(self.request.user)
+        visible_posts = visible_posts_for(viewer, Post.objects.all()).values("pk")
         return without_blocked_authors(viewer, super().get_queryset().filter(recipient=viewer), 'actor').exclude(
             comment__is_hidden=True).exclude(comment__parent__is_hidden=True).exclude(
                 Q(post__is_hidden=True) & ~Q(kind=Notification.Kind.MODERATION_REJECTED)).filter(
-            actor__user__is_active=True)
+            actor__user__is_active=True).filter(
+                Q(post__isnull=True) | Q(post_id__in=visible_posts)
+                | Q(kind=Notification.Kind.MODERATION_REJECTED)
+            ).filter(
+                # Internal/legacy rows must not quote a different post's
+                # comment, or evade post visibility with a missing post ID.
+                Q(comment__isnull=True) | Q(comment__post_id=models.F("post_id"))
+            )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = list(page if page is not None else queryset)
+        ids = {row.post_id for row in rows if row.post_id is not None
+               and row.kind != Notification.Kind.MODERATION_REJECTED}
+        # Re-check visibility while fetching previews, after selecting this
+        # page. Nothing is fetched/signed merely because a notification holds
+        # a post ID. Reposts' originals pass the same visibility helper.
+        preview_posts = visible_posts_for(
+            profile_for(request.user), Post.objects.filter(pk__in=ids)
+        ).select_related(
+            "workout", "meal", "planner", "video", "repost_of",
+            "repost_of__workout", "repost_of__meal", "repost_of__planner",
+            "repost_of__video",
+        )
+        context = self.get_serializer_context()
+        context["notification_preview_posts"] = {post.id: post for post in preview_posts}
+        # If a post was removed/restricted between the page read and preview
+        # read, suppress its ordinary event too, including quoted comments.
+        # A previously computed paginator count may be briefly conservative;
+        # it must never justify returning newly restricted content.
+        rows = [row for row in rows if row.post_id is None
+                or row.kind == Notification.Kind.MODERATION_REJECTED
+                or row.post_id in context["notification_preview_posts"]]
+        serializer = self.get_serializer(rows, many=True, context=context)
+        return self.get_paginated_response(serializer.data) if page is not None else Response(serializer.data)
 
     @extend_schema(
         request=None,
@@ -4480,20 +4517,29 @@ class NotificationViewSet(
         )
 
     @extend_schema(
-        request=None,
+        request=NotificationReadSerializer,
         responses={200: UnreadCountSerializer},
         description=(
-            "Mark every notification as seen. Answers with what is left "
-            "unread, which is zero, so the caller has one shape to read "
-            "whichever of these two it called."
+            "Mark supplied notification IDs as seen (at most 500). An empty ids "
+            "list changes nothing; omitting ids preserves legacy mark-all behavior. "
+            "Only the authenticated recipient's currently visible rows are changed. "
+            "Returns the actual remaining unread count. Clients must see "
+            "supports_scoped_read=true in a list response before sending ids."
         ),
     )
     @action(detail=False, methods=["post"], url_path="read", pagination_class=None)
     def mark_read(self, request):
-        self.get_queryset().filter(read_at__isnull=True).update(
+        body = NotificationReadSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        unread = self.get_queryset().filter(read_at__isnull=True)
+        if "ids" in body.validated_data:
+            unread = unread.filter(pk__in=body.validated_data["ids"])
+        unread.update(
             read_at=timezone.now()
         )
-        return Response(UnreadCountSerializer({"unread": 0}).data)
+        return Response(UnreadCountSerializer({
+            "unread": self.get_queryset().filter(read_at__isnull=True).count()
+        }).data)
 
 
 class FollowRequestViewSet(
