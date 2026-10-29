@@ -9,6 +9,7 @@ from copy import deepcopy
 from datetime import timedelta
 import io
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -328,18 +329,41 @@ class CalendarSyncReleasePostgresTests(TransactionTestCase):
             release.verify(before)
 
     def test_real_custom_backup_can_be_listed_without_restoring_database(self):
+        versions = {}
         for tool in ("pg_dump", "pg_restore"):
             self.assertIsNotNone(shutil.which(tool), f"PostgreSQL release rehearsal requires {tool} on PATH")
+            version = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=10, check=False)
+            self.assertEqual(version.returncode, 0, f"Could not read {tool} version; stderr withheld")
+            match = re.match(rf"^{tool} \(PostgreSQL\) (\d+)(?:\.(\d+))?", version.stdout.strip())
+            self.assertIsNotNone(match, f"Could not identify {tool} version; output withheld")
+            versions[tool] = (int(match[1]), int(match[2] or 0))
+        server_version = connection.pg_version
+        server_major = server_version // 10000
+        diagnostics = ", ".join([
+            f"server={server_major}.{server_version % 10000}",
+            *(f"{tool}={major}.{minor}" for tool, (major, minor) in versions.items()),
+        ])
+        # Versions are safe diagnostics; never include the DB URL, hostname,
+        # credentials, or raw pg_dump stderr when this rehearsal fails.
+        print(f"Calendar-sync backup toolchain: {diagnostics}")
+        self.assertGreaterEqual(versions["pg_dump"][0], server_major,
+                                f"pg_dump cannot back up a newer PostgreSQL major version: {diagnostics}")
+        self.assertGreaterEqual(versions["pg_restore"][0], versions["pg_dump"][0],
+                                f"pg_restore is older than the archive-producing client: {diagnostics}")
         # NAME is the active test database, not the configured non-test name.
         self.assertTrue(str(connection.settings_dict["NAME"]).startswith("test_"))
         before = release.status()
         with tempfile.TemporaryFile() as archive:
-            release.backup(archive)
+            try:
+                release.backup(archive)
+            except release.ReleaseError:
+                self.fail(f"Disposable database backup failed ({diagnostics}); connection details withheld")
             archive.seek(0)
             self.assertEqual(archive.read(5), b"PGDMP")
             archive.seek(0)
             result = subprocess.run(["pg_restore", "--list"], stdin=archive, capture_output=True, timeout=60, check=False)
-        self.assertEqual(result.returncode, 0, "pg_restore could not validate the disposable backup")
+        self.assertEqual(result.returncode, 0,
+                         f"pg_restore could not validate the disposable backup ({diagnostics}); stderr withheld")
         listing = result.stdout.decode("utf-8", errors="replace")
         self.assertIn("core_plannerentry", listing)
         self.assertIn("core_workoutschedule", listing)

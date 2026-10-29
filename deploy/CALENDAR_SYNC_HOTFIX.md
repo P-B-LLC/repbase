@@ -105,6 +105,9 @@ zero-link rollback compatibility and populated-link rollback refusal against
 a disposable PostgreSQL database, plus the runtime schedule regressions.
 Mocked shell checks alone do not establish database migration safety. Record
 the final candidate's CI links/results in its draft validation PR.
+The PostgreSQL CI job explicitly installs matching version-17 client tools on
+the disposable runner for the real backup rehearsal. This does not install or
+change any software on the live beta server.
 `core/test_calendar_sync_shell.py` exercises the helper as a Bash subprocess
 with temporary paths and mocked host commands: success, pre-migration failure,
 backup failure, quiescence failure, unsafe linked-data rollback refusal,

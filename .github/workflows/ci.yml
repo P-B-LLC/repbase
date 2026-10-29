@@ -55,6 +55,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+      # The runner's default client can be older than the PostgreSQL 17
+      # service. The real backup rehearsal needs a compatible pg_dump, not
+      # a skipped assertion. These packages are installed on CI only.
+      - name: Match backup client tools to PostgreSQL 17
+        run: |
+          pg_dump --version
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client-17
+          echo "/usr/lib/postgresql/17/bin" >> "$GITHUB_PATH"
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          /usr/lib/postgresql/17/bin/pg_restore --version
       - run: pip install -r requirements-production.txt
       - run: python manage.py test core
       - name: Check production settings without contacting hosted services

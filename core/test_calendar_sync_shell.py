@@ -189,6 +189,7 @@ class CalendarSyncShellTests(unittest.TestCase):
                 "deploy/deploy-calendar-sync-hotfix.sh", "deploy/CALENDAR_SYNC_HOTFIX.md",
                 "deploy/calendar_sync_release.py", "core/test_calendar_sync_release.py",
                 "core/test_calendar_sync_shell.py", "TESTING.md",
+                ".github/workflows/ci.yml",
             ],
             "units": {
                 unit: {"ActiveState": "active", "SubState": "running", "Result": "success"}

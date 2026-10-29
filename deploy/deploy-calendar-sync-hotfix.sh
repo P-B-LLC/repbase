@@ -63,6 +63,7 @@ while IFS= read -r path; do
         core/schedule_sync.py|core/test_schedule_planner_sync.py|TESTING.md) ;;
         deploy/deploy-calendar-sync-hotfix.sh|deploy/CALENDAR_SYNC_HOTFIX.md) ;;
         deploy/calendar_sync_release.py|core/test_calendar_sync_release.py|core/test_calendar_sync_shell.py) ;;
+        .github/workflows/ci.yml) ;; # Matching PostgreSQL client on CI only.
         *) fail "Unexpected changed path: $path" ;;
     esac
 done <<< "$changed_paths"
