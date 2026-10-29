@@ -69,6 +69,8 @@ jobs:
           /usr/lib/postgresql/17/bin/pg_dump --version
           /usr/lib/postgresql/17/bin/pg_restore --version
       - run: pip install -r requirements-production.txt
+      - name: Rehearse scoped backup and migration before the full suite
+        run: python manage.py test core.test_calendar_sync_release --noinput
       - run: python manage.py test core
       - name: Check production settings without contacting hosted services
         env:

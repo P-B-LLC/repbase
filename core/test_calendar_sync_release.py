@@ -353,15 +353,20 @@ class CalendarSyncReleasePostgresTests(TransactionTestCase):
         # NAME is the active test database, not the configured non-test name.
         self.assertTrue(str(connection.settings_dict["NAME"]).startswith("test_"))
         before = release.status()
-        with tempfile.TemporaryFile() as archive:
+        with tempfile.TemporaryDirectory(prefix="rytivo-sync-backup-rehearsal-") as temporary:
+            archive_path = os.path.join(temporary, "database.dump")
             try:
-                release.backup(archive)
+                with open(archive_path, "wb") as archive:
+                    release.backup(archive)
             except release.ReleaseError:
                 self.fail(f"Disposable database backup failed ({diagnostics}); connection details withheld")
-            archive.seek(0)
-            self.assertEqual(archive.read(5), b"PGDMP")
-            archive.seek(0)
-            result = subprocess.run(["pg_restore", "--list"], stdin=archive, capture_output=True, timeout=60, check=False)
+            with open(archive_path, "rb") as archive:
+                self.assertEqual(archive.read(5), b"PGDMP")
+            # Match the deployment helper: let pg_restore open the archive.
+            # Buffered Python reads can leave an inherited stdin descriptor
+            # at a different offset even after the Python stream seeks to 0.
+            result = subprocess.run(["pg_restore", "--list", archive_path],
+                                    capture_output=True, timeout=60, check=False)
         self.assertEqual(result.returncode, 0,
                          f"pg_restore could not validate the disposable backup ({diagnostics}); stderr withheld")
         listing = result.stdout.decode("utf-8", errors="replace")
