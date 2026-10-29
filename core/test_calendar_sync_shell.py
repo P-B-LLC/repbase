@@ -85,23 +85,64 @@ if name == "systemctl":
         unit = args[-1]
         prop = next(arg.split("=", 1)[1] for arg in args if arg.startswith("--property="))
         data = state["units"].get(unit, {})
-        if prop == "LoadState":
-            done("loaded" if data else "not-found")
-        done(data.get(prop, ""))
+        def value(key):
+            if key == "LoadState":
+                return data.get("LoadState", "loaded") if data else "not-found"
+            return data.get(key, "")
+        if "--value" in args:
+            done(value(prop))
+        done("\n".join(key + "=" + value(key) for key in prop.split(",")))
     if operation == "stop":
-        failing = state["scenario"] == "quiesce_failure" and "repbase.service" in args
+        scenario = state["scenario"]
+        failing = scenario == "quiesce_failure" and "repbase.service" in args
+        worker_failure = scenario == "stop_worker_failure" and "repbase-media-screening.service" in args
         for unit in args[1:]:
             if failing and unit == "repbase.service":
                 continue
-            state["units"][unit].update(ActiveState="inactive", SubState="dead", Result="success")
-        done(code=int(failing))
+            data = state["units"][unit]
+            data.update(ActiveState="inactive", SubState="dead", Result="success",
+                        MainPID="0", ControlPID="0", Job="", ControlGroup="")
+            if unit == "repbase-media-screening.service":
+                if scenario.startswith("stopped_signal") or scenario in (
+                    "main_pid_remains", "control_pid_remains", "queued_job_remains",
+                    "cgroup_populated", "cgroup_missing", "cgroup_empty",
+                    "cgroup_removed", "cgroup_outside_root",
+                ):
+                    # systemd retains this outcome after intentionally stopping
+                    # a running one-shot, even though no process can write.
+                    data.update(ActiveState="failed", SubState="failed", Result="signal")
+                if scenario == "main_pid_remains":
+                    data["MainPID"] = "1001"
+                if scenario == "control_pid_remains":
+                    data["ControlPID"] = "1002"
+                if scenario == "queued_job_remains":
+                    data["Job"] = "42"
+                if scenario in ("cgroup_populated", "cgroup_missing", "cgroup_empty", "cgroup_removed"):
+                    data["ControlGroup"] = "/system.slice/repbase-media-screening.service"
+                if scenario == "cgroup_outside_root":
+                    data["ControlGroup"] = "/../outside-cgroup"
+                if scenario == "unit_not_loaded_after_stop":
+                    data["LoadState"] = "not-found"
+                if worker_failure:
+                    data.update(ActiveState="activating", SubState="start", MainPID="1001")
+        done(code=int(failing or worker_failure))
+    if operation == "reset-failed":
+        for unit in args[1:]:
+            data = state["units"][unit]
+            if data["ActiveState"] == "failed":
+                # Clearing exit bookkeeping does not terminate any process.
+                # The helper must prove quiescence before issuing this call.
+                data.update(ActiveState="inactive", SubState="dead", Result="success")
+        done()
     if operation == "start":
         for unit in (arg for arg in args[1:] if not arg.startswith("--")):
             data = state["units"][unit]
-            data.update(ActiveState="active", SubState="running", Result="success")
+            data.update(ActiveState="active", SubState="running", Result="success",
+                        LoadState="loaded", MainPID="2001" if unit.endswith(".service") else "0",
+                        ControlPID="0", Job="", ControlGroup="")
             if unit != "repbase.service" and unit.endswith(".service"):
                 # Legitimate one-shot completion is not a restart failure.
-                data.update(ActiveState="inactive", SubState="dead")
+                data.update(ActiveState="inactive", SubState="dead", MainPID="0")
             if state["head"] == state["target"]:
                 if state["scenario"] == "links_then_health_failure" and unit == "repbase.service":
                     state["links"] = 1
@@ -115,9 +156,9 @@ if name == "python":
         action = args[2]
         state["support"].append(action)
         if action == "preflight":
-            done(json.dumps({"baseline": True}), code=int(state["scenario"] == "preflight_failure"))
+            done(json.dumps({"baseline": True}), code=int(state["scenario"].endswith("preflight_failure")))
         if action == "backup":
-            done("PGDMP mock private database", code=int(state["scenario"] == "backup_failure"))
+            done("PGDMP mock private database", code=int(state["scenario"].endswith("backup_failure")))
         if action == "migrate":
             state["migrated"] = True
             done()
@@ -138,6 +179,8 @@ if name == "pg_dump":
 if name == "curl":
     if state["scenario"] == "links_then_health_failure" and state["head"] == state["target"]:
         done("500")
+    if state["scenario"] == "api_bad_gateway" and state["head"] == state["target"]:
+        done("200" if args[-1].endswith("/health/") else "502")
     done("200" if args[-1].endswith("/health/") else "401")
 save()
 print("Unexpected mocked command: " + name + " " + repr(args), file=sys.stderr)
@@ -155,6 +198,9 @@ class CalendarSyncShellTests(unittest.TestCase):
         (self.app / ".git").mkdir(parents=True)
         (self.app / ".venv/bin").mkdir(parents=True)
         (self.root / "records").mkdir()
+        self.cgroup_root = self.root / "cgroup"
+        self.cgroup_root.mkdir()
+        (self.cgroup_root / "cgroup.controllers").write_text("cpu memory pids\n")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         for command in ("id", "flock", "sleep", "sudo", "git", "systemctl", "pg_dump", "pg_restore", "curl"):
@@ -168,6 +214,7 @@ class CalendarSyncShellTests(unittest.TestCase):
         helper = source.read_text()
         substitutions = {
             "APP=/home/django/app": f"APP={self.app}",
+            "CGROUP_ROOT=/sys/fs/cgroup": f"CGROUP_ROOT={self.cgroup_root}",
             "/etc/repbase.env": str(self.env_file),
             "/etc/repbase-release": str(self.stamp),
             "/run/lock/repbase-deploy.lock": str(self.root / "deployment.lock"),
@@ -189,16 +236,22 @@ class CalendarSyncShellTests(unittest.TestCase):
                 "deploy/deploy-calendar-sync-hotfix.sh", "deploy/CALENDAR_SYNC_HOTFIX.md",
                 "deploy/calendar_sync_release.py", "core/test_calendar_sync_release.py",
                 "core/test_calendar_sync_shell.py", "TESTING.md",
+                "core/test_calendar_sync_systemd.py",
                 ".github/workflows/ci.yml",
             ],
             "units": {
-                unit: {"ActiveState": "active", "SubState": "running", "Result": "success"}
+                unit: {
+                    "LoadState": "loaded", "ActiveState": "active", "SubState": "running",
+                    "Result": "success", "MainPID": "1001" if unit.endswith(".service") else "0",
+                    "ControlPID": "0", "Job": "", "ControlGroup": "",
+                }
                 for unit in SERVICE_NAMES + TIMER_NAMES
             },
         }
         # Exercise a running one-shot and originally idle service/timer, too.
         self.state["units"]["repbase-media-screening.service"]["ActiveState"] = "activating"
         self.state["units"]["repbase-ranking-model.service"]["ActiveState"] = "inactive"
+        self.state["units"]["repbase-ranking-model.service"]["MainPID"] = "0"
         self.state["units"]["repbase-ranking-model.timer"]["ActiveState"] = "inactive"
 
     def executable(self, path, text):
@@ -207,6 +260,16 @@ class CalendarSyncShellTests(unittest.TestCase):
 
     def run_helper(self, scenario="success"):
         self.state["scenario"] = scenario
+        if scenario == "stopped_signal_inactive_worker":
+            self.state["units"]["repbase-media-screening.service"].update(
+                ActiveState="inactive", SubState="dead", MainPID="0",
+            )
+        if scenario in ("cgroup_populated", "cgroup_empty", "cgroup_missing"):
+            group = self.cgroup_root / "system.slice/repbase-media-screening.service"
+            group.mkdir(parents=True)
+            if scenario != "cgroup_missing":
+                populated = "1" if scenario == "cgroup_populated" else "0"
+                (group / "cgroup.events").write_text(f"populated {populated}\nfrozen 0\n")
         self.state_file.write_text(json.dumps(self.state))
         environment = os.environ.copy()
         environment.update({
@@ -272,6 +335,122 @@ class CalendarSyncShellTests(unittest.TestCase):
         self.assertEqual(self.state["head"], BASE)
         self.assertFalse(self.commands("git", "checkout"))
         self.assertEqual(self.state["support"], [])
+
+    def test_intentionally_stopped_oneshot_signal_with_no_processes_can_deploy(self):
+        result = self.run_helper("stopped_signal")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state["head"], TARGET)
+        self.assertEqual(self.stamp.read_text().strip(), TARGET)
+        self.assertTrue(self.state["migrated"])
+        self.assertEqual(self.state["units"]["repbase.service"]["ActiveState"], "active")
+        record, = (self.root / "records").iterdir()
+        evidence = (record / "unit-stop-evidence").read_text()
+        worker = evidence.split("unit=repbase-media-screening.service\n", 1)[1].split("\nunit=", 1)[0]
+        for expected in ("ActiveState=failed", "Result=signal", "MainPID=0", "ControlPID=0"):
+            self.assertIn(expected, worker.splitlines())
+
+    def test_idle_worker_started_by_timer_before_stop_is_reset_without_forced_start(self):
+        result = self.run_helper("stopped_signal_inactive_worker")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state["head"], TARGET)
+        worker = self.state["units"]["repbase-media-screening.service"]
+        self.assertEqual(worker["ActiveState"], "inactive")
+        self.assertEqual(worker["Result"], "success")
+        self.assertEqual(self.state["units"]["repbase-media-screening.timer"]["ActiveState"], "active")
+        self.assertTrue(any("repbase-media-screening.service" in args
+                            for args in self.commands("systemctl", "reset-failed")))
+        self.assertFalse(any("repbase-media-screening.service" in args
+                             for args in self.commands("systemctl", "start")))
+        record, = (self.root / "records").iterdir()
+        evidence = (record / "unit-stop-evidence").read_text()
+        saved_worker = evidence.split("unit=repbase-media-screening.service\n", 1)[1].split("\nunit=", 1)[0]
+        self.assertIn("ActiveState=failed", saved_worker.splitlines())
+        self.assertIn("Result=signal", saved_worker.splitlines())
+
+    def test_stopped_signal_and_preflight_failure_restore_unchanged_base(self):
+        result = self.run_helper("stopped_signal_preflight_failure")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.state["head"], BASE)
+        self.assertFalse(self.state["migrated"])
+        self.assertEqual(self.state["units"]["repbase.service"]["ActiveState"], "active")
+        self.assertEqual(self.stamp.read_text().strip(), BASE)
+
+    def test_stopped_signal_and_backup_failure_restore_unchanged_base(self):
+        result = self.run_helper("stopped_signal_backup_failure")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.state["head"], BASE)
+        self.assertNotIn("migrate", self.state["support"])
+        self.assertEqual(self.state["units"]["repbase.service"]["ActiveState"], "active")
+        self.assertEqual(self.stamp.read_text().strip(), BASE)
+
+    def assert_writer_evidence_blocks_checkout(self, scenario):
+        result = self.run_helper(scenario)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state["head"], BASE)
+        self.assertFalse(self.commands("git", "checkout"))
+        self.assertEqual(self.state["support"], [])
+        self.assertEqual(self.stamp.read_text().strip(), BASE)
+        self.assertFalse(any("repbase-media-screening.service" in args
+                             for args in self.commands("systemctl", "reset-failed")),
+                         "An unsafe/unknown worker must retain its failure evidence")
+        if scenario in (
+            "main_pid_remains", "control_pid_remains", "queued_job_remains",
+            "cgroup_populated", "cgroup_missing", "cgroup_outside_root",
+        ):
+            self.assertEqual(self.state["units"]["repbase-media-screening.service"]["ActiveState"], "failed")
+            self.assertEqual(self.state["units"]["repbase-media-screening.timer"]["ActiveState"], "inactive")
+            self.assertFalse(any("repbase-media-screening.service" in args
+                                 for args in self.commands("systemctl", "start")))
+        # No candidate/schema work started, so a worker problem must not keep
+        # the unchanged web backend down during failure recovery.
+        self.assertEqual(self.state["units"]["repbase.service"]["ActiveState"], "active")
+
+    def test_nonzero_main_pid_blocks_candidate_checkout(self):
+        self.assert_writer_evidence_blocks_checkout("main_pid_remains")
+
+    def test_nonzero_control_pid_blocks_candidate_checkout(self):
+        self.assert_writer_evidence_blocks_checkout("control_pid_remains")
+
+    def test_queued_job_blocks_candidate_checkout(self):
+        self.assert_writer_evidence_blocks_checkout("queued_job_remains")
+
+    def test_populated_cgroup_blocks_candidate_checkout(self):
+        self.assert_writer_evidence_blocks_checkout("cgroup_populated")
+
+    def test_missing_cgroup_evidence_blocks_candidate_checkout(self):
+        self.assert_writer_evidence_blocks_checkout("cgroup_missing")
+
+    def test_cgroup_traversal_blocks_candidate_checkout(self):
+        self.assert_writer_evidence_blocks_checkout("cgroup_outside_root")
+
+    def test_not_loaded_unit_blocks_candidate_checkout(self):
+        self.assert_writer_evidence_blocks_checkout("unit_not_loaded_after_stop")
+
+    def test_proven_empty_cgroup_allows_candidate_checkout(self):
+        result = self.run_helper("cgroup_empty")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state["head"], TARGET)
+        self.assertTrue(self.state["migrated"])
+
+    def test_removed_empty_cgroup_allows_candidate_checkout(self):
+        result = self.run_helper("cgroup_removed")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.state["head"], TARGET)
+        self.assertTrue(self.state["migrated"])
+
+    def test_pre_switch_worker_stop_error_restores_base_web_independently(self):
+        self.assert_writer_evidence_blocks_checkout("stop_worker_failure")
+        starts = self.commands("systemctl", "start")
+        self.assertTrue(starts)
+        self.assertEqual(starts[0][-1], "repbase.service")
+
+    def test_health_200_does_not_accept_api_502(self):
+        result = self.run_helper("api_bad_gateway")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Required health checks did not pass", result.stderr)
+        self.assertEqual(self.state["head"], BASE)
+        self.assertEqual(self.stamp.read_text().strip(), BASE)
+        self.assertEqual(self.state["units"]["repbase.service"]["ActiveState"], "active")
 
     def test_backup_failure_cannot_run_migration(self):
         result = self.run_helper("backup_failure")

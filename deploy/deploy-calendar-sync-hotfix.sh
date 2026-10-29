@@ -10,6 +10,7 @@ APP_USER=django
 BASE=8323bb9ca402a5c0d25628855c5b23e36de64229
 BRANCH=fix/beta-calendar-sync-2026-10-28
 ORIGIN=https://rytivo.app
+CGROUP_ROOT=/sys/fs/cgroup
 TARGET="${1:-}"
 
 fail() { echo "$*" >&2; exit 1; }
@@ -28,7 +29,7 @@ fi
 
 [[ -d $APP/.git && -x $APP/.venv/bin/python ]] || fail 'Expected backend checkout/virtualenv is missing.'
 [[ -r /etc/repbase.env ]] || fail 'Existing backend environment file is missing.'
-for command in git sudo flock systemctl pg_dump pg_restore sha256sum curl cmp; do
+for command in git sudo flock systemctl pg_dump pg_restore sha256sum curl cmp realpath; do
     command -v "$command" >/dev/null || fail "Required command is unavailable: $command"
 done
 exec 9>/run/lock/repbase-deploy.lock
@@ -62,7 +63,7 @@ while IFS= read -r path; do
         core/migrations/0081_plannerentry_source_schedule.py) changed_migration=1 ;;
         core/schedule_sync.py|core/test_schedule_planner_sync.py|TESTING.md) ;;
         deploy/deploy-calendar-sync-hotfix.sh|deploy/CALENDAR_SYNC_HOTFIX.md) ;;
-        deploy/calendar_sync_release.py|core/test_calendar_sync_release.py|core/test_calendar_sync_shell.py) ;;
+        deploy/calendar_sync_release.py|core/test_calendar_sync_release.py|core/test_calendar_sync_shell.py|core/test_calendar_sync_systemd.py) ;;
         .github/workflows/ci.yml) ;; # Matching PostgreSQL client on CI only.
         *) fail "Unexpected changed path: $path" ;;
     esac
@@ -124,19 +125,125 @@ run_app() (
     exec sudo -H -E -u "$APP_USER" "$@"
 )
 support() { run_app "$APP/.venv/bin/python" -m deploy.calendar_sync_release "$@"; }
+# BEGIN QUIESCENCE CHECK
+unit_is_quiescent() {
+    local unit="$1" state job main_pid control_pid group root directory events key value extra populated=0
+    [[ $(systemctl show --property=LoadState --value "$unit") == loaded ]] || return 1
+    state="$(systemctl show --property=ActiveState --value "$unit")" || return 1
+    job="$(systemctl show --property=Job --value "$unit")" || return 1
+    [[ -z $job ]] || return 1
+    if [[ $unit == *.timer ]]; then
+        [[ $state == inactive ]]
+        return $?
+    fi
+    [[ $unit == *.service ]] || return 1
+    case "$state" in inactive|failed) ;; *) return 1 ;; esac
+    main_pid="$(systemctl show --property=MainPID --value "$unit")" || return 1
+    control_pid="$(systemctl show --property=ControlPID --value "$unit")" || return 1
+    [[ $main_pid == 0 && $control_pid == 0 ]] || return 1
+    group="$(systemctl show --property=ControlGroup --value "$unit")" || return 1
+    [[ -n $group ]] || return 0
+    # MainPID alone can miss remaining children. cgroup v2's populated flag
+    # covers the whole subtree. Unreadable or malformed evidence fails closed.
+    [[ $group == /* && $group != / && $group != //* ]] || return 1
+    case "/${group#/}/" in */../*|*/./*) return 1 ;; esac
+    [[ -r $CGROUP_ROOT/cgroup.controllers ]] || return 1
+    root="$(realpath -e -- "$CGROUP_ROOT")" || return 1
+    directory="$(realpath -m -- "$CGROUP_ROOT$group")" || return 1
+    [[ $directory == "$root/"* ]] || return 1
+    # The kernel can already have removed an empty, stopped unit's cgroup.
+    [[ -e $directory ]] || return 0
+    [[ -d $directory && -r $directory/cgroup.events ]] || return 1
+    events="$(cat -- "$directory/cgroup.events")" || return 1
+    while read -r key value extra; do
+        if [[ $key == populated ]]; then
+            [[ $value == 0 && -z $extra ]] || return 1
+            populated=$((populated + 1))
+        fi
+    done <<< "$events"
+    [[ $populated -eq 1 ]]
+}
+# END QUIESCENCE CHECK
+record_unit_states() {
+    local unit
+    for unit in "${timers[@]}" "${services[@]}"; do
+        printf '\nunit=%s\n' "$unit"
+        systemctl show --property=LoadState,ActiveState,SubState,Result,MainPID,ControlPID,ControlGroup,Job "$unit" || return 1
+    done >> "$record/unit-stop-evidence"
+}
 quiesce() {
-    local unit state failed=0
+    local unit failed=0
     # Stop all timers before their services, including initially idle timers.
     systemctl stop "${timers[@]}" || failed=1
     systemctl stop "${services[@]}" || failed=1
+    record_unit_states || failed=1
     for unit in "${timers[@]}" "${services[@]}"; do
-        state="$(systemctl show --property=ActiveState --value "$unit")" || return 1
-        [[ $state == inactive ]] || failed=1
+        if ! unit_is_quiescent "$unit"; then
+            echo "Could not prove stopped: $unit (see unit-stop-evidence)." >&2
+            failed=1
+        fi
     done
     return "$failed"
 }
+reset_quiescent_worker_failure() {
+    local unit="$1" state
+    state="$(systemctl show --property=ActiveState --value "$unit")" || return 1
+    if [[ $state == failed ]]; then
+        # Evidence is already saved. Clear only a proven stopped worker's
+        # retained failure; an active timer may not launch it immediately.
+        unit_is_quiescent "$unit" || return 1
+        systemctl reset-failed "$unit" || return 1
+    fi
+}
+restore_unchanged_base() {
+    local unit timer failed=0
+    local -A unproven_workers=()
+    # No candidate checkout/migration has even started. A worker-stop failure
+    # must not strand the known unchanged web backend behind another stop gate.
+    [[ $switch_started -eq 0 && $(git_app rev-parse HEAD) == "$BASE" ]] || return 1
+    clean_checkout || return 1
+    if [[ -f /etc/repbase-release ]]; then
+        [[ $(cat /etc/repbase-release) == "$BASE" ]] || return 1
+    fi
+    if systemctl start repbase.service && wait_for_health; then
+        echo 'Unchanged original backend restored; API health checks passed.' >&2
+    else
+        echo 'RECOVERY NEEDS ATTENTION: unchanged backend could not be started.' >&2
+        failed=1
+    fi
+    # Independently attempt every originally active unit. One problematic
+    # worker must not prevent restoration of the others or of their timers.
+    for unit in "${services[@]:1}"; do
+        timer="${unit%.service}.timer"
+        if [[ ${originally_running[$unit]} == 1 || ${originally_running[$timer]:-0} == 1 ]]; then
+            if ! reset_quiescent_worker_failure "$unit"; then
+                failed=1
+                unproven_workers["$unit"]=1
+                continue
+            fi
+        fi
+        if [[ ${originally_running[$unit]} == 1 ]]; then
+            systemctl start --no-block "$unit" || failed=1
+        fi
+    done
+    for unit in "${timers[@]}"; do
+        if [[ ${originally_running[$unit]} == 1 ]]; then
+            [[ ${unproven_workers[${unit%.timer}.service]:-0} == 0 ]] || continue
+            systemctl start "$unit" || failed=1
+        fi
+    done
+    verify_resumed_units || failed=1
+    [[ $failed -eq 0 ]] || echo 'Some original units need attention; web recovery was attempted independently.' >&2
+    return "$failed"
+}
 resume_original_units() {
-    local unit
+    local unit timer
+    for unit in "${services[@]:1}"; do
+        timer="${unit%.service}.timer"
+        if [[ ${originally_running[$unit]} == 1 || ${originally_running[$timer]:-0} == 1 ]]; then
+            reset_quiescent_worker_failure "$unit" || return 1
+        fi
+    done
     systemctl start repbase.service || return 1
     for unit in "${services[@]:1}"; do
         if [[ ${originally_running[$unit]} == 1 ]]; then
@@ -197,6 +304,14 @@ restore_on_failure() {
     printf 'failed=%s\nexit_code=%s\n' "$(date -Is)" "$code" >> "$record/release"
     if [[ $quiescence_started -eq 0 ]]; then return "$code"; fi
     echo "Rollout failed. Release/backup record: $record" >&2
+    if [[ $switch_started -eq 0 ]]; then
+        if restore_unchanged_base; then
+            printf 'restored_unchanged_base=%s\n' "$BASE" >> "$record/release"
+        else
+            echo 'RECOVERY NEEDS ATTENTION: inspect original service states; no checkout/schema rollback attempted.' >&2
+        fi
+        return "$code"
+    fi
     # Stop any services restarted before a failed health/release-stamp check.
     if ! quiesce; then
         echo 'RECOVERY NEEDS ATTENTION: not all application units stopped. No checkout/schema rollback attempted.' >&2

@@ -205,3 +205,11 @@ Linux CI must exercise the shell's mocked success/failure paths. Local Windows
 skips are not evidence that those release checks passed. Only a draft PR whose
 merge tree equals the pinned deployment candidate is a valid release gate.
 Nothing in these tests deploys production, merges main or updates TestFlight.
+
+The first operator attempt exposed a systemd stop-state assumption that the
+initial command mocks did not model: terminated oneshot workers can be
+`failed/signal` with no remaining processes. Expanded shell tests now preserve
+that evidence and test process/job/cgroup checks plus independent unchanged-web
+recovery. CI additionally opts into `core.test_calendar_sync_systemd` on its
+isolated VM to reproduce the real state with a UUID-named dummy service.
+Never enable that privileged rehearsal on production or a shared server.
