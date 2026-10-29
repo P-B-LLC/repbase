@@ -20,7 +20,7 @@ from django.db.models import (
     Sum,
     Value,
 )
-from django.db.models.functions import Coalesce, Concat
+from django.db.models.functions import Coalesce, Concat, TruncDate
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
@@ -50,6 +50,7 @@ from . import food_sources
 from .post_publication import publication_media, PublicationMediaError, remove_profile_photo
 from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IdempotentCreateMixin
+from .schedule_sync import delete_schedule_rows, lock_schedule_rows, untouched_generated_tasks
 from .serializers import SessionFinishSerializer
 from .params import date_param, id_param
 from .throttles import (
@@ -109,6 +110,7 @@ from .models import (
     food_meals_for_day,
     notify,
     today_for,
+    zone_for,
     normalize_gym_text,
     planner_tasks_for,
     sync_parent_completion,
@@ -1274,6 +1276,19 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
     serializer_class = WorkoutTemplateSerializer
     permission_classes = [IsAuthenticated]
 
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            schedule_ids = lock_schedule_rows(WorkoutSchedule.objects.filter(
+                owner=serializer.instance.owner, workout=serializer.instance
+            ))
+            generated_ids = list(untouched_generated_tasks(schedule_ids).values_list("pk", flat=True))
+            saved = serializer.save()
+            # These IDs were proven unchanged and locked before the template
+            # name changed. Custom titles and completed records stay personal.
+            PlannerEntry.objects.filter(pk__in=generated_ids).update(
+                title=saved.name, updated_at=timezone.now()
+            )
+
     def perform_destroy(self, instance):
         """Deletes a saved workout, unless a rotation is built out of it.
 
@@ -1290,8 +1305,8 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
         Everything else the delete takes is fair. The days it was planned on
         and any weekly repeat of it go with it -- they are plans made of this
         workout and mean nothing without it. Sessions already trained and
-        planner tasks survive: those are a record of what happened, and they
-        are only unlinked.
+        completed/manually authored planner tasks survive and are unlinked;
+        unfinished automatically generated tasks follow their removed plans.
         """
         rotations = list(
             WorkoutCycle.objects.filter(
@@ -1315,7 +1330,11 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
                     )
                 }
             )
-        instance.delete()
+        with transaction.atomic():
+            delete_schedule_rows(WorkoutSchedule.objects.filter(
+                owner=instance.owner, workout=instance
+            ))
+            instance.delete()
 
     def get_queryset(self):
         return self.scope_to_owner(super().get_queryset())
@@ -1385,6 +1404,41 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(owner=self.owner_profile())
 
+    def perform_destroy(self, instance):
+        delete_schedule_rows(self.get_queryset().filter(pk=instance.pk))
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            schedule_ids = lock_schedule_rows(self.get_queryset().filter(pk=serializer.instance.pk))
+            previous = WorkoutSchedule.objects.select_related("workout").get(pk=serializer.instance.pk)
+            serializer.instance = previous
+            generated_ids = list(untouched_generated_tasks(schedule_ids).values_list("pk", flat=True))
+            old_identity = (previous.workout_id, previous.scheduled_date)
+            saved = serializer.save()
+            if old_identity == (saved.workout_id, saved.scheduled_date):
+                return
+
+            # A completed/customized task records its original date; do not
+            # move it with the future plan. It becomes an independent entry.
+            PlannerEntry.objects.filter(source_schedule=saved).exclude(
+                pk__in=generated_ids
+            ).update(source_schedule=None)
+            existing = PlannerEntry.objects.filter(
+                owner=saved.owner, workout=saved.workout,
+                scheduled_date=saved.scheduled_date, kind=PlannerEntry.Kind.TASK,
+            ).exclude(pk__in=generated_ids).first()
+            if existing is not None:
+                # A manual reminder already occupies the destination. Adopt
+                # it without claiming it as generated or overwriting details.
+                PlannerEntry.objects.filter(pk__in=generated_ids).delete()
+            elif generated_ids:
+                PlannerEntry.objects.filter(pk__in=generated_ids).update(
+                    workout=saved.workout, scheduled_date=saved.scheduled_date,
+                    title=saved.workout.name, updated_at=timezone.now(),
+                )
+            saved.planner_synced_at = timezone.now() if existing is not None or generated_ids else None
+            saved.save(update_fields=["planner_synced_at", "updated_at"])
+
     @extend_schema(
         request=PlanWeekSerializer,
         responses={200: WorkoutScheduleSerializer(many=True)},
@@ -1451,24 +1505,29 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
         created = []
         with transaction.atomic():
-            pending = (
-                WorkoutSchedule.objects.select_for_update()
+            pending = list(
+                WorkoutSchedule.objects.select_for_update(of=("self",))
                 .filter(
                     owner=owner,
                     scheduled_date__gte=start,
                     scheduled_date__lte=end,
                     planner_synced_at__isnull=True,
                 )
-                .select_related("workout")
                 .order_by("scheduled_date", "id")
             )
+            # Read names after acquiring schedule locks. A joined template
+            # would also be locked by SELECT FOR UPDATE and could invert a
+            # rename's lock order; a pre-lock join could carry stale names.
+            templates = {workout.pk: workout for workout in WorkoutTemplate.objects.filter(
+                pk__in={schedule.workout_id for schedule in pending}
+            ).only("id", "name")}
             for schedule in pending:
                 # A task may already exist from before this endpoint, or from a
                 # day the user made by hand. Adopt it rather than colliding
                 # with the uniqueness rule.
                 entry = PlannerEntry.objects.filter(
                     owner=owner,
-                    workout=schedule.workout,
+                    workout_id=schedule.workout_id,
                     scheduled_date=schedule.scheduled_date,
                     kind=PlannerEntry.Kind.TASK,
                 ).first()
@@ -1476,10 +1535,11 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                     entry = PlannerEntry.objects.create(
                         owner=owner,
                         kind=PlannerEntry.Kind.TASK,
-                        title=schedule.workout.name,
+                        title=templates[schedule.workout_id].name,
                         category=PlannerCategory.WORKOUT,
                         scheduled_date=schedule.scheduled_date,
-                        workout=schedule.workout,
+                        workout=templates[schedule.workout_id],
+                        source_schedule=schedule,
                     )
                     created.append(entry)
                 schedule.planner_synced_at = timezone.now()
@@ -2253,10 +2313,10 @@ class WorkoutRecurrenceViewSet(
         # front of the user, and one of them may already have been trained.
         # Days the user put there by hand are untouched, which is what the
         # source_recurrence link is for.
-        WorkoutSchedule.objects.filter(
+        delete_schedule_rows(WorkoutSchedule.objects.filter(
             source_recurrence=instance,
             scheduled_date__gte=current_week + timedelta(days=7),
-        ).delete()
+        ))
         if instance.materialized_through is None:
             # Never reached a calendar, so no week depends on it.
             instance.delete()
@@ -4994,9 +5054,7 @@ def clear_schedule_from(owner, day):
     record rather than a plan -- rewriting them would be rewriting history.
     """
     rows = WorkoutSchedule.objects.filter(owner=owner, scheduled_date__gte=day)
-    count = rows.count()
-    rows.delete()
-    return count
+    return delete_schedule_rows(rows)
 
 
 def clear_whole_schedule(owner):
@@ -5011,9 +5069,7 @@ def clear_whole_schedule(owner):
     own, with no foreign key to the schedule row that planned it.
     """
     rows = WorkoutSchedule.objects.filter(owner=owner)
-    count = rows.count()
-    rows.delete()
-    return count
+    return delete_schedule_rows(rows)
 
 
 @extend_schema_view(
@@ -5040,6 +5096,36 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     )
     serializer_class = WorkoutCycleSerializer
     permission_classes = [IsAuthenticated]
+
+    def perform_destroy(self, instance):
+        # Ending a rotation is not erasing its history. Keep the old rule and
+        # days already trained, while withdrawing only future untouched dates
+        # generated by this particular rotation. The FK cleanup follows those
+        # schedule rows into pending generated planner tasks.
+        with transaction.atomic():
+            cycle = WorkoutCycle.objects.select_for_update().get(
+                pk=instance.pk, owner=self.owner_profile()
+            )
+            today = today_for(cycle.owner)
+            if cycle.effective_until is not None and cycle.effective_until <= today:
+                return
+            future = WorkoutSchedule.objects.filter(
+                owner=cycle.owner,
+                source_cycle=cycle,
+                scheduled_date__gte=today,
+            )
+            touched = WorkoutSession.objects.filter(
+                repbase_user=cycle.owner,
+                workout_id=OuterRef("workout_id"),
+            ).annotate(
+                training_day=TruncDate(
+                    Coalesce("started_at", "ended_at"), tzinfo=zone_for(cycle.owner)
+                )
+            ).filter(training_day=OuterRef("scheduled_date"))
+            delete_schedule_rows(future.annotate(has_session=Exists(touched)).filter(has_session=False))
+            end = max(today, cycle.effective_from)
+            cycle.effective_until = min(cycle.effective_until, end) if cycle.effective_until else end
+            cycle.save(update_fields=["effective_until", "updated_at"])
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
@@ -5242,34 +5328,16 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             touched = WorkoutSession.objects.filter(
                 repbase_user=owner,
                 workout_id=models.OuterRef("workout_id"),
-                started_at__date=models.OuterRef("scheduled_date"),
-            )
+            ).annotate(
+                training_day=TruncDate(Coalesce("started_at", "ended_at"), tzinfo=zone_for(owner))
+            ).filter(training_day=models.OuterRef("scheduled_date"))
             removable = future.annotate(
                 has_session=Exists(touched)
             ).filter(has_session=False)
 
-            # What these days put on the planner goes with them.
-            #
-            # PlannerEntry has no link back to the schedule row it came from,
-            # so nothing used to remove it: a day dropped by a rotation left
-            # its task behind, and the task then sat past due for ever. Every
-            # rotation change added another handful, which is how six overdue
-            # workouts appeared for someone who had missed two.
-            #
-            # Completed tasks stay. A day already ticked off is a record of
-            # what happened, not a plan that can be withdrawn.
-            doomed = list(removable.values_list("workout_id", "scheduled_date"))
-            removed = len(doomed)
-            kept = future.count() - removed
-            removable.delete()
-            for workout_id, day in doomed:
-                PlannerEntry.objects.filter(
-                    owner=owner,
-                    workout_id=workout_id,
-                    scheduled_date=day,
-                    kind=PlannerEntry.Kind.TASK,
-                    completed_at__isnull=True,
-                ).delete()
+            before = future.count()
+            removed = delete_schedule_rows(removable)
+            kept = before - removed
 
             # Close the rule in force and open its replacement, rather than
             # editing the anchor in place. The past keeps resolving through
@@ -5321,6 +5389,9 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         left as they are: scheduling the same workout twice on one day would
         read as two sessions to everything that counts them.
         """
+        # All callers hold a transaction. Re-read under the cycle lock so a
+        # stale plan-ahead request cannot write days after the rotation ended.
+        cycle.refresh_from_db(from_queryset=WorkoutCycle.objects.select_for_update())
         owner = cycle.owner
         # A day per row, up to a date the client chose. See PLAN_AHEAD_LIMIT_DAYS.
         through = min(through, plan_ahead_limit(owner))

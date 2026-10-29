@@ -16,6 +16,7 @@ from django.db import models, transaction
 from .video_jobs_models import VideoJob, VideoStoredObject, VideoMetric, VideoDailyUpload  # noqa: F401
 from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
 from .access_models import AccountAccess, AccessPolicyLock, AccessAudit, CommunitySpotlight  # noqa: F401
+from .schedule_sync import remove_unfinished_generated_tasks
 from zoneinfo import ZoneInfo, available_timezones
 
 from django.utils import timezone
@@ -1513,6 +1514,17 @@ class PlannerEntry(models.Model):
         related_name="planner_entries",
         null=True,
         blank=True,
+    )
+    # Only tasks created automatically by sync-planner receive this link.
+    # An existing manually authored task may be adopted for a date but must
+    # never become disposable just because a schedule also uses that date.
+    source_schedule = models.ForeignKey(
+        WorkoutSchedule,
+        on_delete=remove_unfinished_generated_tasks,
+        related_name="generated_planner_entries",
+        null=True,
+        blank=True,
+        editable=False,
     )
     notes = models.CharField(max_length=300, blank=True)
     #: The task this one is a step of, or null for a task standing on its own.
