@@ -292,6 +292,90 @@ class SavedWorkoutDeletionTests(RepbaseAPITestMixin, APITestCase):
         # Still there, and so is the rotation it holds up.
         self.assertTrue(WorkoutTemplate.objects.filter(id=self.push).exists())
 
+    def rotation(self, name, workout_ids):
+        response = self.client.post(
+            self.CYCLES,
+            {
+                "name": name, "length": len(workout_ids),
+                "anchor_date": str(timezone.now().date()),
+                "slots": [
+                    {"position": index + 1, "workout": workout_id}
+                    for index, workout_id in enumerate(workout_ids)
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data["id"]
+
+    def assertDeleted(self, workout_id):
+        response = self.client.delete(f"{self.WORKOUTS}{workout_id}/")
+        self.assertEqual(response.status_code, 204, getattr(response, "data", None))
+        self.assertFalse(WorkoutTemplate.objects.filter(id=workout_id).exists())
+
+    def assertRefusedFor(self, workout_id, rotation_name):
+        response = self.client.delete(f"{self.WORKOUTS}{workout_id}/")
+        self.assertEqual(response.status_code, 400, getattr(response, "data", None))
+        self.assertEqual(
+            str(response.data["workout"]),
+            f"This workout is part of {rotation_name}. Change the rotation "
+            f"before deleting it.",
+        )
+        self.assertTrue(WorkoutTemplate.objects.filter(id=workout_id).exists())
+
+    def test_a_deleted_rotation_holds_nothing_up(self):
+        # Deleting a rotation closes it rather than erasing it, so its slots
+        # still name the workout. The refusal used to count it anyway, and
+        # named a rotation no list showed any more -- forever.
+        cycle = self.rotation("PPL", [self.push, self.pull])
+        self.assertEqual(self.client.delete(f"{self.CYCLES}{cycle}/").status_code, 204)
+
+        self.assertDeleted(self.push)
+        # The closed rotation itself is history and stays.
+        self.assertTrue(WorkoutCycle.objects.filter(id=cycle).exists())
+
+    def test_a_replaced_rotation_holds_nothing_up(self):
+        legs = self.workout("Leg Day")
+        self.rotation("PPL", [self.push, self.pull])
+        # Making a second rotation retires the first, today.
+        self.rotation("Legs and Pull", [legs, self.pull])
+
+        self.assertDeleted(self.push)
+        # One the running rotation uses is still refused, naming only that.
+        self.assertRefusedFor(self.pull, "Legs and Pull")
+
+    def test_a_rotation_handing_over_later_still_holds_its_workouts(self):
+        # A switch can be scheduled: the rotation on the way out keeps its
+        # days up to the handover, and the incoming one has days to come. Both
+        # are still in effect, so both still hold their workouts.
+        legs = self.workout("Leg Day")
+        ppl = self.rotation("PPL", [self.push, self.pull])
+        self.rotation("Legs", [legs])
+        start = timezone.now().date() + timedelta(days=7)
+        switched = self.client.post(
+            f"{self.CYCLES}{ppl}/activate/", {"start_on": str(start)}, format="json"
+        )
+        self.assertEqual(switched.status_code, 200, switched.data)
+
+        self.assertRefusedFor(legs, "Legs")
+        self.assertRefusedFor(self.push, "PPL")
+
+    def test_a_rotation_deleted_before_it_began_holds_nothing_up(self):
+        # Deleted before its first day, a rotation is closed on that day:
+        # `[start, start)`, no days at all, and nothing for its slot to break.
+        legs = self.workout("Leg Day")
+        ppl = self.rotation("PPL", [self.push, self.pull])
+        self.rotation("Legs", [legs])
+        start = timezone.now().date() + timedelta(days=7)
+        self.client.post(
+            f"{self.CYCLES}{ppl}/activate/", {"start_on": str(start)}, format="json"
+        )
+        self.assertEqual(self.client.delete(f"{self.CYCLES}{ppl}/").status_code, 204)
+
+        self.assertDeleted(self.push)
+        # "Legs" still runs up to the handover it was given.
+        self.assertRefusedFor(legs, "Legs")
+
     def test_deleting_is_only_ever_your_own(self):
         other_user, other_profile, other_token = self.create_account("stranger")
         self.authenticate(other_token)
@@ -1459,201 +1543,6 @@ class PasswordResetTests(APITestCase):
         self.assertNotIn(429, codes)
 
 
-class FoodSearchNormalisationTests(SimpleTestCase):
-    """Reading FoodData Central without getting the numbers wrong.
-
-    Every case here is one that returns a plausible number rather than an
-    error, which is why it is worth a test: nothing crashes, the food log is
-    just quietly incorrect.
-    """
-
-    def test_energy_is_matched_by_id_not_by_name(self):
-        """The trap that would make every calorie 4.2 times too high.
-
-        Two nutrients on the same food are both called Energy: 1008 in
-        kilocalories and 1062 in kilojoules. The search endpoint lists the
-        kilojoules, so anything matching on the name reads 1101 where the
-        answer is 263.
-        """
-        food = food_sources.normalize({
-            "fdcId": 171515,
-            "description": "Chicken breast tenders, breaded, uncooked",
-            "dataType": "SR Legacy",
-            "foodNutrients": [
-                {"nutrientId": 1062, "nutrientName": "Energy", "value": 1101.0},
-                {"nutrientId": 1008, "nutrientName": "Energy", "value": 263.0},
-                {"nutrientId": 1003, "value": 14.73},
-                {"nutrientId": 1005, "value": 15.01},
-                {"nutrientId": 1004, "value": 15.75},
-            ],
-        })
-        self.assertEqual(food["calories"], Decimal("263.00"))
-
-    def test_energy_order_does_not_matter(self):
-        """Same food with the kilojoules listed second."""
-        food = food_sources.normalize({
-            "fdcId": 1,
-            "description": "Anything",
-            "dataType": "SR Legacy",
-            "foodNutrients": [
-                {"nutrientId": 1008, "nutrientName": "Energy", "value": 263.0},
-                {"nutrientId": 1062, "nutrientName": "Energy", "value": 1101.0},
-            ],
-        })
-        self.assertEqual(food["calories"], Decimal("263.00"))
-
-    def test_kilojoules_are_converted_when_calories_are_absent(self):
-        food = food_sources.normalize({
-            "fdcId": 2,
-            "description": "Only kilojoules",
-            "dataType": "SR Legacy",
-            "foodNutrients": [{"nutrientId": 1062, "value": 1101.0}],
-        })
-        # 1101 / 4.184
-        self.assertEqual(food["calories"], Decimal("263.15"))
-
-    def test_calories_are_burned_from_macros_as_a_last_resort(self):
-        """Raw skinless chicken breast states protein and fat and no energy."""
-        food = food_sources.normalize({
-            "fdcId": 2646170,
-            "description": "Chicken, breast, boneless, skinless, raw",
-            "dataType": "Foundation",
-            "foodNutrients": [
-                {"nutrientId": 1003, "value": 22.5},
-                {"nutrientId": 1005, "value": 0.0},
-                {"nutrientId": 1004, "value": 1.93},
-            ],
-        })
-        # 22.5 x 4 + 0 x 4 + 1.93 x 9
-        self.assertEqual(food["calories"], Decimal("107.37"))
-
-    def test_a_food_with_nothing_in_it_is_dropped(self):
-        self.assertIsNone(food_sources.normalize({
-            "fdcId": 3,
-            "description": "Nothing known",
-            "dataType": "Foundation",
-            "foodNutrients": [],
-        }))
-
-    def test_negative_carbohydrate_is_clamped(self):
-        """Carbohydrate by difference can land under zero on a wet food."""
-        food = food_sources.normalize({
-            "fdcId": 4,
-            "description": "Chicken, breast, meat and skin, raw",
-            "dataType": "Foundation",
-            "foodNutrients": [
-                {"nutrientId": 1008, "value": 126.9},
-                {"nutrientId": 1003, "value": 21.4},
-                {"nutrientId": 1005, "value": -0.43},
-                {"nutrientId": 1004, "value": 4.78},
-            ],
-        })
-        self.assertEqual(food["carbohydrate_grams"], Decimal("0"))
-
-    def test_a_branded_label_is_read_per_serving(self):
-        """165 kcal per 100 g and 469 per serving are both right.
-
-        The packet says 469, so that is what a person reading the packet
-        should be offered, and the serving it means is said out loud.
-        """
-        food = food_sources.normalize({
-            "fdcId": 2187885,
-            "description": "CHICKEN BREAST",
-            "dataType": "Branded",
-            "brandName": "GIANT EAGLE",
-            "servingSize": 284.0,
-            "servingSizeUnit": "g",
-            "householdServingFullText": "1 CHICKEN BREAST",
-            "labelNutrients": {
-                "calories": {"value": 469},
-                "protein": {"value": 58.0},
-                "carbohydrates": {"value": 3.01},
-                "fat": {"value": 23.0},
-            },
-            "foodNutrients": [{"nutrientId": 1008, "value": 165.0}],
-        })
-        self.assertEqual(food["calories"], Decimal("469.00"))
-        self.assertEqual(food["serving_description"], "1 CHICKEN BREAST (284 g)")
-
-    def test_a_branded_food_is_scaled_to_its_own_serving(self):
-        """The usual case, because search never returns labelNutrients.
-
-        foodNutrients is per 100 g and the response says a serving weighs
-        284 g, which is enough to state the food as one of its own servings
-        rather than as a weight nobody eats in. The same packet carries the
-        label figures on the single-food endpoint, so the arithmetic can be
-        checked against them: 469 kcal, 58 g of protein, 3.01 and 23.0.
-        """
-        food = food_sources.normalize({
-            "fdcId": 2187885,
-            "description": "CHICKEN BREAST",
-            "dataType": "Branded",
-            "brandName": "GIANT EAGLE",
-            "servingSize": 284.0,
-            "servingSizeUnit": "g",
-            "householdServingFullText": "1 CHICKEN BREAST",
-            "foodNutrients": [
-                {"nutrientId": 1008, "value": 165.0},
-                {"nutrientId": 1003, "value": 20.42},
-                {"nutrientId": 1005, "value": 1.06},
-                {"nutrientId": 1004, "value": 8.1},
-            ],
-        })
-        self.assertEqual(food["serving_description"], "1 CHICKEN BREAST (284 g)")
-        # Within the rounding the packet itself does.
-        self.assertEqual(food["calories"], Decimal("468.60"))
-        self.assertEqual(food["protein_grams"], Decimal("57.99"))
-        self.assertEqual(food["carbohydrate_grams"], Decimal("3.01"))
-        self.assertEqual(food["fat_grams"], Decimal("23.00"))
-
-    def test_a_branded_food_with_no_serving_weight_stays_per_100g(self):
-        """Nothing to scale by, so nothing is invented."""
-        food = food_sources.normalize({
-            "fdcId": 6,
-            "description": "MYSTERY SNACK",
-            "dataType": "Branded",
-            "foodNutrients": [{"nutrientId": 1008, "value": 165.0}],
-        })
-        self.assertEqual(food["calories"], Decimal("165.00"))
-        self.assertEqual(food["serving_description"], "100 g")
-
-    def test_a_serving_measured_in_millilitres_is_not_treated_as_grams(self):
-        """A drink states its serving in ml, and ml are not grams.
-
-        Scaling per-100g figures by a volume assumes the food weighs a gram
-        per millilitre, which is true of water and of very little else.
-        """
-        food = food_sources.normalize({
-            "fdcId": 7,
-            "description": "ORANGE JUICE",
-            "dataType": "Branded",
-            "servingSize": 240.0,
-            "servingSizeUnit": "ml",
-            "householdServingFullText": "1 CUP",
-            "foodNutrients": [{"nutrientId": 1008, "value": 45.0}],
-        })
-        self.assertEqual(food["calories"], Decimal("45.00"))
-        self.assertEqual(food["serving_description"], "100 g")
-
-    def test_a_generic_food_stays_per_100g(self):
-        """FoodData Central holds portions for these and does not return them
-        from search, so there is nothing to scale by."""
-        food = food_sources.normalize({
-            "fdcId": 8,
-            "description": "Chicken, breast, boneless, skinless, raw",
-            "dataType": "Foundation",
-            "foodNutrients": [{"nutrientId": 1008, "value": 120.0}],
-        })
-        self.assertEqual(food["serving_description"], "100 g")
-
-    def test_shouted_names_are_made_readable(self):
-        food = food_sources.normalize({
-            "fdcId": 5,
-            "description": "CHICKEN BREAST",
-            "dataType": "Branded",
-            "foodNutrients": [{"nutrientId": 1008, "value": 165.0}],
-        })
-        self.assertEqual(food["name"], "Chicken Breast")
 
 
 class FoodSearchViewTests(RepbaseAPITestMixin, APITestCase):
@@ -1662,7 +1551,7 @@ class FoodSearchViewTests(RepbaseAPITestMixin, APITestCase):
     URL = "/api/v1/food/search/"
 
     SAMPLE = [{
-        "source_id": "usda:1",
+        "source_id": "off:3017620422003",
         "name": "Oats",
         "brand": "",
         "serving_description": "100 g",
@@ -1705,7 +1594,7 @@ class FoodSearchViewTests(RepbaseAPITestMixin, APITestCase):
         with mock.patch("core.views.food_sources.search", return_value=self.SAMPLE):
             self.client.get(self.URL, {"q": "oats"})
 
-        entry = FoodSearchCache.objects.get(term="oats")
+        entry = FoodSearchCache.objects.get(term="off:v1:search:oats")
         entry.fetched_at = timezone.now() - FoodSearchCache.LIFETIME - timedelta(days=1)
         entry.save(update_fields=["fetched_at"])
 
@@ -2947,6 +2836,65 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         saved.refresh_from_db()
         self.assertIsNone(saved.source_post_id)
         self.assertEqual(saved.ingredients.count(), 1, "the food must survive too")
+
+
+class SavedWorkoutExerciseMatchingTests(RepbaseAPITestMixin, APITestCase):
+    """Which exercise a workout saved from a post files its sets under.
+
+    The same answer `?name=` gives: the reader's own of that name, then the
+    shared one, then the shared library exercise that has it as an alias.
+    Anything else splits somebody's history for an exercise across two rows.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("copier")
+        _, self.author, _ = self.create_account("sharer")
+        self.authenticate(self.token)
+
+    def save(self, *exercise_names):
+        post = Post.objects.create(author=self.author, kind=Post.Kind.WORKOUT, caption="")
+        workout = PostWorkout.objects.create(
+            post=post, title="Their day", performed_at=timezone.now()
+        )
+        for order, name in enumerate(exercise_names, start=1):
+            PostWorkoutExercise.objects.create(
+                post_workout=workout, name=name, order=order, set_count=3
+            )
+        response = self.client.post(f"/api/v1/social/posts/{post.id}/save-workout/")
+        self.assertEqual(response.status_code, 201, response.data)
+        return list(
+            WorkoutExercise.objects.filter(workout_id=response.data["workout"])
+            .order_by("order")
+            .values_list("exercise_id", flat=True)
+        )
+
+    def test_the_readers_own_exercise_comes_before_the_shared_one(self):
+        shared = Exercise.objects.create(name="Plank")
+        mine = Exercise.objects.create(name="plank", created_by=self.profile)
+        self.assertEqual(self.save("Plank"), [mine.pk])
+        self.assertNotEqual(mine.pk, shared.pk)
+
+    def test_without_one_of_their_own_the_shared_one_is_used(self):
+        shared = Exercise.objects.create(name="Plank")
+        self.assertEqual(self.save("Plank"), [shared.pk])
+        self.assertFalse(Exercise.objects.filter(created_by=self.profile).exists())
+
+    def test_a_library_exercise_is_found_by_an_alias(self):
+        # How adoption left an older shared "Bench Press": renamed, with the
+        # old name among its aliases. A post from an older build still says
+        # "Bench Press".
+        library = Exercise.objects.create(
+            name="Bench Press (Barbell)", slug="bench-press-barbell",
+            aliases=["Bench Press", "Flat Bench"],
+        )
+        self.assertEqual(self.save("bench press"), [library.pk])
+        self.assertFalse(Exercise.objects.filter(created_by=self.profile).exists())
+
+    def test_somebody_elses_exercise_is_never_used(self):
+        theirs = Exercise.objects.create(name="Plank", created_by=self.author)
+        [used] = self.save("Plank")
+        self.assertNotEqual(used, theirs.pk)
+        self.assertEqual(Exercise.objects.get(pk=used).created_by, self.profile)
 
 
 class SearchingForPeopleTests(RepbaseAPITestMixin, APITestCase):

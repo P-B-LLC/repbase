@@ -64,6 +64,21 @@ the clients (see "Contract changes" below).
 
 ## What the backend suite covers
 
+### Friend-post like response regression (2026-10-28)
+
+`core.test_post_likes` covers the HTTP-500 regression where `_card` readback
+incorrectly required the viewer to own the liked post. The live beta was
+still on `de27d1b`; the visibility-scoped correction from `42281fd` was already
+in this branch/main but not deployed. Replacing the correction in memory with
+the deployed query reproduces `Post.DoesNotExist` after the like is saved.
+The new ten-test suite verifies actual 200 responses and saved counts,
+idempotent likes/unlikes, follower permission, blocks, private/unpublished/
+moderated/deleted content, anonymous requests, and privacy changing before
+response readback. Keep these tests even after the isolated beta hotfix.
+
+Do not test likes against real members' posts as an automated deployment
+probe. Health 200 alone does not establish that an authenticated like works.
+
 The original suite (`core/tests.py` and the older `core/test_*.py` modules)
 covers training, food, the planner, saves and their recovery, moderation, media
 signing and deployment configuration. These modules were added with the For
@@ -144,3 +159,204 @@ break a client generated from the previous contract: both clients ignore keys
 they do not know. Adding a value to an enum that appears in a *response* does
 break the generated Swift client, which decodes enums strictly; send new
 values as plain strings instead, as `Post.kind` does.
+
+## Workout schedule and planner synchronization (2026-10-28)
+
+The testing branch `work/testflight-calendar-sync-2026-10-28` adds migration
+`0081_plannerentry_source_schedule`. It records private provenance only for
+planner tasks newly created by `schedules/sync-planner/`; a manually authored
+task adopted for the same workout/date is never claimed as generated data.
+No API request/response fields change and no Swift client regeneration is needed.
+
+Removing a schedule now removes its untouched, unfinished generated task in
+the same transaction, including bulk clear, weekly-repeat cleanup, rotation
+changes, and workout deletion. Completed records, manual/adopted tasks, and
+generated tasks customized with details/steps are retained and detached.
+Ending a rotation closes its rule and removes only its own future untrained
+dates. Recorded/active sessions, past dates, other rotations, and manually
+scheduled workouts remain intact. Training dates use the account's time zone.
+Moving or replacing a scheduled workout updates its untouched generated task
+in place. Renaming a workout updates untouched generated titles. Manual,
+customized, and completed task details are never rewritten by those updates;
+moving their former schedule detaches them and can offer a new task at the new
+date. A task already authored at the destination is adopted without ownership.
+
+Focused validation:
+
+```sh
+python manage.py test core.test_schedule_planner_sync
+python manage.py makemigrations --check --dry-run
+python manage.py check
+```
+
+Run the focused tests again with `config.test_postgres` for real concurrent
+sync/removal validation; SQLite deliberately skips PostgreSQL row-lock tests.
+The full `core` suite and schema comparison remain release requirements.
+
+### Existing stale planner tasks need conservative review
+
+This migration deliberately does not guess ownership for legacy tasks. Older
+syncs created some tasks and adopted others, but stored no way to distinguish
+them. Already orphaned tasks may therefore remain after upgrading, as may
+customized reminders that the user explicitly changed. Do not bulk-delete all
+workout-category tasks or infer generated ownership from a matching title.
+
+For an affected account, review the exact unfinished stale task IDs with the
+user, then remove only the confirmed obsolete tasks through the authenticated
+planner UI/API. Preserve completed records and unrelated/custom reminders.
+No production data repair, deployment, or merge is performed by this change.
+
+## Pillow security update (2026-10-28)
+
+The same testing branch pins Pillow 13.0.0 instead of 12.3.0. Production inherits
+this pin through `requirements-production.txt`; no audit exceptions, API changes,
+or changes to image-validation limits are included. This upgrade addresses the
+dependency-audit findings against the old pin. See the
+[upstream release notes](https://pillow.readthedocs.io/en/stable/releasenotes/13.0.0.html).
+
+Validate the installed version and dependency graph, then run the existing
+image-path regressions (synthetic media and mocked providers, no live screening):
+
+```sh
+python -c "import PIL; print(PIL.__version__)"
+pip check
+pip-audit -r requirements-production.txt
+python manage.py test core.test_content_creation.PostPhotoUploadTests core.tests.FeedSizedPhotoTests core.tests.PostsCarryBothPhotoSizesTests core.test_moderation_hardening core.test_moderation_safety core.test_openai_media_moderation core.test_moderation_frames core.test_media_real_frames core.test_media_provider_command core.test_beta_publication --noinput
+```
+
+The real frame tests need both FFmpeg and ffprobe; report their skips explicitly
+if unavailable. Full SQLite/PostgreSQL CI must pass on the new head before
+promotion. The testing-branch update does not upgrade a deployed server.
+
+Local validation on Python 3.14.3 / Pillow 13.0.0: the focused modules above
+discovered 99 tests across two runs (96 passed, three real-FFmpeg tests skipped
+because FFmpeg/ffprobe were not installed). Dependency compatibility, Django
+system checks, and the production requirements security audit passed with no
+known vulnerabilities reported. Full CI evidence belongs to the exact PR head.
+
+## Own publications in For You (2026-10-28)
+
+The testing branch includes the reader's eligible published posts in For You.
+The newest eligible own post from the last 24 hours leads a fresh first page;
+it occupies a normal ranked slot and remains de-duplicated through cursor
+paging. The additional own-post candidate source is capped at 20. Private,
+unpublished, rejected, hidden, child-held and unapproved-video content remain
+excluded; no moderator or visibility rule is bypassed. Own impressions still
+do not affect recommendation learning. No migrations or API fields change.
+
+```sh
+python manage.py test core.test_recommendations core.test_recommendation_signals core.test_feed_integrity core.test_feed_stats core.test_ranking_model
+```
+
+`OwnPublicationTests` covers first-page confirmation and refresh, pending to
+approved transitions, privacy/publication gates, takedowns after ranking,
+pagination without duplicates or mid-session insertions, bounded candidates,
+and expiry of the reserved slot with normal author spacing. Client QA must
+also verify immediate insertion after a confirmed publish and that an older
+in-flight feed response cannot erase the new card. Full CI on SQLite and
+PostgreSQL remains required before promotion; this does not deploy the change.
+
+Local Windows validation: 243 recommendation/integrity/stats/model tests passed,
+then 31 own-publication/eligibility/paging tests passed after the final cached-page
+visibility checks. Schema generation is semantically unchanged; system checks,
+migration checks and diff hygiene passed. The full 1,268-test attempt did not
+produce a passing result: the existing production-settings test uses the POSIX
+path `/persistent/media`, which fails `Path.is_absolute()` on Windows, and the
+parallel runner then failed to pickle that traceback. Linux SQLite/PostgreSQL CI
+must supply the full-suite result. Temporary test databases were removed by the
+runner.
+
+## Set types, planned set structure and session reordering (2026-10-28)
+
+The testing branch adds migration `0082_set_type_and_planned_set_structure`
+(additive: `SetEntry.set_type` defaults to `normal`; `WorkoutExercise` gains
+nullable `rest_seconds` and `superset_group` and `set_types` defaulting to an
+empty list) and these contract changes, so **both clients need the contract
+copied and regenerated** (see "Contract changes" above):
+
+- `SetEntry.set_type` (`SetTypeEnum`), also on `PreviousSet`. Warm-ups are left
+  out of session records, exercise progress and profile highlights.
+- `rest_seconds`, `superset_group`, `set_types` on `WorkoutExercise`,
+  `InitialWorkoutExercise` and `WorkoutPlanExercise`.
+- `POST /api/v1/sessions/{id}/reorder/` (`sessions_reorder_create`, body
+  `SessionReorderRequest`), active sessions only.
+- `PublicRepbaseUser.follows_viewer`, `WorkoutTemplate.last_performed_at`, and
+  `search`/`mine` on the exercise list.
+
+Every new response field is left out of its component's `required`, so a
+client generated from this contract still decodes a server deployed before
+it. drf-spectacular marks every read-only field required, so a serializer
+names such fields in `optional_response_fields` and `core.schema.AutoSchema`
+(the project's schema class) drops them from `required`; a name that is not a
+field fails schema generation.
+
+```sh
+python manage.py test core.test_workout_structure
+python manage.py makemigrations --check --dry-run
+python manage.py spectacular --file /tmp/openapi.yaml && diff openapi.yaml /tmp/openapi.yaml
+```
+
+`core.test_workout_structure` covers set type defaults, writes and refusals;
+warm-ups excluded from records (both sides), progress and highlights while
+drop and failure sets count; `set_type` on previous sets; the plan fields
+through `initial_exercises`, `exercise_plan` and `/workout-exercises/`
+(omitted fields kept, a lower `target_sets` trimming unsent types, too many
+types refused); reordering (swaps, reversals, gaps and very large orders
+without tripping `unique_exercise_order_per_session`, every malformed list,
+another account's session, non-active sessions); adding and deleting exercises
+of an active session; `follows_viewer` in every direction, for anonymous
+readers, one's own and closed profiles, with one follow lookup per response;
+`last_performed_at` ignoring sessions that recorded nothing, with a constant
+query count on the list; exercise search and `mine`; and that each new
+response field is optional in the generated contract.
+
+Local validation (macOS, Python 3.14): the new module's 54 tests pass on
+SQLite and on a throwaway PostgreSQL 16; the full `core` suite passes on both
+(1,332 tests; 24 skipped on SQLite, 3 on PostgreSQL). `check`,
+`makemigrations --check`, `spectacular --validate` and the schema diff are
+clean, and `Scripts/validate-contract.py` against a seeded `config.test_e2e`
+server reported no disagreements (43 of 45 collection endpoints; the two
+staff-only routes answer 403 to a member). No deployment is performed.
+
+## Activities, logged sessions and the exercise library (2026-10-29)
+
+Migrations `0083_activity_tracking_and_exercise_library` (additive columns),
+`0084_backfill_activity_and_search_text` (every workout's `activity` from its
+`workout_type`, posted snapshots likewise, exercise search text) and
+`0085_sync_exercise_library` (loads `core/data/exercise_library.json` if it
+exists; a no-op otherwise). Contract changes -- **both clients need the
+contract copied and regenerated**:
+
+- `activity` (plain string) on `WorkoutTemplate`, `WorkoutSession` and
+  `PostWorkout`; `perceived_effort`, `manual_calories_kcal`,
+  `manual_distance_km`, `notes`, `activity_details`, `is_manual_entry` on
+  `WorkoutSession`; the library fields on `Exercise`. All optional in
+  responses. `WorkoutTypeEnum` is unchanged.
+- `POST /api/v1/sessions/log/` (`sessions_log_create`, body
+  `ActivityLogRequest`), and the `activity` session filter and
+  `equipment`/`category`/`pattern`/`muscle` exercise filters.
+
+The test runner is now `config.test_runner.RepbaseTestRunner`: Django's,
+except that test databases are migrated with `EXERCISE_LIBRARY_SYNC_ON_MIGRATE`
+off, so no test depends on what the library file holds (and the transactional
+tests' flush cannot make that depend on test order). Library tests use their
+own fixtures.
+
+```sh
+python manage.py test core.test_activity_tracking
+```
+
+`core.test_activity_tracking` covers the registry and every detail rule (bools
+are not numbers); a workout's activity on create, update and full update, the
+older app's `workout_type`-only writes, and the backfill; PATCHing effort,
+calories, distance, notes and details on completed and live sessions, their
+bounds, and the `recorded_distance_km` rule against GPS and Health distances;
+the log endpoint (by name and id, activity mismatches, other people's
+workouts, schedule reuse, duration and future bounds, idempotent replay and
+409, the planner tick, posting a log); stats and `last_performed_at` for timed
+and strength activities, blank activities and deleted workouts; the library
+sync (insert, re-run, adoption of an unslugged shared row, custom rows
+untouched, nothing deleted, bad files written nowhere, the command, the
+migration with and without the file); alias search, each exercise filter and
+`name=` preferring the reader's own; and that each new response field is
+optional and no activity is an enum.

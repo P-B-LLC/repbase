@@ -23,16 +23,17 @@ model has beaten these rules on readers it did not learn from.
 
 2. **What they could be shown** (`candidates`). Only what passes every
    eligibility rule: posts this reader may see at all (`visible_posts_for`),
-   from the last month, not their own, not reposts, not something they have
+   from the last month, not private, not reposts, not something they have
    already liked, commented on, saved or passed on, not from a suspended
    account, not something they reported or dismissed, not on a topic they
    hid, not carrying a clip still waiting for review, not something
    enough people have reported that a moderator should look first, and not
    -- unless they follow them -- by somebody a moderator acted against in
-   the last month (`core.feed_integrity`). Drawn from up to six places at
+   the last month (`core.feed_integrity`). Drawn from up to seven places at
    once -- the newest posts, people they follow, their best topics, the
    exercises they go for, what people with similar taste liked, and what the
-   whole community has been liking this week -- each capped, so the work
+   whole community has been liking this week, and their own recent posts
+   -- each capped, so the work
    stays the same size however much is posted.
 
 3. **How good a match each one is** (`score`). How well it suits the
@@ -370,6 +371,12 @@ LONG_VIEW_MS = 5000
 REPORT_THRESHOLD = 3
 #: How long one ranking is kept for paging through.
 SESSION_TTL_SECONDS = 30 * 60
+#: Keep a creator's own posts in the candidate pool even in a busy community.
+#: At most the newest twenty are read through this additional source.
+OWN_SOURCE_LIMIT = 20
+#: A fresh first page confirms the newest eligible own publication in its
+#: first slot for a day. It then ranks normally; it is never pinned forever.
+OWN_CONFIRM_HOURS = 24
 #: The same author may not appear twice within this many consecutive posts.
 AUTHOR_GAP = 4
 #: How far down the scored list each slot looks for its pick.
@@ -522,6 +529,7 @@ _TOPIC_NAMES = {
     "kind:workout": "workouts",
     "kind:meal": "meals and recipes",
     "kind:planner": "planning",
+    "kind:media": "photos and videos",
     "type:lifting": "lifting",
     "type:running": "running",
     "type:biking": "cycling",
@@ -1460,7 +1468,9 @@ def eligible_posts(viewer, now=None, hidden=()):
     queryset = (
         visible_posts_for(viewer, Post.objects.all(), include_reposts=False)
         .exclude(kind=Post.Kind.REPOST)
-        .exclude(author=viewer)
+        # Private posts remain accessible to their owner on their profile,
+        # but are not presented as shared publications in For You.
+        .exclude(visibility=Post.Visibility.PRIVATE)
         .filter(published_at__gte=now - timedelta(days=WINDOW_DAYS))
         .exclude(Exists(PostFeedback.objects.filter(viewer=viewer, post=OuterRef("pk"))))
         .exclude(Exists(PostReport.objects.filter(reporter=viewer, post=OuterRef("pk"))))
@@ -1613,11 +1623,14 @@ def _as_candidates(rows, similar, now):
 
 
 def candidates(viewer, profile, now=None, similar=None):
-    """Recent eligible posts from up to six sources, merged, each capped."""
+    """Recent eligible posts from up to seven sources, merged, each capped."""
     now = now or timezone.now()
     eligible = eligible_posts(viewer, now, profile.hidden)
     newest = ("-published_at", "-id")
-    sources = [("fresh", eligible.order_by(*newest)[:POOL_SIZE])]
+    sources = [
+        ("fresh", eligible.order_by(*newest)[:POOL_SIZE]),
+        ("own", eligible.filter(author=viewer).order_by(*newest)[:OWN_SOURCE_LIMIT]),
+    ]
 
     if profile.followed:
         sources.append((
@@ -1647,7 +1660,10 @@ def candidates(viewer, profile, now=None, similar=None):
     rows = {}
     for name, queryset in sources:
         for row in queryset.values(*_CANDIDATE_FIELDS):
-            rows.setdefault(row["pk"], (row, set()))[1].add(name)
+            names = rows.setdefault(row["pk"], (row, set()))[1]
+            names.add(name)
+            if row["author_id"] == viewer.pk:
+                names.add("own")
     return _as_candidates(rows, similar, now)
 
 
@@ -1659,7 +1675,7 @@ def candidates_by_id(viewer, profile, post_ids, similar=None, now=None):
         return []
     now = now or timezone.now()
     rows = {
-        row["pk"]: (row, set())
+        row["pk"]: (row, {"own"} if row["author_id"] == viewer.pk else set())
         for row in eligible_posts(viewer, now, profile.hidden)
         .filter(pk__in=list(post_ids)).values(*_CANDIDATE_FIELDS)
     }
@@ -1803,10 +1819,12 @@ class Ranked:
 #: Every reason a post can be given, as sent in `recommendation.reason`.
 #: Plain strings on the wire, so a client that meets one it does not know
 #: shows the label rather than failing to decode.
-REASONS = ("following", "interest", "similar", "discovery", "new_creator", "popular", "fresh")
+REASONS = ("following", "interest", "similar", "discovery", "new_creator", "popular", "fresh", "own")
 
 
 def _reason(candidate, profile, discovery):
+    if "own" in candidate.sources:
+        return "own", "Your post"
     if discovery:
         return "discovery", "Something new for you"
     if candidate.author_id in profile.followed:
@@ -1864,9 +1882,10 @@ class RankState:
                    list(authors), list(topics), followed)
 
 
-def rank(found, profile, weights, rng, limit=MAX_RANKED, state=None):
+def rank(found, profile, weights, rng, limit=MAX_RANKED, state=None, now=None):
     """Order the scored candidates into a page worth scrolling."""
     state = state if state is not None else RankState()
+    now = now or timezone.now()
     remaining = sorted(found, key=lambda item: (-item.score, -item.pk))
     usual = set(profile.top_topics(3))
     ordered = []
@@ -1897,10 +1916,19 @@ def rank(found, profile, weights, rng, limit=MAX_RANKED, state=None):
             if lately + 1 > connected_slots:
                 unconnected = [item for item in pool if item.author_id not in profile.followed]
                 pool = unconnected or pool
+        # A publication confirmation occupies an ordinary ranked slot, so
+        # cursor offsets, de-duplication and later author spacing all see it.
+        # Only a new session has this slot; continuing an old cursor cannot
+        # reinsert the same post or pull in a publication created afterwards.
         pick = None
+        if state.position == 0:
+            own = [item for item in remaining if "own" in item.sources
+                   and item.created_at >= now - timedelta(hours=OWN_CONFIRM_HOURS)]
+            if own:
+                pick = max(own, key=lambda item: (item.created_at, item.pk))
         discovery = False
         every = weights.discovery_every
-        if every and state.position % every == every - 1:
+        if pick is None and every and state.position % every == every - 1:
             # Unknown means no history either way. Somebody whose posts this
             # reader dismissed is not unknown to them, and neither is a topic
             # they have scrolled past; offering those as "something new"
@@ -1964,7 +1992,7 @@ def build_ranking(viewer, now=None, seed=None, limit=MAX_RANKED):
     model = active_model() if weights.learned else None
     for candidate in found:
         candidate.score, candidate.parts = score(candidate, profile, weights, now, rng, model)
-    items = rank(found, profile, weights, rng, limit=limit)
+    items = rank(found, profile, weights, rng, limit=limit, now=now)
     duration_ms = (time.perf_counter() - started) * 1000
     return Ranking(items, len(found), profile.is_new, duration_ms, variant)
 
@@ -2065,7 +2093,7 @@ def _extend(session, found, profile, weights, now, need, viewer=None):
     model = active_model() if weights.learned else None
     for candidate in found:
         candidate.score, candidate.parts = score(candidate, profile, weights, now, rng, model)
-    chosen = rank(found, profile, weights, rng, limit=need, state=session.state)
+    chosen = rank(found, profile, weights, rng, limit=need, state=session.state, now=now)
     taken = {item.pk for item in chosen}
     if viewer is not None:
         by_pk = {item.pk: item for item in found}

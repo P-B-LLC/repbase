@@ -1,3 +1,4 @@
+import itertools
 import logging
 import secrets
 from datetime import timedelta
@@ -10,6 +11,7 @@ from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
 from django.db import models, transaction
 from django.db.models import (
+    Case,
     Count,
     Exists,
     Max,
@@ -19,8 +21,9 @@ from django.db.models import (
     Subquery,
     Sum,
     Value,
+    When,
 )
-from django.db.models.functions import Coalesce, Concat
+from django.db.models.functions import Coalesce, Concat, TruncDate
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404, render
 from django.utils import timezone
@@ -49,7 +52,9 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from . import food_sources
 from .post_publication import publication_media, PublicationMediaError, remove_profile_photo
 from .moderation import CONSENT_HEADER_NAME, check_public_content
-from .save_recovery import IdempotentCreateMixin
+from .save_recovery import IDEMPOTENCY_KEY_PARAMETER, IdempotentCreateMixin
+from .activities import ACTIVITIES, label as activity_label, session_trained
+from .schedule_sync import delete_schedule_rows, lock_schedule_rows, untouched_generated_tasks
 from .serializers import SessionFinishSerializer
 from .params import date_param, id_param
 from .throttles import (
@@ -104,17 +109,21 @@ from .models import (
     PostMeal,
     PostMealEntry,
     PostPlannerEntry,
+    PostVideo,
     PostWorkout,
     PostWorkoutExercise,
     food_meals_for_day,
     notify,
     today_for,
+    zone_for,
     normalize_gym_text,
     planner_tasks_for,
     sync_parent_completion,
     PlannerRecurrence,
     PlannerRecurrenceStep,
     PLANNER_REPEAT_HORIZON_DAYS,
+    SetType,
+    performed_sessions,
     materialize_planner_repeats,
     plan_ahead_limit,
     training_day_of,
@@ -144,6 +153,8 @@ from .serializers import (
     RegisterSerializer,
     RepbaseUserSerializer,
     SessionExerciseSerializer,
+    SessionReorderSerializer,
+    ActivityLogSerializer,
     PersonalRecordSerializer,
     SessionCardioSerializer,
     SessionRoutePointSerializer,
@@ -155,6 +166,7 @@ from .serializers import (
     FollowRequestSerializer,
     FoodEntrySerializer,
     NotificationSerializer,
+    NotificationReadSerializer,
     UnreadCountSerializer,
     FoodMealSerializer,
     GymSerializer,
@@ -400,15 +412,7 @@ class PersonalizationView(APIView):
 
 
 class FoodSearchView(APIView):
-    """Look a food up in FoodData Central.
-
-    Proxied rather than called from the app, for four reasons that all point
-    the same way: the API key stays here; every device is not separately
-    telling a third party what its owner is eating; the results can be cached
-    against a rate limit that is shared by everybody; and the reading of the
-    upstream response -- which is where the wrong numbers come from -- happens
-    once, in one place, with tests around it.
-    """
+    """Cached Open Food Facts search/barcodes without forwarding user identity."""
 
     permission_classes = [IsAuthenticated]
     throttle_scope = "food_search"
@@ -421,13 +425,14 @@ class FoodSearchView(APIView):
                 type=str,
                 location=OpenApiParameter.QUERY,
                 required=True,
-                description="What to search for. Two characters or more.",
+                description="Submit a food/brand search (two characters minimum), or barcode: followed by a GTIN-8/12/13/14 product barcode. Do not search on every keystroke.",
             )
         ],
         responses={200: FoodSearchResultSerializer(many=True)},
         description=(
-            "Searches USDA FoodData Central and returns foods in the shape a "
-            "food entry is logged in. Results are cached for a week."
+            "Searches Open Food Facts or looks up a product barcode. Only records with "
+            "complete calories and macros are returned. Results are cached; empty means "
+            "not found or incomplete nutrition. Attribute Open Food Facts (ODbL)."
         ),
     )
     def get(self, request):
@@ -438,7 +443,12 @@ class FoodSearchView(APIView):
         if len(term) < 2:
             return Response([])
 
-        cached = FoodSearchCache.objects.filter(term=term).first()
+        try:
+            key = food_sources.cache_key(term)
+        except ValueError as error:
+            raise ValidationError({"q": str(error)})
+
+        cached = FoodSearchCache.objects.filter(term=key).first()
         if cached is not None and cached.is_fresh:
             return Response(cached.payload)
 
@@ -448,7 +458,7 @@ class FoodSearchView(APIView):
             # A stale answer beats no answer: the figures are reference data,
             # and a week-old calorie count for oats is still the calorie count
             # for oats.
-            if cached is not None:
+            if cached is not None and timezone.now() - cached.fetched_at < FoodSearchCache.RETENTION:
                 return Response(cached.payload)
             raise ServiceUnavailable(
                 "The food database could not be reached. You can still reuse a "
@@ -457,7 +467,7 @@ class FoodSearchView(APIView):
 
         payload = FoodSearchResultSerializer(foods, many=True).data
         FoodSearchCache.objects.update_or_create(
-            term=term, defaults={"payload": payload}
+            term=key, defaults={"payload": payload}
         )
         return Response(payload)
 
@@ -1208,6 +1218,57 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
         return self.get_paginated_response(self.get_serializer(people, many=True).data)
 
 
+#: The longest exercise search worth running. Longer text is cut, not refused:
+#: a picker sends whatever is in the box, and an error there helps nobody.
+MAX_EXERCISE_SEARCH_LENGTH = 100
+
+
+def exercises_named(queryset, name, profile):
+    """The exercises in `queryset` that go by `name`, the one to use first.
+
+    Matched the way the app matches names: ignoring case and surrounding
+    space. In this order, which is what `?name=` answers in and what saving a
+    workout from a post files its sets under:
+
+    1. The reader's own. Once the shared library holds a "Bench Press",
+       somebody who made their own years ago would otherwise have new sets
+       filed under the shared one -- splitting their history, records and
+       progress chart in two, by nothing they did.
+    2. A shared exercise of that name.
+    3. A shared exercise with that name among its aliases. Adopting the
+       library renamed older shared rows -- "Bench Press" became "Bench Press
+       (Barbell)", the old name kept as an alias -- and app builds from before
+       then still look an exercise up by the old name, making a private one
+       when nothing comes back: the same split, on every workout saved.
+
+    Aliases are matched through `search_text`, one lower-cased name or alias
+    per line, as a whole line of it -- a JSON lookup on `aliases` has no
+    SQLite implementation, and would be case-sensitive on PostgreSQL. A name
+    with a line break in it could only match across two aliases, so it is
+    matched by name alone. A custom exercise is only ever found by its name:
+    its aliases are the library's to write, and it has none.
+    """
+    name = name.strip()
+    matches = Q(name__iexact=name)
+    if name and "\n" not in name:
+        queryset = queryset.alias(
+            alias_lines=Concat(
+                Value("\n"), "search_text", Value("\n"),
+                output_field=models.TextField(),
+            )
+        )
+        matches |= Q(created_by__isnull=True, alias_lines__icontains=f"\n{name.lower()}\n")
+    return queryset.filter(matches).order_by(
+        Case(
+            When(created_by=profile, then=Value(0)),
+            When(name__iexact=name, then=Value(1)),
+            default=Value(2),
+        ),
+        "name",
+        "pk",
+    )
+
+
 @extend_schema_view(
     list=extend_schema(
         parameters=[
@@ -1221,6 +1282,43 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
                     "client resolve one exercise instead of reading every "
                     "page of the catalogue to find it."
                 ),
+            ),
+            OpenApiParameter(
+                name="search",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only exercises whose name or one of whose aliases "
+                    "contains this, ignoring case and surrounding space, for a "
+                    "picker that narrows as the person types. Blank is the "
+                    "same as omitted. Only the first "
+                    f"{MAX_EXERCISE_SEARCH_LENGTH} characters are used. "
+                    "Combines with every other filter."
+                ),
+            ),
+            OpenApiParameter(
+                name="mine",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "`true` returns only the exercises the reader created, "
+                    "leaving out the shared catalogue. `false` or omitted "
+                    "returns both. Anything else is a 400."
+                ),
+            ),
+            *(
+                OpenApiParameter(
+                    name=name,
+                    type=OpenApiTypes.STR,
+                    location=OpenApiParameter.QUERY,
+                    description=description,
+                )
+                for name, description in (
+                    ("equipment", "Return only exercises using this equipment (`barbell`, `dumbbell`, ...), ignoring case."),
+                    ("category", "Return only exercises in this library category, ignoring case."),
+                    ("pattern", "Return only exercises with this movement pattern, ignoring case."),
+                    ("muscle", "Return only exercises with this among their primary muscles (`chest`, `lats`, ...), ignoring case."),
+                )
             ),
         ]
     )
@@ -1239,12 +1337,58 @@ class ExerciseViewSet(viewsets.ModelViewSet):
         queryset = queryset.filter(
             Q(created_by__isnull=True) | Q(created_by=profile)
         )
-        # Matched the way the app matches names: ignoring case and surrounding
-        # space. Without this a client reads the whole catalogue to find one
-        # row, on every workout save.
+        # Without this a client reads the whole catalogue to find one row, on
+        # every workout save. The app takes the first match, so the order is
+        # the point; see exercises_named.
         name = self.request.query_params.get("name")
         if name:
-            queryset = queryset.filter(name__iexact=name.strip())
+            queryset = exercises_named(queryset, name, profile)
+        if self.action != "list":
+            # Discovery narrows the list only. A stray query string on a
+            # detail URL must not turn an exercise the reader can open into a
+            # 404, and a create reads nothing back through this.
+            return queryset
+        # Cut before it reaches the database, as the food search is: nobody
+        # types a hundred characters into an exercise picker, and a contains
+        # match on a megabyte of text is work for nothing.
+        search = (self.request.query_params.get("search") or "").strip()
+        search = search[:MAX_EXERCISE_SEARCH_LENGTH].strip()
+        if search:
+            # The name and every alias, through the one column the library
+            # sync and Exercise.save() keep for it. The name is asked too, so
+            # a row written around save() still turns up under its own name.
+            queryset = queryset.filter(
+                Q(search_text__icontains=search.lower()) | Q(name__icontains=search)
+            )
+        # Exact filters over the library's own vocabulary. Custom exercises
+        # carry none of it, so any of these leaves them out.
+        for param, column in (
+            ("equipment", "equipment"),
+            ("category", "category"),
+            ("pattern", "movement_pattern"),
+        ):
+            value = (self.request.query_params.get(param) or "").strip()
+            if value:
+                queryset = queryset.filter(**{f"{column}__iexact": value})
+        muscle = (self.request.query_params.get("muscle") or "").strip().lower()
+        if muscle:
+            # `|chest|` within `|chest|triceps|`: an exact match on one muscle
+            # of the list, on SQLite and PostgreSQL alike. A `|` in the value
+            # could only reach across two muscles, so it matches nothing.
+            if "|" in muscle:
+                queryset = queryset.none()
+            else:
+                queryset = queryset.filter(primary_muscle_index__contains=f"|{muscle}|")
+        mine = self.request.query_params.get("mine")
+        if mine is not None:
+            wanted = mine.strip().lower()
+            if wanted in ("true", "1"):
+                queryset = queryset.filter(created_by=profile)
+            elif wanted not in ("false", "0"):
+                # Refused rather than guessed at, like `from_following` on the
+                # post list: a typo quietly returning the whole catalogue looks
+                # like a filter that works.
+                raise ValidationError({"mine": "Use true or false."})
         return queryset
 
     def perform_create(self, serializer):
@@ -1274,8 +1418,21 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
     serializer_class = WorkoutTemplateSerializer
     permission_classes = [IsAuthenticated]
 
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            schedule_ids = lock_schedule_rows(WorkoutSchedule.objects.filter(
+                owner=serializer.instance.owner, workout=serializer.instance
+            ))
+            generated_ids = list(untouched_generated_tasks(schedule_ids).values_list("pk", flat=True))
+            saved = serializer.save()
+            # These IDs were proven unchanged and locked before the template
+            # name changed. Custom titles and completed records stay personal.
+            PlannerEntry.objects.filter(pk__in=generated_ids).update(
+                title=saved.name, updated_at=timezone.now()
+            )
+
     def perform_destroy(self, instance):
-        """Deletes a saved workout, unless a rotation is built out of it.
+        """Deletes a saved workout, unless a rotation in effect is built out of it.
 
         A rotation stores its own length and gives each slot a position, so a
         slot vanishing underneath it leaves a rotation claiming eight days with
@@ -1287,15 +1444,34 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
         training week becomes; that is their decision and there is a screen
         for making it.
 
+        Only a rotation with days still to come counts: one running, or one
+        starting later. Deleting or replacing a rotation closes it rather than
+        erasing it, so its slots go on naming the workout -- and counting
+        those made the workout undeletable for good, refused in the name of a
+        rotation the rotations list no longer shows. A closed one's slot
+        cascading changes no day anybody will train.
+
         Everything else the delete takes is fair. The days it was planned on
         and any weekly repeat of it go with it -- they are plans made of this
         workout and mean nothing without it. Sessions already trained and
-        planner tasks survive: those are a record of what happened, and they
-        are only unlinked.
+        completed/manually authored planner tasks survive and are unlinked;
+        unfinished automatically generated tasks follow their removed plans.
         """
+        today = today_for(instance.owner)
         rotations = list(
             WorkoutCycle.objects.filter(
                 slots__workout=instance, owner=instance.owner
+            )
+            # A rotation covers [effective_from, effective_until), so it has
+            # a day from today on when it is open-ended or ends after both.
+            # Ending after today alone is not enough: one deleted before it
+            # began is closed on its own first day, and has no days at all.
+            .filter(
+                Q(effective_until__isnull=True)
+                | (
+                    Q(effective_until__gt=today)
+                    & Q(effective_until__gt=models.F("effective_from"))
+                )
             )
             .values_list("name", flat=True)
             # order_by() clears the model default first. Django adds every
@@ -1315,10 +1491,30 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
                     )
                 }
             )
-        instance.delete()
+        with transaction.atomic():
+            delete_schedule_rows(WorkoutSchedule.objects.filter(
+                owner=instance.owner, workout=instance
+            ))
+            instance.delete()
 
     def get_queryset(self):
-        return self.scope_to_owner(super().get_queryset())
+        # When each workout was last trained, worked out inside the page's own
+        # query as a correlated subquery. Asked per workout instead, a saved
+        # workouts list of fifty is fifty more queries; see
+        # WorkoutTemplateSerializer.get_last_performed_at for what counts.
+        #
+        # Matched on the owner as well as the workout. Sessions can only name
+        # the owner's own workouts, so this changes nothing today; it keeps
+        # somebody else's training out of this date if that ever stops being
+        # true.
+        last_performed = (
+            performed_sessions()
+            .filter(workout=OuterRef("pk"), repbase_user=OuterRef("owner"))
+            .values("performed_at")[:1]
+        )
+        return self.scope_to_owner(super().get_queryset()).annotate(
+            last_performed_annotation=Subquery(last_performed)
+        )
 
     def perform_create(self, serializer):
         serializer.save(owner=self.owner_profile())
@@ -1384,6 +1580,41 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(owner=self.owner_profile())
+
+    def perform_destroy(self, instance):
+        delete_schedule_rows(self.get_queryset().filter(pk=instance.pk))
+
+    def perform_update(self, serializer):
+        with transaction.atomic():
+            schedule_ids = lock_schedule_rows(self.get_queryset().filter(pk=serializer.instance.pk))
+            previous = WorkoutSchedule.objects.select_related("workout").get(pk=serializer.instance.pk)
+            serializer.instance = previous
+            generated_ids = list(untouched_generated_tasks(schedule_ids).values_list("pk", flat=True))
+            old_identity = (previous.workout_id, previous.scheduled_date)
+            saved = serializer.save()
+            if old_identity == (saved.workout_id, saved.scheduled_date):
+                return
+
+            # A completed/customized task records its original date; do not
+            # move it with the future plan. It becomes an independent entry.
+            PlannerEntry.objects.filter(source_schedule=saved).exclude(
+                pk__in=generated_ids
+            ).update(source_schedule=None)
+            existing = PlannerEntry.objects.filter(
+                owner=saved.owner, workout=saved.workout,
+                scheduled_date=saved.scheduled_date, kind=PlannerEntry.Kind.TASK,
+            ).exclude(pk__in=generated_ids).first()
+            if existing is not None:
+                # A manual reminder already occupies the destination. Adopt
+                # it without claiming it as generated or overwriting details.
+                PlannerEntry.objects.filter(pk__in=generated_ids).delete()
+            elif generated_ids:
+                PlannerEntry.objects.filter(pk__in=generated_ids).update(
+                    workout=saved.workout, scheduled_date=saved.scheduled_date,
+                    title=saved.workout.name, updated_at=timezone.now(),
+                )
+            saved.planner_synced_at = timezone.now() if existing is not None or generated_ids else None
+            saved.save(update_fields=["planner_synced_at", "updated_at"])
 
     @extend_schema(
         request=PlanWeekSerializer,
@@ -1451,24 +1682,29 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
         created = []
         with transaction.atomic():
-            pending = (
-                WorkoutSchedule.objects.select_for_update()
+            pending = list(
+                WorkoutSchedule.objects.select_for_update(of=("self",))
                 .filter(
                     owner=owner,
                     scheduled_date__gte=start,
                     scheduled_date__lte=end,
                     planner_synced_at__isnull=True,
                 )
-                .select_related("workout")
                 .order_by("scheduled_date", "id")
             )
+            # Read names after acquiring schedule locks. A joined template
+            # would also be locked by SELECT FOR UPDATE and could invert a
+            # rename's lock order; a pre-lock join could carry stale names.
+            templates = {workout.pk: workout for workout in WorkoutTemplate.objects.filter(
+                pk__in={schedule.workout_id for schedule in pending}
+            ).only("id", "name")}
             for schedule in pending:
                 # A task may already exist from before this endpoint, or from a
                 # day the user made by hand. Adopt it rather than colliding
                 # with the uniqueness rule.
                 entry = PlannerEntry.objects.filter(
                     owner=owner,
-                    workout=schedule.workout,
+                    workout_id=schedule.workout_id,
                     scheduled_date=schedule.scheduled_date,
                     kind=PlannerEntry.Kind.TASK,
                 ).first()
@@ -1476,10 +1712,11 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                     entry = PlannerEntry.objects.create(
                         owner=owner,
                         kind=PlannerEntry.Kind.TASK,
-                        title=schedule.workout.name,
+                        title=templates[schedule.workout_id].name,
                         category=PlannerCategory.WORKOUT,
                         scheduled_date=schedule.scheduled_date,
-                        workout=schedule.workout,
+                        workout=templates[schedule.workout_id],
+                        source_schedule=schedule,
                     )
                     created.append(entry)
                 schedule.planner_synced_at = timezone.now()
@@ -2253,10 +2490,10 @@ class WorkoutRecurrenceViewSet(
         # front of the user, and one of them may already have been trained.
         # Days the user put there by hand are untouched, which is what the
         # source_recurrence link is for.
-        WorkoutSchedule.objects.filter(
+        delete_schedule_rows(WorkoutSchedule.objects.filter(
             source_recurrence=instance,
             scheduled_date__gte=current_week + timedelta(days=7),
-        ).delete()
+        ))
         if instance.materialized_through is None:
             # Never reached a calendar, so no week depends on it.
             instance.delete()
@@ -2303,6 +2540,16 @@ MAX_ROUTE_POINTS_PER_SESSION = 50_000
                     "Return only sessions whose workout has this name, "
                     "matched without regard to case. Groups a workout's "
                     "history by what it is called rather than by record."
+                ),
+            ),
+            OpenApiParameter(
+                name="activity",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only sessions whose workout is this activity "
+                    "(`tennis`, `running`, ...). A slug the server does not "
+                    "know matches nothing."
                 ),
             ),
         ]
@@ -2409,12 +2656,31 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
             queryset = queryset.filter(workout_id=workout)
         if workout_name:
             queryset = queryset.filter(workout__name__iexact=workout_name)
+        activity = (self.request.query_params.get("activity") or "").strip()
+        if activity:
+            queryset = queryset.filter(workout__activity=activity)
         # Same reason as the gym list: the logged_set_total annotation groups
         # the query, which drops Meta.ordering and leaves history unordered
         # while it is being paged. created_at is auto_now_add, so sessions
         # written in the same instant -- an import, or a test -- share one,
         # and the key breaks the tie in the same direction as the date.
         return queryset.order_by("-created_at", "-pk")
+
+    def perform_update(self, serializer):
+        """Apply a PATCH to the session as it is now, not as it was read.
+
+        The row is read again under a lock, so a route upload or Health
+        import committing at the same moment is either wholly before this
+        write or wholly after it. That matters for a typed-in distance, whose
+        copy into recorded_distance_km depends on whether the session has a
+        measured one -- which the upload may have just given it.
+        """
+        with transaction.atomic():
+            serializer.instance = get_object_or_404(
+                self.scope_to_owner(WorkoutSession.objects.select_for_update()),
+                pk=serializer.instance.pk,
+            )
+            serializer.save()
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -2510,6 +2776,138 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
         return Response(self.get_serializer(session).data)
 
     @extend_schema(
+        request=ActivityLogSerializer,
+        responses={201: WorkoutSessionSerializer},
+        parameters=[IDEMPOTENCY_KEY_PARAMETER],
+        description=(
+            "Log a finished session after the fact: an activity, when it "
+            "started and how long it lasted, with optional effort, calories, "
+            "distance, details and notes. Creates a completed session marked "
+            "`is_manual_entry`, ending `duration_seconds` after `started_at` "
+            "(at most five minutes from now). The workout is `workout` (one of "
+            "yours, of this activity) or the one named `workout_name`, ignoring "
+            "case, made with this activity if you have none; a named workout of "
+            "another activity is a 400. `scheduled_date` also schedules the "
+            "workout on that day, reusing the day's entry if there is one. The "
+            "day's planner task for the workout is ticked, as finishing a live "
+            "session does. Send an `Idempotency-Key` to make retries replay "
+            "the same session instead of logging a second one."
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="log")
+    def log(self, request):
+        """Record a session somebody did without recording it live.
+
+        A tennis match, a class, a run with the phone left at home: the
+        person types in what it was and how long it took. It is a completed
+        session like any other -- it counts towards the stats, ticks the
+        planner, and appears in the workout's history -- with
+        `is_manual_entry` saying its times were typed rather than measured.
+
+        Its replay goes through the same receipts as every other create.
+        """
+        return self.idempotent(request, lambda: self._log(request))
+
+    def _log(self, request):
+        # With the request: `scheduled_date` is held to the person's own calendar.
+        payload = ActivityLogSerializer(data=request.data, context=self.get_serializer_context())
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+
+        with transaction.atomic():
+            # The account lock every receipt writer takes (and this one may
+            # already hold, through `idempotent`). Here it also stops two logs
+            # naming one new workout from both trying to create it, which the
+            # unique name would turn into a 500 for the second.
+            owner = RepbaseUser.objects.select_for_update().get(pk=self.owner_profile().pk)
+            workout = self._workout_for_log(owner, data)
+            if data.get("scheduled_date") is not None:
+                # Unique per workout and day, so a second log of the same day
+                # reuses the entry rather than failing on it.
+                WorkoutSchedule.objects.get_or_create(
+                    owner=owner, workout=workout, scheduled_date=data["scheduled_date"]
+                )
+            distance = data.get("manual_distance_km")
+            session = WorkoutSession.objects.create(
+                repbase_user=owner,
+                workout=workout,
+                status=WorkoutSession.Status.COMPLETED,
+                started_at=data["started_at"],
+                ended_at=data["ended_at"],
+                is_manual_entry=True,
+                perceived_effort=data.get("perceived_effort"),
+                manual_calories_kcal=data.get("manual_calories_kcal"),
+                manual_distance_km=distance,
+                # A logged session has no track and no Health record, so the
+                # typed distance is its recorded one; see set_manual_distance.
+                recorded_distance_km=distance,
+                notes=data.get("notes", ""),
+                activity_details=data.get("activity_details", {}),
+            )
+            # The same tick `end` gives, for the same reason: the training
+            # happened, and the planner should say so. See planner_tasks_for.
+            planner_tasks_for(session).filter(completed_at__isnull=True).update(
+                completed_at=session.ended_at, updated_at=timezone.now()
+            )
+        return Response(self.get_serializer(session).data, status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _workout_for_log(owner, data):
+        """The workout a log belongs to, found or made; refused if it is
+        something else.
+
+        A log never changes a workout's activity. Logging tennis against a
+        workout that is a run would turn the run's whole history into tennis,
+        so it is refused, naming what the workout is, and the person can pick
+        another name.
+
+        Someone else's workout is refused exactly as a missing one is, naming
+        the field and saying nothing about whether the row exists -- the same
+        answer `source_for` gives a post's source.
+        """
+        activity = data["activity"]
+        if data.get("workout") is not None:
+            workout = WorkoutTemplate.objects.filter(pk=data["workout"], owner=owner).first()
+            if workout is None:
+                raise ValidationError({"workout": "No workout of yours with that id."})
+            if workout.activity_or_default != activity:
+                raise ValidationError(
+                    {
+                        "activity": (
+                            f"That workout is {activity_label(workout.activity_or_default)}, "
+                            f"not {activity_label(activity)}."
+                        )
+                    }
+                )
+            return workout
+
+        name = data["workout_name"]
+        named = WorkoutTemplate.objects.filter(owner=owner, name__iexact=name)
+        # Names are unique exactly, not ignoring case, so "Tennis" and
+        # "tennis" can both exist. The exact spelling wins, then the oldest.
+        workout = named.filter(name=name).first() or named.order_by("pk").first()
+        if workout is None:
+            return WorkoutTemplate.objects.create(
+                owner=owner,
+                name=name,
+                activity=activity,
+                workout_type=ACTIVITIES[activity].family,
+            )
+        if workout.activity_or_default != activity:
+            raise ValidationError(
+                {
+                    "workout_name": (
+                        f'Your workout "{workout.name}" is '
+                        f"{activity_label(workout.activity_or_default)}, not "
+                        f"{activity_label(activity)}. Log it as "
+                        f"{activity_label(workout.activity_or_default)}, or "
+                        f"give this one another name."
+                    )
+                }
+            )
+        return workout
+
+    @extend_schema(
         request=SessionCardioSerializer,
         responses=WorkoutSessionSerializer,
     )
@@ -2555,6 +2953,98 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
             PersonalRecordSerializer(
                 session.personal_records(),
                 many=True,
+            ).data
+        )
+
+    @extend_schema(
+        request=SessionReorderSerializer,
+        responses=SessionExerciseSerializer(many=True),
+        description=(
+            "Put an active session's exercises in a new order, all at once. "
+            "The body lists every SessionExercise id of the session exactly "
+            "once; they are renumbered 1 to n in that order and the session's "
+            "exercises are returned in it. A list that leaves one out, repeats "
+            "one or names another session's is a 400 and changes nothing, as "
+            "is a session that is planned or completed. Sending the same list "
+            "again changes nothing."
+        ),
+    )
+    # The whole list comes back, like `records`: a session's exercises are a
+    # screenful, and a paged envelope would only make the reply harder to use.
+    @action(detail=True, methods=["post"], pagination_class=None)
+    def reorder(self, request, pk=None):
+        """Renumber a session's exercises in one step.
+
+        One request rather than a PATCH per row, because the rows cannot be
+        moved one at a time: `unique_exercise_order_per_session` refuses the
+        intermediate state of every swap, so a client exchanging two exercises
+        had to invent a spare number for one of them first, and a failure
+        halfway left the session in an order nobody chose.
+
+        Only while the session is active. A completed session is a record of
+        the order the training happened in -- the post built from it and the
+        history screen read that order -- and rewriting it afterwards would
+        change what it says happened. A planned one is refused too, for now:
+        nothing needs it yet, and allowing it later is an additive change,
+        where taking it back once clients relied on it would not be.
+        """
+        payload = SessionReorderSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        wanted = payload.validated_data["session_exercises"]
+
+        with transaction.atomic():
+            # Locked so two reorders of one session (a retry racing the
+            # original) are applied one after the other rather than
+            # interleaved into an order neither asked for.
+            session = get_object_or_404(
+                self.scope_to_owner(WorkoutSession.objects.select_for_update()),
+                pk=pk,
+            )
+            if session.status != WorkoutSession.Status.ACTIVE:
+                raise ValidationError(
+                    {"detail": "Only an active session's exercises can be reordered."}
+                )
+            rows = list(session.session_exercises.all())
+            by_id = {row.pk: row for row in rows}
+            if set(wanted) != set(by_id):
+                raise ValidationError(
+                    {
+                        "session_exercises": (
+                            "List every exercise of this session exactly once. "
+                            "Reload the session and try again."
+                        )
+                    }
+                )
+
+            # Two passes, so no statement ever needs a number another row
+            # still holds. First every row moves to a spare number: above n,
+            # so clear of the final 1..n, and skipping the numbers rows hold
+            # now, so clear of each other. Then each takes its place. Spare
+            # numbers are counted up from n rather than offset from the
+            # largest order, which could be near the column's limit; these are
+            # never more than 2n. Works the same on SQLite and PostgreSQL,
+            # neither of which defers the unique check to the end of a
+            # statement.
+            taken = {row.order for row in rows}
+            spare = (
+                number
+                for number in itertools.count(len(rows) + 1)
+                if number not in taken
+            )
+            for row in rows:
+                row.order = next(spare)
+            SessionExercise.objects.bulk_update(rows, ["order"])
+
+            ordered = [by_id[row_id] for row_id in wanted]
+            for position, row in enumerate(ordered, start=1):
+                row.order = position
+            SessionExercise.objects.bulk_update(ordered, ["order"])
+
+        return Response(
+            SessionExerciseSerializer(
+                session.session_exercises.select_related("exercise").order_by("order", "id"),
+                many=True,
+                context=self.get_serializer_context(),
             ).data
         )
 
@@ -2741,13 +3231,22 @@ class ExerciseProgressView(APIView):
     )
     def get(self, request, exercise_id):
         profile = profile_for(request.user)
-        entries = SetEntry.objects.filter(
-            session_exercise__session__repbase_user=profile,
-            session_exercise__exercise_id=exercise_id,
-            completed_at__isnull=False,
-            weight_kg__isnull=False,
-            reps__isnull=False,
-        ).select_related("session_exercise").order_by("completed_at")
+        # Warm-ups are left off the chart. They are light by design, so every
+        # session would draw a dip to the warm-up weight before climbing to the
+        # working sets, and the line would show the warm-up routine instead of
+        # whether the lift is going up.
+        entries = (
+            SetEntry.objects.filter(
+                session_exercise__session__repbase_user=profile,
+                session_exercise__exercise_id=exercise_id,
+                completed_at__isnull=False,
+                weight_kg__isnull=False,
+                reps__isnull=False,
+            )
+            .exclude(set_type=SetType.WARMUP)
+            .select_related("session_exercise")
+            .order_by("completed_at")
+        )
 
         workout_name = request.query_params.get("workout_name")
         if workout_name:
@@ -2899,6 +3398,12 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
     There is no superuser bypass here, unlike `scope_to_owner`. `private` is a
     user's word for author-only, and an account with a staff flag is still a
     reader.
+
+    A media post with nothing yet to show is its author's alone, whatever its
+    visibility says. Its clip is still uploading, processing or waiting for
+    review, or failed, and a caption over an empty frame is not what anybody
+    else was meant to see. It reaches its readers the moment the clip is ready
+    and approved, with no second publish.
     """
     follows_author = Follow.objects.filter(
         follower=viewer,
@@ -2907,6 +3412,16 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
     blocked_either_way = Block.objects.filter(
         Q(blocker=viewer, blocked=OuterRef("author"))
         | Q(blocker=OuterRef("author"), blocked=viewer)
+    )
+    watchable_clip = PostVideo.objects.filter(
+        post=OuterRef("pk"),
+        processing_state="ready",
+        status=PostVideo.Status.APPROVED,
+    )
+    has_something_to_show = (
+        ~Q(kind=Post.Kind.MEDIA)
+        | (Q(image__isnull=False) & ~Q(image=""))
+        | Q(Exists(watchable_clip))
     )
     result = queryset.annotate(
         viewer_follows_author=Exists(follows_author),
@@ -2938,6 +3453,7 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
                 Q(visibility=Post.Visibility.PUBLIC)
                 | Q(visibility=Post.Visibility.FOLLOWERS, viewer_follows_author=True)
             )
+            & has_something_to_show
         )
     )
     if include_reposts:
@@ -3124,6 +3640,7 @@ def snapshot_workout(post, session, shows_weights=True):
         # column means every card has something to put at the top.
         title=session.workout.name if session.workout_id else "Workout",
         workout_type=session.workout.workout_type if session.workout_id else None,
+        activity=session.workout.activity_or_default if session.workout_id else None,
         performed_at=session.ended_at or session.started_at or session.created_at,
         duration_seconds=whole_seconds(session.duration_seconds),
         # The finisher goes over whole or not at all: a machine with no time, or
@@ -3277,8 +3794,9 @@ def create_post_from_source(
         snapshot_workout(post, source, shows_weights=shows_weights)
     elif kind == Post.Kind.MEAL:
         snapshot_meal(post, source, cooking_instructions=cooking_instructions)
-    else:
+    elif kind == Post.Kind.PLANNER:
         snapshot_planner(post, source)
+    # A media post has no snapshot: its photo or clip is the post.
     return post
 
 
@@ -3357,6 +3875,7 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
                 "weight_kg": entry.weight_kg,
                 "reps": entry.reps,
                 "performed_at": entry.session_exercise.session.started_at,
+                "set_type": entry.set_type,
             }
 
         return Response(
@@ -3413,7 +3932,12 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
         description=(
             "Post a workout, meal or planner entry the requester owns. The "
             "server reads the source and builds the snapshot; the request names "
-            "the object and never carries its contents."
+            "the object and never carries its contents.\n\n"
+            "Or post a photo or a clip on its own, with `kind` `media` and no "
+            "`source_id`. Send the photo here; send a clip next to "
+            "`posts/{id}/video/`, saying so with `expects_video`. A media post "
+            "with nothing yet to show -- its clip uploading, processing or "
+            "waiting for review -- is visible to its author alone."
         ),
     ),
     partial_update=extend_schema(
@@ -3734,27 +4258,34 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             source.author,
             "Workout",
         )
+        # The activity the post went out with, when this server knows it, and
+        # its family with it; otherwise the snapshot's type, and save() takes
+        # that type's default activity.
+        activity = snapshot.activity if snapshot.activity in ACTIVITIES else ""
         with transaction.atomic():
             template = WorkoutTemplate.objects.create(
                 owner=owner,
                 name=name,
                 source_post=source,
                 workout_type=(
-                    snapshot.workout_type
-                    or WorkoutTemplate.WorkoutType.LIFTING
+                    ACTIVITIES[activity].family if activity
+                    else snapshot.workout_type or WorkoutTemplate.WorkoutType.LIFTING
                 ),
+                activity=activity,
+            )
+            visible = Exercise.objects.filter(
+                Q(created_by__isnull=True) | Q(created_by=owner)
             )
             for order, line in enumerate(exercises, start=1):
-                # The shared row first, this user's own next, and a new one
-                # only when neither exists. A private "Bench Press" per person
-                # who saves a workout would fork the exercise that progress
-                # and personal records are grouped by.
-                candidates = Exercise.objects.filter(
-                    name__iexact=line.name
-                ).filter(Q(created_by__isnull=True) | Q(created_by=owner))
+                # The exercise `?name=` would hand this reader -- their own,
+                # then the shared one, by name and then by alias -- and a new
+                # one only when there is none. Shared first, as this was, put
+                # the copy's sets beside the reader's own history rather than
+                # in it; and a private "Bench Press" per person who saves a
+                # workout would fork the exercise that progress and personal
+                # records are grouped by.
                 exercise = (
-                    candidates.filter(created_by__isnull=True).first()
-                    or candidates.first()
+                    exercises_named(visible, line.name, owner).first()
                     or Exercise.objects.create(name=line.name, created_by=owner)
                 )
                 WorkoutExercise.objects.create(
@@ -4124,7 +4655,12 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         payload.is_valid(raise_exception=True)
         author = self.owner_profile()
         kind = payload.validated_data["kind"]
-        source = source_for(author, kind, payload.validated_data["source_id"])
+        # A media post is made from nothing recorded; the serializer has
+        # already refused a source_id on one and required it on the rest.
+        source = (
+            None if kind == Post.Kind.MEDIA
+            else source_for(author, kind, payload.validated_data["source_id"])
+        )
         decoded = payload.validated_data.get("decoded_image")
         extension = payload.validated_data.get("image_extension", ".jpg")
         if settings.MEDIA_SCREENING_ENABLED and decoded:
@@ -4140,7 +4676,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             {
                 "caption": payload.validated_data.get("caption", ""),
                 "cooking_instructions": payload.validated_data.get("cooking_instructions", ""),
-                "source": public_text_for_source(source, kind),
+                "source": public_text_for_source(source, kind) if source else {},
             },
             image=None if settings.MEDIA_SCREENING_ENABLED else decoded,
             request=request,
@@ -4403,10 +4939,46 @@ class NotificationViewSet(
 
     def get_queryset(self):
         viewer = profile_for(self.request.user)
+        visible_posts = visible_posts_for(viewer, Post.objects.all()).values("pk")
         return without_blocked_authors(viewer, super().get_queryset().filter(recipient=viewer), 'actor').exclude(
             comment__is_hidden=True).exclude(comment__parent__is_hidden=True).exclude(
                 Q(post__is_hidden=True) & ~Q(kind=Notification.Kind.MODERATION_REJECTED)).filter(
-            actor__user__is_active=True)
+            actor__user__is_active=True).filter(
+                Q(post__isnull=True) | Q(post_id__in=visible_posts)
+                | Q(kind=Notification.Kind.MODERATION_REJECTED)
+            ).filter(
+                # Internal/legacy rows must not quote a different post's
+                # comment, or evade post visibility with a missing post ID.
+                Q(comment__isnull=True) | Q(comment__post_id=models.F("post_id"))
+            )
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+        rows = list(page if page is not None else queryset)
+        ids = {row.post_id for row in rows if row.post_id is not None
+               and row.kind != Notification.Kind.MODERATION_REJECTED}
+        # Re-check visibility while fetching previews, after selecting this
+        # page. Nothing is fetched/signed merely because a notification holds
+        # a post ID. Reposts' originals pass the same visibility helper.
+        preview_posts = visible_posts_for(
+            profile_for(request.user), Post.objects.filter(pk__in=ids)
+        ).select_related(
+            "workout", "meal", "planner", "video", "repost_of",
+            "repost_of__workout", "repost_of__meal", "repost_of__planner",
+            "repost_of__video",
+        )
+        context = self.get_serializer_context()
+        context["notification_preview_posts"] = {post.id: post for post in preview_posts}
+        # If a post was removed/restricted between the page read and preview
+        # read, suppress its ordinary event too, including quoted comments.
+        # A previously computed paginator count may be briefly conservative;
+        # it must never justify returning newly restricted content.
+        rows = [row for row in rows if row.post_id is None
+                or row.kind == Notification.Kind.MODERATION_REJECTED
+                or row.post_id in context["notification_preview_posts"]]
+        serializer = self.get_serializer(rows, many=True, context=context)
+        return self.get_paginated_response(serializer.data) if page is not None else Response(serializer.data)
 
     @extend_schema(
         request=None,
@@ -4422,20 +4994,29 @@ class NotificationViewSet(
         )
 
     @extend_schema(
-        request=None,
+        request=NotificationReadSerializer,
         responses={200: UnreadCountSerializer},
         description=(
-            "Mark every notification as seen. Answers with what is left "
-            "unread, which is zero, so the caller has one shape to read "
-            "whichever of these two it called."
+            "Mark supplied notification IDs as seen (at most 500). An empty ids "
+            "list changes nothing; omitting ids preserves legacy mark-all behavior. "
+            "Only the authenticated recipient's currently visible rows are changed. "
+            "Returns the actual remaining unread count. Clients must see "
+            "supports_scoped_read=true in a list response before sending ids."
         ),
     )
     @action(detail=False, methods=["post"], url_path="read", pagination_class=None)
     def mark_read(self, request):
-        self.get_queryset().filter(read_at__isnull=True).update(
+        body = NotificationReadSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        unread = self.get_queryset().filter(read_at__isnull=True)
+        if "ids" in body.validated_data:
+            unread = unread.filter(pk__in=body.validated_data["ids"])
+        unread.update(
             read_at=timezone.now()
         )
-        return Response(UnreadCountSerializer({"unread": 0}).data)
+        return Response(UnreadCountSerializer({
+            "unread": self.get_queryset().filter(read_at__isnull=True).count()
+        }).data)
 
 
 class FollowRequestViewSet(
@@ -4861,9 +5442,11 @@ class TrainingStatsView(APIView):
             .values(
                 "workout__name",
                 "workout__workout_type",
+                "workout__activity",
                 "started_at",
                 "ended_at",
                 "recorded_distance_km",
+                "manual_distance_km",
                 "logged_sets",
             )
         )
@@ -4877,15 +5460,20 @@ class TrainingStatsView(APIView):
             if performed is None:
                 continue
 
-            workout_type = row["workout__workout_type"]
-            if workout_type in WorkoutTemplate.DISTANCE_TYPES:
-                # A run logs no sets. Distance when it was measured, and the
-                # time it took when it was not: a treadmill run still happened.
-                started, ended = row["started_at"], row["ended_at"]
-                duration = (ended - started).total_seconds() if started and ended else 0
-                trained = (row["recorded_distance_km"] or 0) > 0 or duration > 0
-            else:
-                trained = row["logged_sets"] > 0
+            # What a session must show depends on its activity; see
+            # core.activities and performed_sessions, which asks the same
+            # question in SQL. A run or a tennis match logs no sets, so it
+            # counts on distance when there is one and on the time it took
+            # when there is not -- a treadmill run still happened. A strength
+            # session, and one whose workout was deleted, counts on its sets.
+            started, ended = row["started_at"], row["ended_at"]
+            trained = session_trained(
+                activity=row["workout__activity"],
+                workout_type=row["workout__workout_type"],
+                logged_sets=row["logged_sets"],
+                duration_seconds=(ended - started).total_seconds() if started and ended else 0,
+                distances=(row["recorded_distance_km"], row["manual_distance_km"]),
+            )
 
             if trained:
                 days.add((row["workout__name"], timezone.localtime(performed).date()))
@@ -4994,9 +5582,7 @@ def clear_schedule_from(owner, day):
     record rather than a plan -- rewriting them would be rewriting history.
     """
     rows = WorkoutSchedule.objects.filter(owner=owner, scheduled_date__gte=day)
-    count = rows.count()
-    rows.delete()
-    return count
+    return delete_schedule_rows(rows)
 
 
 def clear_whole_schedule(owner):
@@ -5011,9 +5597,7 @@ def clear_whole_schedule(owner):
     own, with no foreign key to the schedule row that planned it.
     """
     rows = WorkoutSchedule.objects.filter(owner=owner)
-    count = rows.count()
-    rows.delete()
-    return count
+    return delete_schedule_rows(rows)
 
 
 @extend_schema_view(
@@ -5040,6 +5624,36 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
     )
     serializer_class = WorkoutCycleSerializer
     permission_classes = [IsAuthenticated]
+
+    def perform_destroy(self, instance):
+        # Ending a rotation is not erasing its history. Keep the old rule and
+        # days already trained, while withdrawing only future untouched dates
+        # generated by this particular rotation. The FK cleanup follows those
+        # schedule rows into pending generated planner tasks.
+        with transaction.atomic():
+            cycle = WorkoutCycle.objects.select_for_update().get(
+                pk=instance.pk, owner=self.owner_profile()
+            )
+            today = today_for(cycle.owner)
+            if cycle.effective_until is not None and cycle.effective_until <= today:
+                return
+            future = WorkoutSchedule.objects.filter(
+                owner=cycle.owner,
+                source_cycle=cycle,
+                scheduled_date__gte=today,
+            )
+            touched = WorkoutSession.objects.filter(
+                repbase_user=cycle.owner,
+                workout_id=OuterRef("workout_id"),
+            ).annotate(
+                training_day=TruncDate(
+                    Coalesce("started_at", "ended_at"), tzinfo=zone_for(cycle.owner)
+                )
+            ).filter(training_day=OuterRef("scheduled_date"))
+            delete_schedule_rows(future.annotate(has_session=Exists(touched)).filter(has_session=False))
+            end = max(today, cycle.effective_from)
+            cycle.effective_until = min(cycle.effective_until, end) if cycle.effective_until else end
+            cycle.save(update_fields=["effective_until", "updated_at"])
 
     def get_queryset(self):
         queryset = self.scope_to_owner(super().get_queryset())
@@ -5242,34 +5856,16 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             touched = WorkoutSession.objects.filter(
                 repbase_user=owner,
                 workout_id=models.OuterRef("workout_id"),
-                started_at__date=models.OuterRef("scheduled_date"),
-            )
+            ).annotate(
+                training_day=TruncDate(Coalesce("started_at", "ended_at"), tzinfo=zone_for(owner))
+            ).filter(training_day=models.OuterRef("scheduled_date"))
             removable = future.annotate(
                 has_session=Exists(touched)
             ).filter(has_session=False)
 
-            # What these days put on the planner goes with them.
-            #
-            # PlannerEntry has no link back to the schedule row it came from,
-            # so nothing used to remove it: a day dropped by a rotation left
-            # its task behind, and the task then sat past due for ever. Every
-            # rotation change added another handful, which is how six overdue
-            # workouts appeared for someone who had missed two.
-            #
-            # Completed tasks stay. A day already ticked off is a record of
-            # what happened, not a plan that can be withdrawn.
-            doomed = list(removable.values_list("workout_id", "scheduled_date"))
-            removed = len(doomed)
-            kept = future.count() - removed
-            removable.delete()
-            for workout_id, day in doomed:
-                PlannerEntry.objects.filter(
-                    owner=owner,
-                    workout_id=workout_id,
-                    scheduled_date=day,
-                    kind=PlannerEntry.Kind.TASK,
-                    completed_at__isnull=True,
-                ).delete()
+            before = future.count()
+            removed = delete_schedule_rows(removable)
+            kept = before - removed
 
             # Close the rule in force and open its replacement, rather than
             # editing the anchor in place. The past keeps resolving through
@@ -5321,6 +5917,9 @@ class WorkoutCycleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         left as they are: scheduling the same workout twice on one day would
         read as two sessions to everything that counts them.
         """
+        # All callers hold a transaction. Re-read under the cycle lock so a
+        # stale plan-ahead request cannot write days after the rotation ended.
+        cycle.refresh_from_db(from_queryset=WorkoutCycle.objects.select_for_update())
         owner = cycle.owner
         # A day per row, up to a date the client chose. See PLAN_AHEAD_LIMIT_DAYS.
         through = min(through, plan_ahead_limit(owner))

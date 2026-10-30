@@ -140,6 +140,14 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # config.production, where PostgreSQL and verified TLS are mandatory.
 DATABASES = {'default': database(os.environ, BASE_DIR)}
 
+# Whether `migrate` loads core/data/exercise_library.json into the shared
+# exercise catalogue (migration 0085; `manage.py sync_exercise_library` does
+# the same on demand). On everywhere except test databases, which the test
+# runner below builds with it off so no test depends on what the library
+# holds today. See core.exercise_library.
+EXERCISE_LIBRARY_SYNC_ON_MIGRATE = True
+TEST_RUNNER = 'config.test_runner.RepbaseTestRunner'
+
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
@@ -280,7 +288,9 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # drf-spectacular's, plus `optional_response_fields`: see core.schema for
+    # why a field added to a response must not be documented as required.
+    'DEFAULT_SCHEMA_CLASS': 'core.schema.AutoSchema',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
@@ -307,7 +317,7 @@ REST_FRAMEWORK = {
         # attempt and expensive to get wrong, and neither is something a
         # person does repeatedly.
         'password_reset': os.environ.get('REPBASE_THROTTLE_RESET', '6/hour'),
-        # Per person, so one of them cannot spend the FoodData Central
+        # Per person, so one of them cannot spend the Open Food Facts
         # allowance the whole userbase shares. Generous, because the
         # cache absorbs anything anyone has searched for lately.
         'food_search': os.environ.get('REPBASE_THROTTLE_FOOD', '120/hour'),
@@ -414,6 +424,10 @@ SPECTACULAR_SETTINGS = {
         'AssignableAppRoleEnum': 'core.access.ROLES',
         'WorkoutTypeEnum': 'core.models.WorkoutTypeChoices.choices',
         'CardioMachineEnum': 'core.models.CardioMachine.choices',
+        # A logged set's `set_type` and a planned exercise's `set_types` are
+        # one choice set under two field names, which would otherwise be
+        # SetTypeEnum and SetTypesEnum: two Swift types for one idea.
+        'SetTypeEnum': 'core.models.SetType.choices',
     },
     # Pinned. The default is `swagger-ui-dist@latest`, which runs whatever
     # was published most recently on this origin's docs page -- with the
@@ -495,12 +509,10 @@ else:
         },
     }
 
-# FoodData Central. Free, and rate limited per IP -- which is one IP for
-# everybody once the lookup is proxied through here, so FoodSearchCache is
-# what keeps the allowance from being spent by a handful of people.
-# DEMO_KEY works without signing up and allows 30 requests an hour, which
-# is enough to develop against and not enough to ship on.
-USDA_FDC_API_KEY = os.getenv("USDA_FDC_API_KEY", "DEMO_KEY")
+# Open Food Facts: no API key. Shared database gates bound upstream requests
+# across workers; cached lookups do not consume provider allowance.
+OPEN_FOOD_FACTS_ORIGIN = os.getenv("OPEN_FOOD_FACTS_ORIGIN", "https://world.openfoodfacts.org")
+OPEN_FOOD_FACTS_USER_AGENT = os.getenv("OPEN_FOOD_FACTS_USER_AGENT", "Rytivo/1.0 (support@rytivo.app)")
 
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@repbase.local')
 

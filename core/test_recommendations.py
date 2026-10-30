@@ -346,7 +346,7 @@ class ReasonTests(SimpleTestCase):
     def test_every_reason_is_a_documented_one(self):
         self.assertEqual(
             set(recommendations.REASONS),
-            {"following", "interest", "similar", "discovery", "new_creator", "popular", "fresh"},
+            {"following", "interest", "similar", "discovery", "new_creator", "popular", "fresh", "own"},
         )
 
 
@@ -782,8 +782,9 @@ class EligibilityTests(ForYouTestCase):
         self.author.user.save(update_fields=["is_active"])
         self.assert_never_shown(post)
 
-    def test_the_readers_own_posts_and_reposts(self):
-        self.assert_never_shown(meal_post(self.profile))
+    def test_the_readers_published_posts_are_shown_but_reposts_are_not(self):
+        own = meal_post(self.profile)
+        self.assertEqual(self.top(self.token, 1), [own.pk])
         repost = Post.objects.create(author=self.author, kind=Post.Kind.REPOST, repost_of=self.running[0])
         self.assert_never_shown(repost)
 
@@ -845,6 +846,120 @@ class EligibilityTests(ForYouTestCase):
         later = self.follow_next(first)
         self.assertEqual(later.status_code, 200)
         self.assertFalse(set(item["id"] for item in later.data["results"]) & set(remaining))
+
+
+class OwnPublicationTests(ForYouTestCase):
+    def setUp(self):
+        super().setUp()
+        self.profile, self.token = self.reader("creator_reader", [])
+
+    def test_newest_own_publication_leads_each_fresh_page_with_truthful_reason(self):
+        older = aged(meal_post(self.profile), hours=2)
+        newest = meal_post(self.profile)
+        for _ in range(2):
+            first = self.feed(self.token, page_size=5).data["results"]
+            self.assertEqual(first[0]["id"], newest.pk)
+            self.assertTrue(first[0]["viewer_is_author"])
+            self.assertEqual(first[0]["recommendation"], {"reason": "own", "label": "Your post"})
+        self.assertTrue(eligible_posts(self.profile).filter(pk=older.pk).exists())
+
+    def test_author_visibility_never_bypasses_publication_or_safety_gates(self):
+        excluded = []
+        for changes in (
+            {"moderation_status": "pending", "published_at": None},
+            {"moderation_status": "flagged"},
+            {"moderation_status": "rejected"},
+            {"published_at": None},
+            {"is_hidden": True},
+            {"moderation_child_hold": True},
+            {"visibility": Post.Visibility.PRIVATE},
+        ):
+            post = meal_post(self.profile)
+            Post.objects.filter(pk=post.pk).update(**changes)
+            excluded.append(post.pk)
+        pending_video = meal_post(self.profile)
+        video(pending_video, status=PostVideo.Status.PENDING)
+        excluded.append(pending_video.pk)
+        self.assertFalse(eligible_posts(self.profile).filter(pk__in=excluded).exists())
+        self.assertFalse(set(self.ids(self.feed(self.token, page_size=50))) & set(excluded))
+
+    def test_own_followers_post_does_not_become_visible_to_a_stranger(self):
+        post = meal_post(self.profile, visibility=Post.Visibility.FOLLOWERS)
+        self.assertEqual(self.top(self.token, 1), [post.pk])
+        _, other_token = self.reader("other_reader", [])
+        self.assertNotIn(post.pk, self.ids(self.feed(other_token, page_size=50)))
+
+    def test_approval_appears_on_refresh_but_not_while_pending(self):
+        post = meal_post(self.profile)
+        Post.objects.filter(pk=post.pk).update(moderation_status="pending", published_at=None)
+        self.assertNotIn(post.pk, self.ids(self.feed(self.token, page_size=50)))
+        Post.objects.filter(pk=post.pk).update(moderation_status="approved", published_at=timezone.now())
+        self.assertEqual(self.top(self.token, 1), [post.pk])
+
+    def test_retried_first_page_rechecks_hidden_and_unpublished_own_posts(self):
+        own = meal_post(self.profile)
+        first = self.feed(self.token, page_size=2)
+        self.assertEqual(self.ids(first)[0], own.pk)
+        from urllib.parse import parse_qs, urlparse
+        cursor = parse_qs(urlparse(first.data["next"]).query)["cursor"][0]
+        session, _ = recommendations.read_cursor(cursor)
+        for changes in (
+            {"is_hidden": True},
+            {"is_hidden": False, "moderation_status": "flagged"},
+            {"moderation_status": "approved", "visibility": Post.Visibility.PRIVATE},
+            {"visibility": Post.Visibility.PUBLIC, "moderation_child_hold": True},
+        ):
+            Post.objects.filter(pk=own.pk).update(**changes)
+            retried = self.feed(self.token, cursor=recommendations.make_cursor(session, 0), page_size=2)
+            self.assertNotIn(own.pk, self.ids(retried))
+
+        Post.objects.filter(pk=own.pk).update(moderation_child_hold=False)
+        video(own, status=PostVideo.Status.REJECTED)
+        retried = self.feed(self.token, cursor=recommendations.make_cursor(session, 0), page_size=2)
+        self.assertNotIn(own.pk, self.ids(retried))
+
+    def test_paging_never_duplicates_own_posts_or_injects_a_later_publication(self):
+        own = [meal_post(self.profile) for _ in range(3)]
+        first = self.feed(self.token, page_size=4)
+        self.assertEqual(self.ids(first)[0], own[-1].pk)
+        later_publication = meal_post(self.profile)
+        seen = self.ids(first)
+        response = first
+        while response.data["next"]:
+            response = self.follow_next(response)
+            self.assertEqual(response.status_code, 200)
+            seen.extend(self.ids(response))
+        self.assertEqual(len(seen), len(set(seen)))
+        self.assertTrue({post.pk for post in own}.issubset(seen))
+        self.assertNotIn(later_publication.pk, seen)
+        self.assertEqual(self.top(self.token, 1), [later_publication.pk])
+
+    def test_own_candidate_source_is_bounded_and_survives_busy_fresh_pool(self):
+        own = [aged(meal_post(self.profile), hours=12) for _ in range(5)]
+        meal_post(self.cooks[0])
+        with mock.patch.object(recommendations, "POOL_SIZE", 1), \
+                mock.patch.object(recommendations, "OWN_SOURCE_LIMIT", 2), \
+                mock.patch.object(recommendations, "trending_post_ids", return_value=[]):
+            found = recommendations.candidates(self.profile, build_profile(self.profile), similar={})
+        mine = [item for item in found if item.author_id == self.profile.pk]
+        self.assertEqual(len(mine), 2)
+        self.assertEqual({item.pk for item in mine}, {post.pk for post in own[-2:]})
+        self.assertTrue(all("own" in item.sources for item in mine))
+
+    def test_publication_confirmation_expires_and_uses_normal_author_spacing(self):
+        now = timezone.now()
+        own = candidate(999, self.profile.pk, {"kind:meal": 1}, score_value=-100, sources={"own"})
+        other = [candidate(i, i + 200, {"kind:workout": 1}, score_value=10) for i in range(1, 5)]
+        second_own = candidate(1000, self.profile.pk, {"kind:meal": 1}, score_value=100, sources={"own"})
+        second_own.created_at = now - timedelta(hours=1)
+        state = RankState()
+        first = rank([own, second_own] + other, InterestProfile(), FeedWeights(), random.Random(0),
+                     limit=4, state=state, now=now)
+        self.assertEqual(first[0].pk, own.pk)
+        self.assertNotIn(second_own.pk, [item.pk for item in first[1:]])
+        own.created_at = now - timedelta(hours=recommendations.OWN_CONFIRM_HOURS + 1)
+        ordinary = rank([own] + other, InterestProfile(), FeedWeights(), random.Random(0), limit=1, now=now)
+        self.assertNotEqual(ordinary[0].pk, own.pk)
 
 
 class PagingTests(ForYouTestCase):

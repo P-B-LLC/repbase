@@ -659,7 +659,7 @@ class FoodSearchTermTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 200)
         term = search.call_args.args[0]
         self.assertLessEqual(len(term), 100)
-        self.assertTrue(core_models.FoodSearchCache.objects.filter(term=term).exists())
+        self.assertTrue(core_models.FoodSearchCache.objects.filter(term="off:v1:search:" + term).exists())
 
 
 class GunicornBindTests(APITestCase):

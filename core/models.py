@@ -13,9 +13,19 @@ from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
+from django.db.models.functions import Coalesce
 from .video_jobs_models import VideoJob, VideoStoredObject, VideoMetric, VideoDailyUpload  # noqa: F401
 from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
 from .access_models import AccountAccess, AccessPolicyLock, AccessAudit, CommunitySpotlight  # noqa: F401
+from .schedule_sync import remove_unfinished_generated_tasks
+from .activities import (
+    DEFAULT_ACTIVITY,
+    LEGACY_DEFAULT_ACTIVITY,
+    TIMED_ACTIVITIES,
+    TIMED_FAMILIES,
+    ACTIVITIES,
+)
+from .exercise_library import muscle_index_for, search_text_for
 from zoneinfo import ZoneInfo, available_timezones
 
 from django.utils import timezone
@@ -367,6 +377,8 @@ class RepbaseUser(models.Model):
 
 class Exercise(models.Model):
     name = models.CharField(max_length=150)
+    #: A heading the app prints ("Chest", "Legs"). Free text on a custom
+    #: exercise; on a library one, the region of its first primary muscle.
     muscle_group = models.CharField(max_length=100, blank=True)
     created_by = models.ForeignKey(
         RepbaseUser,
@@ -375,11 +387,57 @@ class Exercise(models.Model):
         null=True,
         blank=True,
     )
+
+    # Everything below comes from the shared exercise library
+    # (`core/exercise_library.py`) and is written only by its sync. A custom
+    # exercise -- one a person made -- leaves all of it empty, and the API
+    # never writes it: these describe the library's exercise, and a person's
+    # own is described by its name.
+
+    #: The library's identifier, stable across renames. What the sync finds a
+    #: row by. Null rather than blank on everything outside the library,
+    #: because a unique column can hold any number of nulls but only one "".
+    slug = models.CharField(max_length=100, null=True, blank=True, unique=True)
+    #: Other names people know it by ("Bench" for "Barbell Bench Press").
+    aliases = models.JSONField(default=list, blank=True)
+    category = models.CharField(max_length=50, blank=True)
+    equipment = models.CharField(max_length=50, blank=True)
+    movement_pattern = models.CharField(max_length=50, blank=True)
+    level = models.CharField(max_length=50, blank=True)
+    mechanic = models.CharField(max_length=50, blank=True)
+    force = models.CharField(max_length=50, blank=True)
+    #: The base movement a variation belongs to, so "Incline Dumbbell Press"
+    #: and "Bench Press" can be offered as alternatives to each other.
+    family = models.CharField(max_length=100, blank=True)
+    primary_muscles = models.JSONField(default=list, blank=True)
+    secondary_muscles = models.JSONField(default=list, blank=True)
+    disciplines = models.JSONField(default=list, blank=True)
+    #: Steps, in order.
+    instructions = models.JSONField(default=list, blank=True)
+    #: The lower-cased name and aliases, one per line, for `?search=`.
+    #:
+    #: A column rather than a search over `aliases` because a JSON list
+    #: cannot be matched by substring on SQLite and PostgreSQL alike. Kept
+    #: current by `save()` and by the library sync (which a migration runs
+    #: with a historical model that has no `save()` of this class's).
+    search_text = models.TextField(blank=True, editable=False)
+    #: `primary_muscles` as `|lats|biceps|`, for the `?muscle=` filter. See
+    #: `exercise_library.muscle_index_for` for why it is not a JSON lookup.
+    primary_muscle_index = models.TextField(blank=True, editable=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ("name",)
+
+    def save(self, *args, **kwargs):
+        self.search_text = search_text_for(self.name, self.aliases)
+        self.primary_muscle_index = muscle_index_for(self.primary_muscles)
+        update_fields = kwargs.get("update_fields")
+        if update_fields is not None:
+            kwargs["update_fields"] = {*update_fields, "search_text", "primary_muscle_index"}
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
@@ -405,11 +463,26 @@ class WorkoutTemplate(models.Model):
         related_name="workout_templates",
     )
     name = models.CharField(max_length=150)
+    #: The legacy tracking family: what an app build from before activities
+    #: draws this workout as. Kept in step with `activity` by the serializer,
+    #: and never given a fifth value -- see `core.activities`.
     workout_type = models.CharField(
         max_length=20,
         choices=WorkoutType.choices,
         default=WorkoutType.LIFTING,
     )
+    #: What the workout is: a slug from `core.activities.ACTIVITIES`.
+    #:
+    #: No `choices`, deliberately. Choices would make it an enum in the
+    #: contract, and a response enum cannot grow without breaking the
+    #: generated Swift client. It is checked against the registry by the
+    #: serializers instead.
+    #:
+    #: Blank only until it is saved: `save()` fills it from `workout_type`, so
+    #: every path that makes a workout -- the API, a Health import, saving
+    #: somebody's post -- ends up with one, and every row from before this
+    #: column was backfilled the same way by migration 0084.
+    activity = models.CharField(max_length=40, blank=True, default="")
     #: Optional cardio to finish on. Blank means the workout ends with its
     #: exercises. This is part of the workout, not a second one scheduled
     #: after it.
@@ -457,6 +530,19 @@ class WorkoutTemplate(models.Model):
             )
         ]
 
+    def save(self, *args, **kwargs):
+        if not self.activity:
+            self.activity = LEGACY_DEFAULT_ACTIVITY.get(self.workout_type, DEFAULT_ACTIVITY)
+            update_fields = kwargs.get("update_fields")
+            if update_fields is not None:
+                kwargs["update_fields"] = {*update_fields, "activity"}
+        super().save(*args, **kwargs)
+
+    @property
+    def activity_or_default(self):
+        """The activity, even for a row written around `save()`."""
+        return self.activity or LEGACY_DEFAULT_ACTIVITY.get(self.workout_type, DEFAULT_ACTIVITY)
+
     def __str__(self):
         return self.name
 
@@ -470,6 +556,47 @@ class WorkoutTemplate(models.Model):
 #: copying the choices into settings, where they would quietly drift the first
 #: time somebody adds a workout type.
 WorkoutTypeChoices = WorkoutTemplate.WorkoutType
+
+
+class SetType(models.TextChoices):
+    """What kind of set a set is: the plan's word for it and the log's.
+
+    Module level rather than nested in SetEntry, for the reason
+    `WorkoutTypeChoices` exists: the same four values describe a logged set
+    (`SetEntry.set_type`) and each planned set of a workout
+    (`WorkoutExercise.set_types`), and `ENUM_NAME_OVERRIDES` has to be able to
+    import them to give both one schema name, SetTypeEnum.
+
+    The distinction that matters to the server is warm-up against the rest.
+    A warm-up is a real set -- it was performed, it is logged and it counts
+    towards `logged_set_count` -- but it is deliberately light, so it is not a
+    performance: it never sets a record, never draws a point on a progress
+    chart and never becomes a profile's best lift. Drop sets and sets to
+    failure are working sets and count like normal ones.
+
+    Adding a fifth value is a breaking change for the generated Swift client,
+    which decodes a response enum strictly (see TESTING.md, "Contract
+    changes"). Ship any new value to the clients before the server sends it.
+    """
+
+    NORMAL = "normal", "Normal"
+    WARMUP = "warmup", "Warm-up"
+    DROP = "drop", "Drop set"
+    FAILURE = "failure", "Failure"
+
+
+#: The longest rest a plan may ask for between sets, in seconds. An hour is
+#: already far past any real rest; the bound is there so the number is one a
+#: timer can show rather than a typo that sets one for a week.
+MAX_REST_SECONDS = 3600
+
+#: The highest superset number. Supersets are labelled within one workout,
+#: and a workout has a few at most, so this only refuses nonsense.
+MAX_SUPERSET_GROUP = 100
+
+#: The most planned sets that may each be given a type. Far beyond any real
+#: exercise; it bounds how much one plan item can make the server store.
+MAX_PLANNED_SET_TYPES = 50
 
 
 class WorkoutExercise(models.Model):
@@ -494,6 +621,50 @@ class WorkoutExercise(models.Model):
         validators=[positive_decimal],
     )
     notes = models.CharField(max_length=300, blank=True)
+    #: How long to rest after each set of this exercise, in seconds.
+    #:
+    #: Null and zero mean different things, and both are needed. Null is "the
+    #: plan does not say", so the app falls back to the person's own default
+    #: rest; zero is "no rest timer at all", which is what somebody moving
+    #: straight on to the next exercise of a superset wants. Collapsing the two
+    #: would make one of them impossible to plan.
+    rest_seconds = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MaxValueValidator(MAX_REST_SECONDS)],
+    )
+    #: Which superset this exercise belongs to, if any.
+    #:
+    #: A label rather than a link: relations in the same workout carrying the
+    #: same number are performed back to back as one superset, in their
+    #: `order`. Null is the ordinary case -- an exercise done on its own. A
+    #: number shared with nothing else in the workout is not an error, just a
+    #: superset of one, which is what a superset becomes halfway through being
+    #: built in the editor.
+    superset_group = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[
+            MinValueValidator(1),
+            MaxValueValidator(MAX_SUPERSET_GROUP),
+        ],
+    )
+    #: The kind of each planned set, in order: `set_types[0]` is set one.
+    #:
+    #: A list on the relation rather than a row per planned set, because a
+    #: plan's sets have nothing else of their own -- the targets are per
+    #: exercise -- and a table of one-column rows would cost a join on every
+    #: workout read for what is, nearly always, an empty list.
+    #:
+    #: Empty means every set is normal, which is how every relation written
+    #: before this field read. Shorter than `target_sets` means the sets past
+    #: its end are normal. Never longer: a type for a set the plan does not
+    #: have describes nothing, so the serializers refuse one that is sent and
+    #: trim one that a lower `target_sets` leaves behind.
+    #:
+    #: Values are `SetType`s. JSONField cannot hold `choices`, so they are
+    #: checked by the serializers that write it.
+    set_types = models.JSONField(default=list, blank=True)
 
     class Meta:
         ordering = ("order", "id")
@@ -565,6 +736,15 @@ class WorkoutSchedule(models.Model):
 
     def __str__(self):
         return f"{self.scheduled_date}: {self.workout}"
+
+
+#: Bounds on what a person may type about a session. Generous enough for any
+#: real entry; there to refuse typos and nonsense, not to judge training.
+MAX_PERCEIVED_EFFORT = 100
+MAX_MANUAL_CALORIES_KCAL = 20000
+MIN_MANUAL_DISTANCE_KM = Decimal("0.01")
+MAX_MANUAL_DISTANCE_KM = Decimal("9999.999")
+MAX_SESSION_NOTES_LENGTH = 2000
 
 
 class WorkoutSession(models.Model):
@@ -664,6 +844,49 @@ class WorkoutSession(models.Model):
         null=True,
         blank=True,
     )
+
+    # What the person said about the session, as opposed to what was
+    # recorded. Every one of these is typed in -- after a live session ends
+    # ("How hard was it?") or when logging one after the fact -- and none is
+    # ever measured, so nothing here may be presented as a reading.
+
+    #: How hard it felt, 0 to 100, in the person's own judgement.
+    perceived_effort = models.PositiveSmallIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(0), MaxValueValidator(MAX_PERCEIVED_EFFORT)],
+    )
+    #: Calories the person entered, from a machine display or a guess. Never
+    #: measured and never estimated by Repbase; it is shown as their number.
+    manual_calories_kcal = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(1), MaxValueValidator(MAX_MANUAL_CALORIES_KCAL)],
+    )
+    #: A distance the person typed in.
+    #:
+    #: The third source of a distance, beside route_distance_km (worked out
+    #: from GPS) and health_distance_km (reported by Apple Health), and the
+    #: least trusted of the three: when a session has either of the others,
+    #: that is its recorded distance and this is only what the person said.
+    #: When it has neither, this is copied into recorded_distance_km so gear
+    #: mileage and totals count it; clearing it clears that copy.
+    manual_distance_km = models.DecimalField(
+        max_digits=7,
+        decimal_places=3,
+        null=True,
+        blank=True,
+        validators=[MinValueValidator(MIN_MANUAL_DISTANCE_KM), MaxValueValidator(MAX_MANUAL_DISTANCE_KM)],
+    )
+    notes = models.TextField(blank=True, max_length=MAX_SESSION_NOTES_LENGTH)
+    #: The activity's own values (rounds, a yoga style, the pool length), as
+    #: `core.activities` allows for the workout's activity. Person-entered
+    #: only; nothing derived from a recording is ever written here.
+    activity_details = models.JSONField(default=dict, blank=True)
+    #: Logged after the fact, with its times and values typed in, rather than
+    #: recorded live. Set by `/sessions/log/` and never changed afterwards.
+    is_manual_entry = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -686,6 +909,31 @@ class WorkoutSession(models.Model):
         if self.started_at is None or self.ended_at is None:
             return None
         return (self.ended_at - self.started_at).total_seconds()
+
+    @property
+    def has_measured_distance(self):
+        """Whether GPS or Apple Health supplied this session's distance.
+
+        Zero is not a distance: a track of a phone left on a bench measures
+        0 km, and a typed-in distance is the better answer than that.
+        """
+        if self.health_distance_km:
+            return True
+        # An unsaved session has no track to read, and asking would raise.
+        return self.pk is not None and bool(self.route_distance_km)
+
+    def set_manual_distance(self, value):
+        """Write the typed-in distance, and the recorded copy when it is the
+        only distance there is. Returns the fields it changed, unsaved.
+
+        A measured distance is never overwritten by a typed one; the typed one
+        is still stored, as what the person said.
+        """
+        self.manual_distance_km = value
+        if self.has_measured_distance:
+            return ["manual_distance_km"]
+        self.recorded_distance_km = value
+        return ["manual_distance_km", "recorded_distance_km"]
 
     #: The values TrackValue stores, and the only ones that actually need the
     #: points. Pace, average speed and moving pace are arithmetic on these, so
@@ -865,6 +1113,12 @@ class WorkoutSession(models.Model):
         usually means by a record, and the estimated one-rep max catches
         progress the raw weight misses: five reps at 80 kg beats one at 85,
         but only the estimate shows it.
+
+        Warm-ups are left out on both sides of the comparison. A warm-up is
+        light on purpose, so it cannot be a record -- and it must not be the
+        bar a record has to clear either, or a heavy single someone labelled a
+        warm-up months ago would quietly stop every real best after it from
+        counting. Drop sets and sets to failure are working sets and count.
         """
         if self.status != WorkoutSession.Status.COMPLETED:
             return []
@@ -879,6 +1133,7 @@ class WorkoutSession(models.Model):
                 if entry.weight_kg is not None
                 and entry.reps
                 and entry.completed_at is not None
+                and entry.set_type != SetType.WARMUP
             ]
             if not performed:
                 continue
@@ -893,7 +1148,9 @@ class WorkoutSession(models.Model):
                 completed_at__lt=cutoff,
                 weight_kg__isnull=False,
                 reps__isnull=False,
-            ).exclude(session_exercise__session=self)
+            ).exclude(session_exercise__session=self).exclude(
+                set_type=SetType.WARMUP
+            )
 
             heaviest = max(performed, key=lambda entry: entry.weight_kg)
             previous_heaviest = history.aggregate(
@@ -1134,6 +1391,19 @@ class SetEntry(models.Model):
         validators=[positive_decimal],
     )
     completed_at = models.DateTimeField(null=True, blank=True)
+    #: Warm-up, drop set, to failure, or an ordinary working set.
+    #:
+    #: Defaulted rather than nullable: every set logged before this existed
+    #: was a working set as far as anything reading it was concerned, and an
+    #: old client that never sends the field is still logging one. So
+    #: "normal" is not a guess about those rows, it is what they always meant.
+    #:
+    #: Only a warm-up changes what the server does with a set; see `SetType`.
+    set_type = models.CharField(
+        max_length=10,
+        choices=SetType.choices,
+        default=SetType.NORMAL,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -1148,6 +1418,88 @@ class SetEntry(models.Model):
 
     def __str__(self):
         return f"{self.session_exercise} set {self.set_number}"
+
+
+#: A set that recorded something: a weight or a rep count.
+#:
+#: The same test `logged_set_count` and the session list's `logged_set_total`
+#: apply, written once without a lookup prefix so it can be used from the set
+#: itself. A set row can exist with neither -- made and never filled in -- and
+#: one of those is not training.
+RECORDED_SET = models.Q(weight_kg__isnull=False) | models.Q(reps__isnull=False)
+
+
+#: A session whose workout's activity is counted by time or distance rather
+#: than by sets -- `core.activities.counts_by_time`, in SQL.
+#:
+#: The second half is for a workout whose activity is blank or not one this
+#: server knows, which is then counted as its `workout_type` always was. A
+#: session with no workout matches neither half, and so is counted by sets,
+#: which is also what it always was.
+COUNTS_BY_TIME = models.Q(workout__activity__in=TIMED_ACTIVITIES) | (
+    models.Q(workout__workout_type__in=TIMED_FAMILIES)
+    & ~models.Q(workout__activity__in=list(ACTIVITIES))
+)
+
+#: A session that took time or covered ground: what a tennis match or a run
+#: has to show for itself, having no sets. Any distance counts, whichever
+#: source it came from; `recorded_distance_km` already holds a GPS, Health or
+#: lone typed-in distance, and the typed one is asked separately so a session
+#: whose measured distance was zero still counts what the person entered.
+TOOK_TIME_OR_DISTANCE = (
+    models.Q(ended_at__gt=models.F("started_at"))
+    | models.Q(recorded_distance_km__gt=0)
+    | models.Q(manual_distance_km__gt=0)
+)
+
+
+def performed_sessions():
+    """Finished sessions that trained, each with when it was performed.
+
+    "Finished" is not enough. A session is finished by tapping Finish, not by
+    logging anything, so a completed session can hold nothing at all -- and a
+    workout opened and abandoned yesterday has not been *done* yesterday.
+
+    What a session has to show for itself depends on its activity
+    (`core.activities`). A strength session counts only when at least one of
+    its sets recorded something (`RECORDED_SET`; a warm-up is a logged set and
+    counts here like any other). A distance or session activity -- a run, a
+    tennis match -- logs no sets, so it counts when it took any time or
+    covered any distance (`TOOK_TIME_OR_DISTANCE`). This is the same rule
+    `TrainingStatsView` applies row by row.
+
+    The profile is worked out with a CASE rather than by negating
+    `COUNTS_BY_TIME`: the workout is a nullable join, and a NOT over a NULL
+    comparison is NULL rather than true, which would quietly drop every
+    session whose workout was deleted instead of counting it by its sets.
+
+    `performed_at` is when it ended, or when it started for the rare finished
+    session with no end time. Newest first, so `[:1]` of this filtered to one
+    workout is the last time that workout was performed. Used both as a
+    subquery for a whole page of workouts and on its own for one.
+    """
+    has_recorded_set = models.Exists(
+        SetEntry.objects.filter(
+            RECORDED_SET, session_exercise__session=models.OuterRef("pk")
+        )
+    )
+    return (
+        WorkoutSession.objects.filter(status=WorkoutSession.Status.COMPLETED)
+        .annotate(
+            counts_by_time=models.Case(
+                models.When(COUNTS_BY_TIME, then=models.Value(True)),
+                default=models.Value(False),
+                output_field=models.BooleanField(),
+            )
+        )
+        .filter(
+            (models.Q(counts_by_time=True) & TOOK_TIME_OR_DISTANCE)
+            | (models.Q(counts_by_time=False) & has_recorded_set)
+        )
+        .annotate(performed_at=Coalesce("ended_at", "started_at"))
+        .filter(performed_at__isnull=False)
+        .order_by("-performed_at", "-pk")
+    )
 
 
 class SessionRoutePoint(models.Model):
@@ -1513,6 +1865,17 @@ class PlannerEntry(models.Model):
         related_name="planner_entries",
         null=True,
         blank=True,
+    )
+    # Only tasks created automatically by sync-planner receive this link.
+    # An existing manually authored task may be adopted for a date but must
+    # never become disposable just because a schedule also uses that date.
+    source_schedule = models.ForeignKey(
+        WorkoutSchedule,
+        on_delete=remove_unfinished_generated_tasks,
+        related_name="generated_planner_entries",
+        null=True,
+        blank=True,
+        editable=False,
     )
     notes = models.CharField(max_length=300, blank=True)
     #: The task this one is a step of, or null for a task standing on its own.
@@ -2480,6 +2843,12 @@ class Post(models.Model):
         #: live, because a repost that froze a copy would keep showing a
         #: caption its author had since corrected.
         REPOST = "repost", "Repost"
+        #: A photo or a clip, and a caption, made from nothing recorded. No
+        #: snapshot, so it claims nothing about what was done: the picture is
+        #: the post. One with nothing yet to show -- its clip still uploading,
+        #: processing or waiting for review -- is its author's alone; see
+        #: `views.visible_posts_for`.
+        MEDIA = "media", "Photo or video"
 
     class Visibility(models.TextChoices):
         PUBLIC = "public", "Public"
@@ -2669,6 +3038,12 @@ class PostWorkout(models.Model):
         blank=True,
         default=None,
     )
+    #: The workout's activity at post time (`core.activities`), copied
+    #: wherever `workout_type` is. Null for the same reason that is: an ad-hoc
+    #: session has no workout to take one from. Posts from before activities
+    #: existed were backfilled from their `workout_type`, which was all the
+    #: activity anybody could have meant then.
+    activity = models.CharField(max_length=40, null=True, blank=True, default=None)
     #: When the training happened, taken from the session's end, start or
     #: creation in that order. The post's own `created_at` is when it was
     #: shared, which is a different date whenever someone posts yesterday.
@@ -4017,6 +4392,10 @@ def best_set_for(owner, lift):
     that may yet be corrected, and a profile is not the place to find out
     somebody mistyped a weight two minutes ago.
 
+    Never a warm-up. Somebody who warms up with a heavy single before their
+    working sets has not shown that single off as what they lift, and a
+    profile should quote the sets they would quote.
+
     Returns None when nothing matches, which is the ordinary state of a
     highlight on somebody who has not logged that lift here.
     """
@@ -4031,6 +4410,7 @@ def best_set_for(owner, lift):
             weight_kg__isnull=False,
             reps__isnull=False,
         )
+        .exclude(set_type=SetType.WARMUP)
         .select_related("session_exercise__session", "session_exercise__exercise")
         .order_by("-weight_kg", "-reps")
         .first()
@@ -4163,13 +4543,11 @@ class Personalization(models.Model):
 
 
 class FoodSearchCache(models.Model):
-    """What FoodData Central said about a search term, kept for a while.
+    """Provider-prefixed food catalogue responses and shared request gates.
 
-    Not an optimisation. FoodData Central rates by IP, and every request from
-    here leaves the same one, so the whole userbase shares a single allowance
-    of a thousand an hour. Without this, a few dozen people searching at once
-    would spend it and everybody's search would start failing at the same
-    moment. Cached, a term anyone has looked up recently costs nothing.
+    Open Food Facts limits requests by IP. Cached results avoid spending the
+    shared allowance. Provider prefixes prevent old USDA responses from being
+    reused. Gate rows contain only the next permitted request timestamp.
 
     Two clocks, deliberately far apart: LIFETIME decides when an answer is
     re-fetched, RETENTION decides when the row is deleted. See both below.
@@ -4177,14 +4555,13 @@ class FoodSearchCache(models.Model):
 
     #: When an answer stops being worth trusting and is fetched again.
     #:
-    #: A week, because the data is public-domain reference material that
-    #: changes on the timescale of a survey, not a day.
+    #: Community product data can change; users should verify the label.
     LIFETIME = timedelta(days=7)
 
     #: When a row stops being worth keeping at all, which is a different
     #: question and a much later answer.
     #:
-    #: Past LIFETIME a row is stale but not useless: when FoodData Central
+    #: Past LIFETIME a row is stale but not useless: when Open Food Facts
     #: cannot be reached, the search endpoint serves the stale payload rather
     #: than failing, because a week-old calorie count for oats is still the
     #: calorie count for oats. Pruning on LIFETIME would quietly delete that

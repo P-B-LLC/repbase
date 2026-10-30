@@ -38,7 +38,7 @@ List responses are paginated with `count`, `next`, `previous`, and `results` fie
 
 ## Social
 
-- `/api/v1/social/posts/` — posts the reader may see; create one from your own session, meal or planner entry
+- `/api/v1/social/posts/` — posts the reader may see; create one from your own session, meal or planner entry, or a photo or video post (`kind: media`, no `source_id`) that is a picture or a clip and a caption. A clip-only media post sends `expects_video: true` and is visible to its author alone until the clip is ready and approved
 - `/api/v1/social/feed/` — the people you follow, newest first (cursor paging)
 - `/api/v1/social/for-you/` — posts picked for you from everyone, each with a `recommendation` saying why (cursor paging)
 - `POST /api/v1/social/impressions/` — what was on screen and for how long, in batches of up to 50
@@ -77,6 +77,28 @@ POST /api/v1/sessions/{id}/end/
 ```
 
 Valid transitions are `planned → active → completed`. Repeating or skipping a transition returns HTTP `409 Conflict`.
+
+During an active session, `POST /api/v1/sessions/{id}/reorder/` with `{"session_exercises": [<id>, ...]}` renumbers the session's exercises 1..n in that order in one transaction and returns them as a list. The list must hold every SessionExercise id of the session exactly once; anything else, or a session that is not active, is a `400` and changes nothing. Exercises are added and removed mid-session through `/api/v1/session-exercises/`.
+
+## Workout structure
+
+- `SetEntry.set_type` is `normal` (default), `warmup`, `drop` or `failure`. Warm-ups are excluded from personal records, exercise progress and profile highlights; they still count in `logged_set_count`. `previous-sets` rows carry `set_type` too.
+- A workout's exercise relation (`WorkoutExercise`, `initial_exercises`, `exercise_plan`) carries `rest_seconds` (null = the person's default, 0 = no timer, max 3600), `superset_group` (1–100; the same number in one workout is one superset) and `set_types` (one SetType per planned set, never longer than `target_sets`). A plan item that leaves a field out keeps the relation's current value; lowering `target_sets` without sending `set_types` trims the list.
+- `WorkoutTemplate.last_performed_at` is when the workout was last finished and trained (see "Activities" below for what counts), or null.
+- `PublicRepbaseUser.follows_viewer` says whether that person follows the reader.
+- `GET /api/v1/exercises/` also takes `search` (name or alias contains, ignoring case, first 100 characters) and `mine=true`.
+
+All of these response fields are optional in the contract so an app built against them still reads a server deployed before them.
+
+## Activities and logged sessions
+
+- `WorkoutTemplate.activity` is one of 51 slugs (`core/activities.py`: `weightlifting`, `running`, `tennis`, `yoga`, `other`, ...). It is a plain string, not an enum, so the list can grow; clients should treat an unknown slug as `other`. Responses always carry one. Writing `activity` also sets `workout_type` to its family; writing only `workout_type` (older apps) sets that family's default activity unless the workout is already an activity of that family. `workout_type` keeps its four values.
+- Sessions carry `activity` (the workout's, null if it was deleted) and what the person said: `perceived_effort` (0–100), `manual_calories_kcal` (1–20000, typed in, never measured), `manual_distance_km` (0.01–9999.999), `notes` (≤2000) and `activity_details` (only the keys the activity allows, e.g. `rounds` for boxing, `session_type` for tennis; unknown keys and wrong types are a 400 naming the key). All five are writable with `PATCH /api/v1/sessions/{id}/` in any status. A typed distance becomes `recorded_distance_km` when the session has no GPS or Health distance; clearing it clears that.
+- `POST /api/v1/sessions/log/` (`ActivityLogRequest`, 201 `WorkoutSession`) logs a finished session after the fact: `activity`, `started_at`, `duration_seconds` (60–86400, ending at most 5 minutes from now), and `workout` (yours, same activity) or `workout_name` (found ignoring case, or created). Optional `scheduled_date` schedules it (reusing that day's entry), plus the five fields above. It sets `is_manual_entry`, ticks the day's planner task like `end`, and replays with the `Idempotency-Key` header like every other create.
+- What counts as training (stats, `last_performed_at`): a `strength` activity (weightlifting, calisthenics) needs a logged set; every other activity needs a duration or a distance above zero. A session whose workout was deleted counts by sets, as before. `GET /api/v1/sessions/?activity=` filters by activity.
+- Exercises carry the shared library's `slug`, `aliases`, `category`, `equipment`, `movement_pattern`, `level`, `mechanic`, `force`, `family`, `primary_muscles`, `secondary_muscles`, `disciplines` and `instructions` (read-only; empty on custom exercises). The list also filters by `equipment`, `category`, `pattern` and `muscle` (a primary muscle), and `name=` returns your own exercise before a shared one of the same name. `python manage.py sync_exercise_library [--file PATH]` loads the library; migration 0085 does it once if `core/data/exercise_library.json` exists.
+
+Every new response field is optional in the contract, and no response enum gained a value, so older app builds keep decoding.
 
 ## Data conventions
 
