@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as datetime_timezone
 
 import base64
 import io
@@ -2873,6 +2873,16 @@ MAX_LOGGED_SECONDS = 24 * 60 * 60
 #: from now is not something that has happened.
 LOGGED_END_TOLERANCE = timedelta(minutes=5)
 
+#: The earliest a logged session may start, and the earliest day it may
+#: fulfil. Before anything somebody types into a phone about their own
+#: training, and far enough from year 1 that every date sum and zone
+#: conversion made with it stays inside the calendar Python can represent.
+EARLIEST_LOGGED_START = datetime(1970, 1, 1, tzinfo=datetime_timezone.utc)
+
+#: Said of a start too late to log, whether that shows before the duration is
+#: added or only after.
+LOGGED_IN_THE_FUTURE = "That would end in the future. Log a session once it is over."
+
 
 class ActivityLogSerializer(serializers.Serializer):
     # Named without the Request suffix for the reason PlannerSyncSerializer is:
@@ -2923,6 +2933,40 @@ class ActivityLogSerializer(serializers.Serializer):
     activity_details = activity_details_field()
     notes = session_notes_field()
 
+    def validate_started_at(self, value):
+        """Held to a sane range before anything is added to it.
+
+        The end is the start plus the duration, and a start near the last
+        moment there is -- 9999-12-31 -- has no room for that: the sum raised
+        OverflowError, a 500 for a request that is merely wrong. A start that
+        late ends in the future anyway, so it gets that answer here, before the
+        sum. A start near year 1 fails the other way, when it is moved into a
+        zone west of UTC to find the day the session is filed under.
+        """
+        if value < EARLIEST_LOGGED_START:
+            raise serializers.ValidationError("Log a session that started in 1970 or later.")
+        if value > timezone.now() + LOGGED_END_TOLERANCE:
+            raise serializers.ValidationError(LOGGED_IN_THE_FUTURE)
+        return value
+
+    def validate_scheduled_date(self, value):
+        """No further ahead than anything else is ever put on a calendar.
+
+        The horizon a rotation start or a repeating task is held to, in the
+        person's own zone; see PLAN_AHEAD_LIMIT_DAYS. And no earlier than a
+        session may start, for the reason it may not.
+        """
+        if value is None:
+            return value
+        if value < EARLIEST_LOGGED_START.date():
+            raise serializers.ValidationError("Use a day in 1970 or later.")
+        owner = self.context["request"].user.repbase_profile
+        if value > plan_ahead_limit(owner):
+            raise serializers.ValidationError(
+                "A workout can be scheduled at most a year from today."
+            )
+        return value
+
     def validate(self, attrs):
         if attrs.get("workout") is None and not attrs.get("workout_name"):
             raise serializers.ValidationError(
@@ -2930,9 +2974,7 @@ class ActivityLogSerializer(serializers.Serializer):
             )
         ended_at = attrs["started_at"] + timedelta(seconds=attrs["duration_seconds"])
         if ended_at > timezone.now() + LOGGED_END_TOLERANCE:
-            raise serializers.ValidationError(
-                {"started_at": "That would end in the future. Log a session once it is over."}
-            )
+            raise serializers.ValidationError({"started_at": LOGGED_IN_THE_FUTURE})
         attrs["ended_at"] = ended_at
         if "activity_details" in attrs:
             attrs["activity_details"] = checked_activity_details(

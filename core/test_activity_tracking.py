@@ -14,7 +14,7 @@ import importlib
 import json
 import tempfile
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from io import StringIO
 from pathlib import Path
@@ -744,6 +744,42 @@ class ActivityLogTests(Authenticated):
                             duration_seconds=3600)
         self.assertEqual(response.status_code, 201, response.data)
 
+    def test_a_start_at_the_end_of_the_calendar_is_a_400_not_a_500(self):
+        # Adding the duration to a start this late overflowed the datetime.
+        for started in ("9999-12-31T23:59:59Z", "9999-12-31T00:00:00+00:00",
+                        (timezone.now() + timedelta(days=2)).isoformat()):
+            with self.subTest(started=started):
+                response = self.log(started_at=started, duration_seconds=86400)
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn("started_at", response.data)
+        self.assertFalse(WorkoutSession.objects.exists())
+
+    def test_a_start_before_1970_is_refused(self):
+        # West of UTC, a start near year 1 has no local day to be filed under.
+        self.profile.time_zone = "America/Chicago"
+        self.profile.save(update_fields=["time_zone"])
+        for started in ("0001-01-01T00:00:00Z", "1969-12-31T23:59:59Z"):
+            with self.subTest(started=started):
+                response = self.log(started_at=started)
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn("started_at", response.data)
+        self.assertFalse(WorkoutSession.objects.exists())
+        self.assertEqual(self.log(started_at="1970-01-01T00:00:00Z").status_code, 201)
+
+    def test_a_scheduled_date_is_held_to_the_planning_horizon(self):
+        today = timezone.localdate()
+        for day in (today + timedelta(days=367), date.max, date(1969, 12, 31), date.min):
+            with self.subTest(day=day):
+                response = self.log(scheduled_date=day.isoformat())
+                self.assertEqual(response.status_code, 400, response.data)
+                self.assertIn("scheduled_date", response.data)
+        self.assertFalse(WorkoutSchedule.objects.exists())
+        self.assertFalse(WorkoutSession.objects.exists())
+        # A year ahead, the furthest anything is planned, is still a day.
+        response = self.log(scheduled_date=(today + timedelta(days=366)).isoformat())
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(WorkoutSchedule.objects.get().scheduled_date, today + timedelta(days=366))
+
     def test_a_scheduled_date_schedules_it_once(self):
         day = timezone.localdate() - timedelta(days=1)
         first = self.log(scheduled_date=day.isoformat())
@@ -1217,6 +1253,67 @@ class ExerciseLibraryReadTests(Authenticated):
         self.assertEqual(self.names("?search=my%20cu"), ["My Curl"])
         self.client.patch(f"{EXERCISES}{made.pk}/", {"name": "Hammer Curl"}, format="json")
         self.assertEqual(self.names("?search=hammer"), ["Hammer Curl"])
+
+
+@FAST_PASSWORDS
+class ExactNameAfterAdoptionTests(Authenticated):
+    """`?name=` still finds a shared exercise the library renamed.
+
+    Adopting a shared row by an alias renames it -- "Bench Press" becomes
+    "Bench Press (Barbell)" -- and app builds from before the library look an
+    exercise up by its exact old name, making a private one when nothing comes
+    back. That second row splits the person's history in two.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        _, cls.profile, cls.token = make_account("adopted-reader")
+        cls.old = Exercise.objects.create(name="Bench Press", muscle_group="Chest")
+        sync_exercise_library(Exercise, library(
+            entry("bench_press_barbell", "Bench Press (Barbell)",
+                  aliases=["BB Bench", "Bench Press", "Flat Bench Press"]),
+        ))
+
+    def setUp(self):
+        self.as_user(self.token)
+
+    def ids(self, name):
+        response = self.client.get(EXERCISES, {"name": name})
+        self.assertEqual(response.status_code, 200, response.data)
+        return [row["id"] for row in response.data["results"]]
+
+    def test_the_old_name_finds_the_adopted_row(self):
+        self.old.refresh_from_db()
+        self.assertEqual(self.old.name, "Bench Press (Barbell)")
+        for name in ("Bench Press", " bench PRESS ", "flat bench press", "Bench Press (Barbell)"):
+            with self.subTest(name=name):
+                self.assertEqual(self.ids(name), [self.old.pk])
+
+    def test_only_a_whole_alias_matches(self):
+        # Part of an alias, part of the name, or two aliases run together
+        # across the line between them are not names this exercise has.
+        for name in ("Bench", "BB", "Press", "Bench Press (Barbell", "BB Bench\nBench Press",
+                     "bench\npress"):
+            with self.subTest(name=name):
+                self.assertEqual(self.ids(name), [])
+
+    def test_the_readers_own_comes_first_then_a_shared_name_then_an_alias(self):
+        shared = Exercise.objects.create(name="bench press")
+        mine = Exercise.objects.create(name="Bench Press", created_by=self.profile)
+        self.assertEqual(self.ids("Bench Press"), [mine.pk, shared.pk, self.old.pk])
+        mine.delete()
+        self.assertEqual(self.ids("Bench Press"), [shared.pk, self.old.pk])
+
+    def test_only_shared_rows_are_found_by_an_alias(self):
+        # A custom exercise is found by its own name alone, and somebody
+        # else's not at all.
+        _, other, _ = make_account("adopted-other")
+        Exercise.objects.create(name="Floor Press", created_by=other)
+        mine = Exercise.objects.create(
+            name="My Press", created_by=self.profile, aliases=["Floor Press"]
+        )
+        self.assertEqual(self.ids("Floor Press"), [])
+        self.assertEqual(self.ids("my press"), [mine.pk])
 
 
 # -------------------------------------------------------------- the contract

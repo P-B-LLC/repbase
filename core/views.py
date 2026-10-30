@@ -1223,6 +1223,52 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
 MAX_EXERCISE_SEARCH_LENGTH = 100
 
 
+def exercises_named(queryset, name, profile):
+    """The exercises in `queryset` that go by `name`, the one to use first.
+
+    Matched the way the app matches names: ignoring case and surrounding
+    space. In this order, which is what `?name=` answers in and what saving a
+    workout from a post files its sets under:
+
+    1. The reader's own. Once the shared library holds a "Bench Press",
+       somebody who made their own years ago would otherwise have new sets
+       filed under the shared one -- splitting their history, records and
+       progress chart in two, by nothing they did.
+    2. A shared exercise of that name.
+    3. A shared exercise with that name among its aliases. Adopting the
+       library renamed older shared rows -- "Bench Press" became "Bench Press
+       (Barbell)", the old name kept as an alias -- and app builds from before
+       then still look an exercise up by the old name, making a private one
+       when nothing comes back: the same split, on every workout saved.
+
+    Aliases are matched through `search_text`, one lower-cased name or alias
+    per line, as a whole line of it -- a JSON lookup on `aliases` has no
+    SQLite implementation, and would be case-sensitive on PostgreSQL. A name
+    with a line break in it could only match across two aliases, so it is
+    matched by name alone. A custom exercise is only ever found by its name:
+    its aliases are the library's to write, and it has none.
+    """
+    name = name.strip()
+    matches = Q(name__iexact=name)
+    if name and "\n" not in name:
+        queryset = queryset.alias(
+            alias_lines=Concat(
+                Value("\n"), "search_text", Value("\n"),
+                output_field=models.TextField(),
+            )
+        )
+        matches |= Q(created_by__isnull=True, alias_lines__icontains=f"\n{name.lower()}\n")
+    return queryset.filter(matches).order_by(
+        Case(
+            When(created_by=profile, then=Value(0)),
+            When(name__iexact=name, then=Value(1)),
+            default=Value(2),
+        ),
+        "name",
+        "pk",
+    )
+
+
 @extend_schema_view(
     list=extend_schema(
         parameters=[
@@ -1291,22 +1337,12 @@ class ExerciseViewSet(viewsets.ModelViewSet):
         queryset = queryset.filter(
             Q(created_by__isnull=True) | Q(created_by=profile)
         )
-        # Matched the way the app matches names: ignoring case and surrounding
-        # space. Without this a client reads the whole catalogue to find one
-        # row, on every workout save.
-        #
-        # The reader's own exercise comes first. The app takes the first
-        # match, and once the shared library holds a "Bench Press", somebody
-        # who made their own years ago would otherwise have new sets filed
-        # under the shared one -- splitting their history, records and
-        # progress chart in two, by nothing they did.
+        # Without this a client reads the whole catalogue to find one row, on
+        # every workout save. The app takes the first match, so the order is
+        # the point; see exercises_named.
         name = self.request.query_params.get("name")
         if name:
-            queryset = queryset.filter(name__iexact=name.strip()).order_by(
-                Case(When(created_by=profile, then=Value(0)), default=Value(1)),
-                "name",
-                "pk",
-            )
+            queryset = exercises_named(queryset, name, profile)
         if self.action != "list":
             # Discovery narrows the list only. A stray query string on a
             # detail URL must not turn an exercise the reader can open into a
@@ -1396,7 +1432,7 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
             )
 
     def perform_destroy(self, instance):
-        """Deletes a saved workout, unless a rotation is built out of it.
+        """Deletes a saved workout, unless a rotation in effect is built out of it.
 
         A rotation stores its own length and gives each slot a position, so a
         slot vanishing underneath it leaves a rotation claiming eight days with
@@ -1408,15 +1444,34 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
         training week becomes; that is their decision and there is a screen
         for making it.
 
+        Only a rotation with days still to come counts: one running, or one
+        starting later. Deleting or replacing a rotation closes it rather than
+        erasing it, so its slots go on naming the workout -- and counting
+        those made the workout undeletable for good, refused in the name of a
+        rotation the rotations list no longer shows. A closed one's slot
+        cascading changes no day anybody will train.
+
         Everything else the delete takes is fair. The days it was planned on
         and any weekly repeat of it go with it -- they are plans made of this
         workout and mean nothing without it. Sessions already trained and
         completed/manually authored planner tasks survive and are unlinked;
         unfinished automatically generated tasks follow their removed plans.
         """
+        today = today_for(instance.owner)
         rotations = list(
             WorkoutCycle.objects.filter(
                 slots__workout=instance, owner=instance.owner
+            )
+            # A rotation covers [effective_from, effective_until), so it has
+            # a day from today on when it is open-ended or ends after both.
+            # Ending after today alone is not enough: one deleted before it
+            # began is closed on its own first day, and has no days at all.
+            .filter(
+                Q(effective_until__isnull=True)
+                | (
+                    Q(effective_until__gt=today)
+                    & Q(effective_until__gt=models.F("effective_from"))
+                )
             )
             .values_list("name", flat=True)
             # order_by() clears the model default first. Django adds every
@@ -2754,7 +2809,8 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
         return self.idempotent(request, lambda: self._log(request))
 
     def _log(self, request):
-        payload = ActivityLogSerializer(data=request.data)
+        # With the request: `scheduled_date` is held to the person's own calendar.
+        payload = ActivityLogSerializer(data=request.data, context=self.get_serializer_context())
         payload.is_valid(raise_exception=True)
         data = payload.validated_data
 
@@ -4217,17 +4273,19 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                 ),
                 activity=activity,
             )
+            visible = Exercise.objects.filter(
+                Q(created_by__isnull=True) | Q(created_by=owner)
+            )
             for order, line in enumerate(exercises, start=1):
-                # The shared row first, this user's own next, and a new one
-                # only when neither exists. A private "Bench Press" per person
-                # who saves a workout would fork the exercise that progress
-                # and personal records are grouped by.
-                candidates = Exercise.objects.filter(
-                    name__iexact=line.name
-                ).filter(Q(created_by__isnull=True) | Q(created_by=owner))
+                # The exercise `?name=` would hand this reader -- their own,
+                # then the shared one, by name and then by alias -- and a new
+                # one only when there is none. Shared first, as this was, put
+                # the copy's sets beside the reader's own history rather than
+                # in it; and a private "Bench Press" per person who saves a
+                # workout would fork the exercise that progress and personal
+                # records are grouped by.
                 exercise = (
-                    candidates.filter(created_by__isnull=True).first()
-                    or candidates.first()
+                    exercises_named(visible, line.name, owner).first()
                     or Exercise.objects.create(name=line.name, created_by=owner)
                 )
                 WorkoutExercise.objects.create(

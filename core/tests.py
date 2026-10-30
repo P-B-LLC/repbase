@@ -292,6 +292,90 @@ class SavedWorkoutDeletionTests(RepbaseAPITestMixin, APITestCase):
         # Still there, and so is the rotation it holds up.
         self.assertTrue(WorkoutTemplate.objects.filter(id=self.push).exists())
 
+    def rotation(self, name, workout_ids):
+        response = self.client.post(
+            self.CYCLES,
+            {
+                "name": name, "length": len(workout_ids),
+                "anchor_date": str(timezone.now().date()),
+                "slots": [
+                    {"position": index + 1, "workout": workout_id}
+                    for index, workout_id in enumerate(workout_ids)
+                ],
+            },
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        return response.data["id"]
+
+    def assertDeleted(self, workout_id):
+        response = self.client.delete(f"{self.WORKOUTS}{workout_id}/")
+        self.assertEqual(response.status_code, 204, getattr(response, "data", None))
+        self.assertFalse(WorkoutTemplate.objects.filter(id=workout_id).exists())
+
+    def assertRefusedFor(self, workout_id, rotation_name):
+        response = self.client.delete(f"{self.WORKOUTS}{workout_id}/")
+        self.assertEqual(response.status_code, 400, getattr(response, "data", None))
+        self.assertEqual(
+            str(response.data["workout"]),
+            f"This workout is part of {rotation_name}. Change the rotation "
+            f"before deleting it.",
+        )
+        self.assertTrue(WorkoutTemplate.objects.filter(id=workout_id).exists())
+
+    def test_a_deleted_rotation_holds_nothing_up(self):
+        # Deleting a rotation closes it rather than erasing it, so its slots
+        # still name the workout. The refusal used to count it anyway, and
+        # named a rotation no list showed any more -- forever.
+        cycle = self.rotation("PPL", [self.push, self.pull])
+        self.assertEqual(self.client.delete(f"{self.CYCLES}{cycle}/").status_code, 204)
+
+        self.assertDeleted(self.push)
+        # The closed rotation itself is history and stays.
+        self.assertTrue(WorkoutCycle.objects.filter(id=cycle).exists())
+
+    def test_a_replaced_rotation_holds_nothing_up(self):
+        legs = self.workout("Leg Day")
+        self.rotation("PPL", [self.push, self.pull])
+        # Making a second rotation retires the first, today.
+        self.rotation("Legs and Pull", [legs, self.pull])
+
+        self.assertDeleted(self.push)
+        # One the running rotation uses is still refused, naming only that.
+        self.assertRefusedFor(self.pull, "Legs and Pull")
+
+    def test_a_rotation_handing_over_later_still_holds_its_workouts(self):
+        # A switch can be scheduled: the rotation on the way out keeps its
+        # days up to the handover, and the incoming one has days to come. Both
+        # are still in effect, so both still hold their workouts.
+        legs = self.workout("Leg Day")
+        ppl = self.rotation("PPL", [self.push, self.pull])
+        self.rotation("Legs", [legs])
+        start = timezone.now().date() + timedelta(days=7)
+        switched = self.client.post(
+            f"{self.CYCLES}{ppl}/activate/", {"start_on": str(start)}, format="json"
+        )
+        self.assertEqual(switched.status_code, 200, switched.data)
+
+        self.assertRefusedFor(legs, "Legs")
+        self.assertRefusedFor(self.push, "PPL")
+
+    def test_a_rotation_deleted_before_it_began_holds_nothing_up(self):
+        # Deleted before its first day, a rotation is closed on that day:
+        # `[start, start)`, no days at all, and nothing for its slot to break.
+        legs = self.workout("Leg Day")
+        ppl = self.rotation("PPL", [self.push, self.pull])
+        self.rotation("Legs", [legs])
+        start = timezone.now().date() + timedelta(days=7)
+        self.client.post(
+            f"{self.CYCLES}{ppl}/activate/", {"start_on": str(start)}, format="json"
+        )
+        self.assertEqual(self.client.delete(f"{self.CYCLES}{ppl}/").status_code, 204)
+
+        self.assertDeleted(self.push)
+        # "Legs" still runs up to the handover it was given.
+        self.assertRefusedFor(legs, "Legs")
+
     def test_deleting_is_only_ever_your_own(self):
         other_user, other_profile, other_token = self.create_account("stranger")
         self.authenticate(other_token)
@@ -2752,6 +2836,65 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         saved.refresh_from_db()
         self.assertIsNone(saved.source_post_id)
         self.assertEqual(saved.ingredients.count(), 1, "the food must survive too")
+
+
+class SavedWorkoutExerciseMatchingTests(RepbaseAPITestMixin, APITestCase):
+    """Which exercise a workout saved from a post files its sets under.
+
+    The same answer `?name=` gives: the reader's own of that name, then the
+    shared one, then the shared library exercise that has it as an alias.
+    Anything else splits somebody's history for an exercise across two rows.
+    """
+
+    def setUp(self):
+        self.user, self.profile, self.token = self.create_account("copier")
+        _, self.author, _ = self.create_account("sharer")
+        self.authenticate(self.token)
+
+    def save(self, *exercise_names):
+        post = Post.objects.create(author=self.author, kind=Post.Kind.WORKOUT, caption="")
+        workout = PostWorkout.objects.create(
+            post=post, title="Their day", performed_at=timezone.now()
+        )
+        for order, name in enumerate(exercise_names, start=1):
+            PostWorkoutExercise.objects.create(
+                post_workout=workout, name=name, order=order, set_count=3
+            )
+        response = self.client.post(f"/api/v1/social/posts/{post.id}/save-workout/")
+        self.assertEqual(response.status_code, 201, response.data)
+        return list(
+            WorkoutExercise.objects.filter(workout_id=response.data["workout"])
+            .order_by("order")
+            .values_list("exercise_id", flat=True)
+        )
+
+    def test_the_readers_own_exercise_comes_before_the_shared_one(self):
+        shared = Exercise.objects.create(name="Plank")
+        mine = Exercise.objects.create(name="plank", created_by=self.profile)
+        self.assertEqual(self.save("Plank"), [mine.pk])
+        self.assertNotEqual(mine.pk, shared.pk)
+
+    def test_without_one_of_their_own_the_shared_one_is_used(self):
+        shared = Exercise.objects.create(name="Plank")
+        self.assertEqual(self.save("Plank"), [shared.pk])
+        self.assertFalse(Exercise.objects.filter(created_by=self.profile).exists())
+
+    def test_a_library_exercise_is_found_by_an_alias(self):
+        # How adoption left an older shared "Bench Press": renamed, with the
+        # old name among its aliases. A post from an older build still says
+        # "Bench Press".
+        library = Exercise.objects.create(
+            name="Bench Press (Barbell)", slug="bench-press-barbell",
+            aliases=["Bench Press", "Flat Bench"],
+        )
+        self.assertEqual(self.save("bench press"), [library.pk])
+        self.assertFalse(Exercise.objects.filter(created_by=self.profile).exists())
+
+    def test_somebody_elses_exercise_is_never_used(self):
+        theirs = Exercise.objects.create(name="Plank", created_by=self.author)
+        [used] = self.save("Plank")
+        self.assertNotEqual(used, theirs.pk)
+        self.assertEqual(Exercise.objects.get(pk=used).created_by, self.profile)
 
 
 class SearchingForPeopleTests(RepbaseAPITestMixin, APITestCase):
