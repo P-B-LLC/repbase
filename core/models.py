@@ -2480,6 +2480,12 @@ class Post(models.Model):
         #: live, because a repost that froze a copy would keep showing a
         #: caption its author had since corrected.
         REPOST = "repost", "Repost"
+        #: A photo or a clip, and a caption, made from nothing recorded. No
+        #: snapshot, so it claims nothing about what was done: the picture is
+        #: the post. One with nothing yet to show -- its clip still uploading,
+        #: processing or waiting for review -- is its author's alone; see
+        #: `views.visible_posts_for`.
+        MEDIA = "media", "Photo or video"
 
     class Visibility(models.TextChoices):
         PUBLIC = "public", "Public"

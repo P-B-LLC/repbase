@@ -4858,9 +4858,10 @@ paths:
           description: ''
     post:
       operationId: social_posts_create
-      description: Post a workout, meal or planner entry the requester owns. The server
-        reads the source and builds the snapshot; the request names the object and
-        never carries its contents.
+      description: |-
+        Post a workout, meal or planner entry the requester owns. The server reads the source and builds the snapshot; the request names the object and never carries its contents.
+
+        Or post a photo or a clip on its own, with `kind` `media` and no `source_id`. Send the photo here; send a clip next to `posts/{id}/video/`, saying so with `expects_video`. A media post with nothing yet to show -- its clip uploading, processing or waiting for review -- is visible to its author alone.
       parameters:
       - in: header
         name: X-Moderation-Consent
@@ -6606,11 +6607,13 @@ components:
       - workout
       - meal
       - planner
+      - media
       type: string
       description: |-
         * `workout` - Workout
         * `meal` - Meal
         * `planner` - Planner
+        * `media` - Photo or video
     CreatePostRequest:
       type: object
       description: |-
@@ -6620,12 +6623,17 @@ components:
         the snapshot from it, so no client can decide what a post says it did —
         accepting the content here would be accepting a five-hundred-kilogram squat
         from anyone who could type one.
+
+        A `media` post references nothing: it is a photo or a clip and a caption,
+        and since it carries no snapshot it makes no claim to check.
       properties:
         kind:
           $ref: '#/components/schemas/CreatePostKindEnum'
         source_id:
           type: integer
           minimum: 1
+          description: The workout session, meal or planner entry to post. Required
+            for those kinds; leave it out of a media post.
         caption:
           type: string
           default: ''
@@ -6646,9 +6654,14 @@ components:
           type: string
           description: How the meal was made, for a meal post. Ignored for other kinds.
           maxLength: 4000
+        expects_video:
+          type: boolean
+          default: false
+          description: True when a clip will be uploaded to this post next. Required
+            for a media post without a photo, which stays visible only to its author
+            until the clip is ready to watch.
       required:
       - kind
-      - source_id
     CycleActivateRequest:
       type: object
       description: |-
