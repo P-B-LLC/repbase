@@ -82,8 +82,8 @@ class WorkoutTemplateAdmin(admin.ModelAdmin):
 
 @admin.register(Exercise)
 class ExerciseAdmin(admin.ModelAdmin):
-    list_display = ("name", "muscle_group", "created_by")
-    search_fields = ("name", "muscle_group")
+    list_display = ("name", "muscle_group", "slug", "created_by")
+    search_fields = ("name", "muscle_group", "slug")
 
 
 class SessionExerciseInline(admin.TabularInline):

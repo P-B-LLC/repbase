@@ -140,6 +140,14 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # config.production, where PostgreSQL and verified TLS are mandatory.
 DATABASES = {'default': database(os.environ, BASE_DIR)}
 
+# Whether `migrate` loads core/data/exercise_library.json into the shared
+# exercise catalogue (migration 0085; `manage.py sync_exercise_library` does
+# the same on demand). On everywhere except test databases, which the test
+# runner below builds with it off so no test depends on what the library
+# holds today. See core.exercise_library.
+EXERCISE_LIBRARY_SYNC_ON_MIGRATE = True
+TEST_RUNNER = 'config.test_runner.RepbaseTestRunner'
+
 
 # Password validation
 # https://docs.djangoproject.com/en/6.1/ref/settings/#auth-password-validators
@@ -280,7 +288,9 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # drf-spectacular's, plus `optional_response_fields`: see core.schema for
+    # why a field added to a response must not be documented as required.
+    'DEFAULT_SCHEMA_CLASS': 'core.schema.AutoSchema',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
@@ -414,6 +424,10 @@ SPECTACULAR_SETTINGS = {
         'AssignableAppRoleEnum': 'core.access.ROLES',
         'WorkoutTypeEnum': 'core.models.WorkoutTypeChoices.choices',
         'CardioMachineEnum': 'core.models.CardioMachine.choices',
+        # A logged set's `set_type` and a planned exercise's `set_types` are
+        # one choice set under two field names, which would otherwise be
+        # SetTypeEnum and SetTypesEnum: two Swift types for one idea.
+        'SetTypeEnum': 'core.models.SetType.choices',
     },
     # Pinned. The default is `swagger-ui-dist@latest`, which runs whatever
     # was published most recently on this origin's docs page -- with the

@@ -1,3 +1,4 @@
+import itertools
 import logging
 import secrets
 from datetime import timedelta
@@ -10,6 +11,7 @@ from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
 from django.db import models, transaction
 from django.db.models import (
+    Case,
     Count,
     Exists,
     Max,
@@ -19,6 +21,7 @@ from django.db.models import (
     Subquery,
     Sum,
     Value,
+    When,
 )
 from django.db.models.functions import Coalesce, Concat, TruncDate
 from django.http import JsonResponse
@@ -49,7 +52,8 @@ from rest_framework.generics import RetrieveUpdateDestroyAPIView
 from . import food_sources
 from .post_publication import publication_media, PublicationMediaError, remove_profile_photo
 from .moderation import CONSENT_HEADER_NAME, check_public_content
-from .save_recovery import IdempotentCreateMixin
+from .save_recovery import IDEMPOTENCY_KEY_PARAMETER, IdempotentCreateMixin
+from .activities import ACTIVITIES, label as activity_label, session_trained
 from .schedule_sync import delete_schedule_rows, lock_schedule_rows, untouched_generated_tasks
 from .serializers import SessionFinishSerializer
 from .params import date_param, id_param
@@ -117,6 +121,8 @@ from .models import (
     PlannerRecurrence,
     PlannerRecurrenceStep,
     PLANNER_REPEAT_HORIZON_DAYS,
+    SetType,
+    performed_sessions,
     materialize_planner_repeats,
     plan_ahead_limit,
     training_day_of,
@@ -146,6 +152,8 @@ from .serializers import (
     RegisterSerializer,
     RepbaseUserSerializer,
     SessionExerciseSerializer,
+    SessionReorderSerializer,
+    ActivityLogSerializer,
     PersonalRecordSerializer,
     SessionCardioSerializer,
     SessionRoutePointSerializer,
@@ -1209,6 +1217,11 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
         return self.get_paginated_response(self.get_serializer(people, many=True).data)
 
 
+#: The longest exercise search worth running. Longer text is cut, not refused:
+#: a picker sends whatever is in the box, and an error there helps nobody.
+MAX_EXERCISE_SEARCH_LENGTH = 100
+
+
 @extend_schema_view(
     list=extend_schema(
         parameters=[
@@ -1222,6 +1235,43 @@ class RepbaseUserViewSet(ThrottleByActionMixin, viewsets.ReadOnlyModelViewSet):
                     "client resolve one exercise instead of reading every "
                     "page of the catalogue to find it."
                 ),
+            ),
+            OpenApiParameter(
+                name="search",
+                type=OpenApiTypes.STR,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only exercises whose name or one of whose aliases "
+                    "contains this, ignoring case and surrounding space, for a "
+                    "picker that narrows as the person types. Blank is the "
+                    "same as omitted. Only the first "
+                    f"{MAX_EXERCISE_SEARCH_LENGTH} characters are used. "
+                    "Combines with every other filter."
+                ),
+            ),
+            OpenApiParameter(
+                name="mine",
+                type=OpenApiTypes.BOOL,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "`true` returns only the exercises the reader created, "
+                    "leaving out the shared catalogue. `false` or omitted "
+                    "returns both. Anything else is a 400."
+                ),
+            ),
+            *(
+                OpenApiParameter(
+                    name=name,
+                    type=OpenApiTypes.STR,
+                    location=OpenApiParameter.QUERY,
+                    description=description,
+                )
+                for name, description in (
+                    ("equipment", "Return only exercises using this equipment (`barbell`, `dumbbell`, ...), ignoring case."),
+                    ("category", "Return only exercises in this library category, ignoring case."),
+                    ("pattern", "Return only exercises with this movement pattern, ignoring case."),
+                    ("muscle", "Return only exercises with this among their primary muscles (`chest`, `lats`, ...), ignoring case."),
+                )
             ),
         ]
     )
@@ -1243,9 +1293,65 @@ class ExerciseViewSet(viewsets.ModelViewSet):
         # Matched the way the app matches names: ignoring case and surrounding
         # space. Without this a client reads the whole catalogue to find one
         # row, on every workout save.
+        #
+        # The reader's own exercise comes first. The app takes the first
+        # match, and once the shared library holds a "Bench Press", somebody
+        # who made their own years ago would otherwise have new sets filed
+        # under the shared one -- splitting their history, records and
+        # progress chart in two, by nothing they did.
         name = self.request.query_params.get("name")
         if name:
-            queryset = queryset.filter(name__iexact=name.strip())
+            queryset = queryset.filter(name__iexact=name.strip()).order_by(
+                Case(When(created_by=profile, then=Value(0)), default=Value(1)),
+                "name",
+                "pk",
+            )
+        if self.action != "list":
+            # Discovery narrows the list only. A stray query string on a
+            # detail URL must not turn an exercise the reader can open into a
+            # 404, and a create reads nothing back through this.
+            return queryset
+        # Cut before it reaches the database, as the food search is: nobody
+        # types a hundred characters into an exercise picker, and a contains
+        # match on a megabyte of text is work for nothing.
+        search = (self.request.query_params.get("search") or "").strip()
+        search = search[:MAX_EXERCISE_SEARCH_LENGTH].strip()
+        if search:
+            # The name and every alias, through the one column the library
+            # sync and Exercise.save() keep for it. The name is asked too, so
+            # a row written around save() still turns up under its own name.
+            queryset = queryset.filter(
+                Q(search_text__icontains=search.lower()) | Q(name__icontains=search)
+            )
+        # Exact filters over the library's own vocabulary. Custom exercises
+        # carry none of it, so any of these leaves them out.
+        for param, column in (
+            ("equipment", "equipment"),
+            ("category", "category"),
+            ("pattern", "movement_pattern"),
+        ):
+            value = (self.request.query_params.get(param) or "").strip()
+            if value:
+                queryset = queryset.filter(**{f"{column}__iexact": value})
+        muscle = (self.request.query_params.get("muscle") or "").strip().lower()
+        if muscle:
+            # `|chest|` within `|chest|triceps|`: an exact match on one muscle
+            # of the list, on SQLite and PostgreSQL alike. A `|` in the value
+            # could only reach across two muscles, so it matches nothing.
+            if "|" in muscle:
+                queryset = queryset.none()
+            else:
+                queryset = queryset.filter(primary_muscle_index__contains=f"|{muscle}|")
+        mine = self.request.query_params.get("mine")
+        if mine is not None:
+            wanted = mine.strip().lower()
+            if wanted in ("true", "1"):
+                queryset = queryset.filter(created_by=profile)
+            elif wanted not in ("false", "0"):
+                # Refused rather than guessed at, like `from_following` on the
+                # post list: a typo quietly returning the whole catalogue looks
+                # like a filter that works.
+                raise ValidationError({"mine": "Use true or false."})
         return queryset
 
     def perform_create(self, serializer):
@@ -1336,7 +1442,23 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
             instance.delete()
 
     def get_queryset(self):
-        return self.scope_to_owner(super().get_queryset())
+        # When each workout was last trained, worked out inside the page's own
+        # query as a correlated subquery. Asked per workout instead, a saved
+        # workouts list of fifty is fifty more queries; see
+        # WorkoutTemplateSerializer.get_last_performed_at for what counts.
+        #
+        # Matched on the owner as well as the workout. Sessions can only name
+        # the owner's own workouts, so this changes nothing today; it keeps
+        # somebody else's training out of this date if that ever stops being
+        # true.
+        last_performed = (
+            performed_sessions()
+            .filter(workout=OuterRef("pk"), repbase_user=OuterRef("owner"))
+            .values("performed_at")[:1]
+        )
+        return self.scope_to_owner(super().get_queryset()).annotate(
+            last_performed_annotation=Subquery(last_performed)
+        )
 
     def perform_create(self, serializer):
         serializer.save(owner=self.owner_profile())
@@ -2364,6 +2486,16 @@ MAX_ROUTE_POINTS_PER_SESSION = 50_000
                     "history by what it is called rather than by record."
                 ),
             ),
+            OpenApiParameter(
+                name="activity",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description=(
+                    "Return only sessions whose workout is this activity "
+                    "(`tennis`, `running`, ...). A slug the server does not "
+                    "know matches nothing."
+                ),
+            ),
         ]
     )
 )
@@ -2468,12 +2600,31 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
             queryset = queryset.filter(workout_id=workout)
         if workout_name:
             queryset = queryset.filter(workout__name__iexact=workout_name)
+        activity = (self.request.query_params.get("activity") or "").strip()
+        if activity:
+            queryset = queryset.filter(workout__activity=activity)
         # Same reason as the gym list: the logged_set_total annotation groups
         # the query, which drops Meta.ordering and leaves history unordered
         # while it is being paged. created_at is auto_now_add, so sessions
         # written in the same instant -- an import, or a test -- share one,
         # and the key breaks the tie in the same direction as the date.
         return queryset.order_by("-created_at", "-pk")
+
+    def perform_update(self, serializer):
+        """Apply a PATCH to the session as it is now, not as it was read.
+
+        The row is read again under a lock, so a route upload or Health
+        import committing at the same moment is either wholly before this
+        write or wholly after it. That matters for a typed-in distance, whose
+        copy into recorded_distance_km depends on whether the session has a
+        measured one -- which the upload may have just given it.
+        """
+        with transaction.atomic():
+            serializer.instance = get_object_or_404(
+                self.scope_to_owner(WorkoutSession.objects.select_for_update()),
+                pk=serializer.instance.pk,
+            )
+            serializer.save()
 
     @transaction.atomic
     def perform_create(self, serializer):
@@ -2569,6 +2720,137 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
         return Response(self.get_serializer(session).data)
 
     @extend_schema(
+        request=ActivityLogSerializer,
+        responses={201: WorkoutSessionSerializer},
+        parameters=[IDEMPOTENCY_KEY_PARAMETER],
+        description=(
+            "Log a finished session after the fact: an activity, when it "
+            "started and how long it lasted, with optional effort, calories, "
+            "distance, details and notes. Creates a completed session marked "
+            "`is_manual_entry`, ending `duration_seconds` after `started_at` "
+            "(at most five minutes from now). The workout is `workout` (one of "
+            "yours, of this activity) or the one named `workout_name`, ignoring "
+            "case, made with this activity if you have none; a named workout of "
+            "another activity is a 400. `scheduled_date` also schedules the "
+            "workout on that day, reusing the day's entry if there is one. The "
+            "day's planner task for the workout is ticked, as finishing a live "
+            "session does. Send an `Idempotency-Key` to make retries replay "
+            "the same session instead of logging a second one."
+        ),
+    )
+    @action(detail=False, methods=["post"], url_path="log")
+    def log(self, request):
+        """Record a session somebody did without recording it live.
+
+        A tennis match, a class, a run with the phone left at home: the
+        person types in what it was and how long it took. It is a completed
+        session like any other -- it counts towards the stats, ticks the
+        planner, and appears in the workout's history -- with
+        `is_manual_entry` saying its times were typed rather than measured.
+
+        Its replay goes through the same receipts as every other create.
+        """
+        return self.idempotent(request, lambda: self._log(request))
+
+    def _log(self, request):
+        payload = ActivityLogSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        data = payload.validated_data
+
+        with transaction.atomic():
+            # The account lock every receipt writer takes (and this one may
+            # already hold, through `idempotent`). Here it also stops two logs
+            # naming one new workout from both trying to create it, which the
+            # unique name would turn into a 500 for the second.
+            owner = RepbaseUser.objects.select_for_update().get(pk=self.owner_profile().pk)
+            workout = self._workout_for_log(owner, data)
+            if data.get("scheduled_date") is not None:
+                # Unique per workout and day, so a second log of the same day
+                # reuses the entry rather than failing on it.
+                WorkoutSchedule.objects.get_or_create(
+                    owner=owner, workout=workout, scheduled_date=data["scheduled_date"]
+                )
+            distance = data.get("manual_distance_km")
+            session = WorkoutSession.objects.create(
+                repbase_user=owner,
+                workout=workout,
+                status=WorkoutSession.Status.COMPLETED,
+                started_at=data["started_at"],
+                ended_at=data["ended_at"],
+                is_manual_entry=True,
+                perceived_effort=data.get("perceived_effort"),
+                manual_calories_kcal=data.get("manual_calories_kcal"),
+                manual_distance_km=distance,
+                # A logged session has no track and no Health record, so the
+                # typed distance is its recorded one; see set_manual_distance.
+                recorded_distance_km=distance,
+                notes=data.get("notes", ""),
+                activity_details=data.get("activity_details", {}),
+            )
+            # The same tick `end` gives, for the same reason: the training
+            # happened, and the planner should say so. See planner_tasks_for.
+            planner_tasks_for(session).filter(completed_at__isnull=True).update(
+                completed_at=session.ended_at, updated_at=timezone.now()
+            )
+        return Response(self.get_serializer(session).data, status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _workout_for_log(owner, data):
+        """The workout a log belongs to, found or made; refused if it is
+        something else.
+
+        A log never changes a workout's activity. Logging tennis against a
+        workout that is a run would turn the run's whole history into tennis,
+        so it is refused, naming what the workout is, and the person can pick
+        another name.
+
+        Someone else's workout is refused exactly as a missing one is, naming
+        the field and saying nothing about whether the row exists -- the same
+        answer `source_for` gives a post's source.
+        """
+        activity = data["activity"]
+        if data.get("workout") is not None:
+            workout = WorkoutTemplate.objects.filter(pk=data["workout"], owner=owner).first()
+            if workout is None:
+                raise ValidationError({"workout": "No workout of yours with that id."})
+            if workout.activity_or_default != activity:
+                raise ValidationError(
+                    {
+                        "activity": (
+                            f"That workout is {activity_label(workout.activity_or_default)}, "
+                            f"not {activity_label(activity)}."
+                        )
+                    }
+                )
+            return workout
+
+        name = data["workout_name"]
+        named = WorkoutTemplate.objects.filter(owner=owner, name__iexact=name)
+        # Names are unique exactly, not ignoring case, so "Tennis" and
+        # "tennis" can both exist. The exact spelling wins, then the oldest.
+        workout = named.filter(name=name).first() or named.order_by("pk").first()
+        if workout is None:
+            return WorkoutTemplate.objects.create(
+                owner=owner,
+                name=name,
+                activity=activity,
+                workout_type=ACTIVITIES[activity].family,
+            )
+        if workout.activity_or_default != activity:
+            raise ValidationError(
+                {
+                    "workout_name": (
+                        f'Your workout "{workout.name}" is '
+                        f"{activity_label(workout.activity_or_default)}, not "
+                        f"{activity_label(activity)}. Log it as "
+                        f"{activity_label(workout.activity_or_default)}, or "
+                        f"give this one another name."
+                    )
+                }
+            )
+        return workout
+
+    @extend_schema(
         request=SessionCardioSerializer,
         responses=WorkoutSessionSerializer,
     )
@@ -2614,6 +2896,98 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
             PersonalRecordSerializer(
                 session.personal_records(),
                 many=True,
+            ).data
+        )
+
+    @extend_schema(
+        request=SessionReorderSerializer,
+        responses=SessionExerciseSerializer(many=True),
+        description=(
+            "Put an active session's exercises in a new order, all at once. "
+            "The body lists every SessionExercise id of the session exactly "
+            "once; they are renumbered 1 to n in that order and the session's "
+            "exercises are returned in it. A list that leaves one out, repeats "
+            "one or names another session's is a 400 and changes nothing, as "
+            "is a session that is planned or completed. Sending the same list "
+            "again changes nothing."
+        ),
+    )
+    # The whole list comes back, like `records`: a session's exercises are a
+    # screenful, and a paged envelope would only make the reply harder to use.
+    @action(detail=True, methods=["post"], pagination_class=None)
+    def reorder(self, request, pk=None):
+        """Renumber a session's exercises in one step.
+
+        One request rather than a PATCH per row, because the rows cannot be
+        moved one at a time: `unique_exercise_order_per_session` refuses the
+        intermediate state of every swap, so a client exchanging two exercises
+        had to invent a spare number for one of them first, and a failure
+        halfway left the session in an order nobody chose.
+
+        Only while the session is active. A completed session is a record of
+        the order the training happened in -- the post built from it and the
+        history screen read that order -- and rewriting it afterwards would
+        change what it says happened. A planned one is refused too, for now:
+        nothing needs it yet, and allowing it later is an additive change,
+        where taking it back once clients relied on it would not be.
+        """
+        payload = SessionReorderSerializer(data=request.data)
+        payload.is_valid(raise_exception=True)
+        wanted = payload.validated_data["session_exercises"]
+
+        with transaction.atomic():
+            # Locked so two reorders of one session (a retry racing the
+            # original) are applied one after the other rather than
+            # interleaved into an order neither asked for.
+            session = get_object_or_404(
+                self.scope_to_owner(WorkoutSession.objects.select_for_update()),
+                pk=pk,
+            )
+            if session.status != WorkoutSession.Status.ACTIVE:
+                raise ValidationError(
+                    {"detail": "Only an active session's exercises can be reordered."}
+                )
+            rows = list(session.session_exercises.all())
+            by_id = {row.pk: row for row in rows}
+            if set(wanted) != set(by_id):
+                raise ValidationError(
+                    {
+                        "session_exercises": (
+                            "List every exercise of this session exactly once. "
+                            "Reload the session and try again."
+                        )
+                    }
+                )
+
+            # Two passes, so no statement ever needs a number another row
+            # still holds. First every row moves to a spare number: above n,
+            # so clear of the final 1..n, and skipping the numbers rows hold
+            # now, so clear of each other. Then each takes its place. Spare
+            # numbers are counted up from n rather than offset from the
+            # largest order, which could be near the column's limit; these are
+            # never more than 2n. Works the same on SQLite and PostgreSQL,
+            # neither of which defers the unique check to the end of a
+            # statement.
+            taken = {row.order for row in rows}
+            spare = (
+                number
+                for number in itertools.count(len(rows) + 1)
+                if number not in taken
+            )
+            for row in rows:
+                row.order = next(spare)
+            SessionExercise.objects.bulk_update(rows, ["order"])
+
+            ordered = [by_id[row_id] for row_id in wanted]
+            for position, row in enumerate(ordered, start=1):
+                row.order = position
+            SessionExercise.objects.bulk_update(ordered, ["order"])
+
+        return Response(
+            SessionExerciseSerializer(
+                session.session_exercises.select_related("exercise").order_by("order", "id"),
+                many=True,
+                context=self.get_serializer_context(),
             ).data
         )
 
@@ -2800,13 +3174,22 @@ class ExerciseProgressView(APIView):
     )
     def get(self, request, exercise_id):
         profile = profile_for(request.user)
-        entries = SetEntry.objects.filter(
-            session_exercise__session__repbase_user=profile,
-            session_exercise__exercise_id=exercise_id,
-            completed_at__isnull=False,
-            weight_kg__isnull=False,
-            reps__isnull=False,
-        ).select_related("session_exercise").order_by("completed_at")
+        # Warm-ups are left off the chart. They are light by design, so every
+        # session would draw a dip to the warm-up weight before climbing to the
+        # working sets, and the line would show the warm-up routine instead of
+        # whether the lift is going up.
+        entries = (
+            SetEntry.objects.filter(
+                session_exercise__session__repbase_user=profile,
+                session_exercise__exercise_id=exercise_id,
+                completed_at__isnull=False,
+                weight_kg__isnull=False,
+                reps__isnull=False,
+            )
+            .exclude(set_type=SetType.WARMUP)
+            .select_related("session_exercise")
+            .order_by("completed_at")
+        )
 
         workout_name = request.query_params.get("workout_name")
         if workout_name:
@@ -3183,6 +3566,7 @@ def snapshot_workout(post, session, shows_weights=True):
         # column means every card has something to put at the top.
         title=session.workout.name if session.workout_id else "Workout",
         workout_type=session.workout.workout_type if session.workout_id else None,
+        activity=session.workout.activity_or_default if session.workout_id else None,
         performed_at=session.ended_at or session.started_at or session.created_at,
         duration_seconds=whole_seconds(session.duration_seconds),
         # The finisher goes over whole or not at all: a machine with no time, or
@@ -3416,6 +3800,7 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
                 "weight_kg": entry.weight_kg,
                 "reps": entry.reps,
                 "performed_at": entry.session_exercise.session.started_at,
+                "set_type": entry.set_type,
             }
 
         return Response(
@@ -3793,15 +4178,20 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             source.author,
             "Workout",
         )
+        # The activity the post went out with, when this server knows it, and
+        # its family with it; otherwise the snapshot's type, and save() takes
+        # that type's default activity.
+        activity = snapshot.activity if snapshot.activity in ACTIVITIES else ""
         with transaction.atomic():
             template = WorkoutTemplate.objects.create(
                 owner=owner,
                 name=name,
                 source_post=source,
                 workout_type=(
-                    snapshot.workout_type
-                    or WorkoutTemplate.WorkoutType.LIFTING
+                    ACTIVITIES[activity].family if activity
+                    else snapshot.workout_type or WorkoutTemplate.WorkoutType.LIFTING
                 ),
+                activity=activity,
             )
             for order, line in enumerate(exercises, start=1):
                 # The shared row first, this user's own next, and a new one
@@ -4965,9 +5355,11 @@ class TrainingStatsView(APIView):
             .values(
                 "workout__name",
                 "workout__workout_type",
+                "workout__activity",
                 "started_at",
                 "ended_at",
                 "recorded_distance_km",
+                "manual_distance_km",
                 "logged_sets",
             )
         )
@@ -4981,15 +5373,20 @@ class TrainingStatsView(APIView):
             if performed is None:
                 continue
 
-            workout_type = row["workout__workout_type"]
-            if workout_type in WorkoutTemplate.DISTANCE_TYPES:
-                # A run logs no sets. Distance when it was measured, and the
-                # time it took when it was not: a treadmill run still happened.
-                started, ended = row["started_at"], row["ended_at"]
-                duration = (ended - started).total_seconds() if started and ended else 0
-                trained = (row["recorded_distance_km"] or 0) > 0 or duration > 0
-            else:
-                trained = row["logged_sets"] > 0
+            # What a session must show depends on its activity; see
+            # core.activities and performed_sessions, which asks the same
+            # question in SQL. A run or a tennis match logs no sets, so it
+            # counts on distance when there is one and on the time it took
+            # when there is not -- a treadmill run still happened. A strength
+            # session, and one whose workout was deleted, counts on its sets.
+            started, ended = row["started_at"], row["ended_at"]
+            trained = session_trained(
+                activity=row["workout__activity"],
+                workout_type=row["workout__workout_type"],
+                logged_sets=row["logged_sets"],
+                duration_seconds=(ended - started).total_seconds() if started and ended else 0,
+                distances=(row["recorded_distance_km"], row["manual_distance_km"]),
+            )
 
             if trained:
                 days.add((row["workout__name"], timezone.localtime(performed).date()))

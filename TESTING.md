@@ -265,3 +265,98 @@ path `/persistent/media`, which fails `Path.is_absolute()` on Windows, and the
 parallel runner then failed to pickle that traceback. Linux SQLite/PostgreSQL CI
 must supply the full-suite result. Temporary test databases were removed by the
 runner.
+
+## Set types, planned set structure and session reordering (2026-10-28)
+
+The testing branch adds migration `0082_set_type_and_planned_set_structure`
+(additive: `SetEntry.set_type` defaults to `normal`; `WorkoutExercise` gains
+nullable `rest_seconds` and `superset_group` and `set_types` defaulting to an
+empty list) and these contract changes, so **both clients need the contract
+copied and regenerated** (see "Contract changes" above):
+
+- `SetEntry.set_type` (`SetTypeEnum`), also on `PreviousSet`. Warm-ups are left
+  out of session records, exercise progress and profile highlights.
+- `rest_seconds`, `superset_group`, `set_types` on `WorkoutExercise`,
+  `InitialWorkoutExercise` and `WorkoutPlanExercise`.
+- `POST /api/v1/sessions/{id}/reorder/` (`sessions_reorder_create`, body
+  `SessionReorderRequest`), active sessions only.
+- `PublicRepbaseUser.follows_viewer`, `WorkoutTemplate.last_performed_at`, and
+  `search`/`mine` on the exercise list.
+
+Every new response field is left out of its component's `required`, so a
+client generated from this contract still decodes a server deployed before
+it. drf-spectacular marks every read-only field required, so a serializer
+names such fields in `optional_response_fields` and `core.schema.AutoSchema`
+(the project's schema class) drops them from `required`; a name that is not a
+field fails schema generation.
+
+```sh
+python manage.py test core.test_workout_structure
+python manage.py makemigrations --check --dry-run
+python manage.py spectacular --file /tmp/openapi.yaml && diff openapi.yaml /tmp/openapi.yaml
+```
+
+`core.test_workout_structure` covers set type defaults, writes and refusals;
+warm-ups excluded from records (both sides), progress and highlights while
+drop and failure sets count; `set_type` on previous sets; the plan fields
+through `initial_exercises`, `exercise_plan` and `/workout-exercises/`
+(omitted fields kept, a lower `target_sets` trimming unsent types, too many
+types refused); reordering (swaps, reversals, gaps and very large orders
+without tripping `unique_exercise_order_per_session`, every malformed list,
+another account's session, non-active sessions); adding and deleting exercises
+of an active session; `follows_viewer` in every direction, for anonymous
+readers, one's own and closed profiles, with one follow lookup per response;
+`last_performed_at` ignoring sessions that recorded nothing, with a constant
+query count on the list; exercise search and `mine`; and that each new
+response field is optional in the generated contract.
+
+Local validation (macOS, Python 3.14): the new module's 54 tests pass on
+SQLite and on a throwaway PostgreSQL 16; the full `core` suite passes on both
+(1,332 tests; 24 skipped on SQLite, 3 on PostgreSQL). `check`,
+`makemigrations --check`, `spectacular --validate` and the schema diff are
+clean, and `Scripts/validate-contract.py` against a seeded `config.test_e2e`
+server reported no disagreements (43 of 45 collection endpoints; the two
+staff-only routes answer 403 to a member). No deployment is performed.
+
+## Activities, logged sessions and the exercise library (2026-10-29)
+
+Migrations `0083_activity_tracking_and_exercise_library` (additive columns),
+`0084_backfill_activity_and_search_text` (every workout's `activity` from its
+`workout_type`, posted snapshots likewise, exercise search text) and
+`0085_sync_exercise_library` (loads `core/data/exercise_library.json` if it
+exists; a no-op otherwise). Contract changes -- **both clients need the
+contract copied and regenerated**:
+
+- `activity` (plain string) on `WorkoutTemplate`, `WorkoutSession` and
+  `PostWorkout`; `perceived_effort`, `manual_calories_kcal`,
+  `manual_distance_km`, `notes`, `activity_details`, `is_manual_entry` on
+  `WorkoutSession`; the library fields on `Exercise`. All optional in
+  responses. `WorkoutTypeEnum` is unchanged.
+- `POST /api/v1/sessions/log/` (`sessions_log_create`, body
+  `ActivityLogRequest`), and the `activity` session filter and
+  `equipment`/`category`/`pattern`/`muscle` exercise filters.
+
+The test runner is now `config.test_runner.RepbaseTestRunner`: Django's,
+except that test databases are migrated with `EXERCISE_LIBRARY_SYNC_ON_MIGRATE`
+off, so no test depends on what the library file holds (and the transactional
+tests' flush cannot make that depend on test order). Library tests use their
+own fixtures.
+
+```sh
+python manage.py test core.test_activity_tracking
+```
+
+`core.test_activity_tracking` covers the registry and every detail rule (bools
+are not numbers); a workout's activity on create, update and full update, the
+older app's `workout_type`-only writes, and the backfill; PATCHing effort,
+calories, distance, notes and details on completed and live sessions, their
+bounds, and the `recorded_distance_km` rule against GPS and Health distances;
+the log endpoint (by name and id, activity mismatches, other people's
+workouts, schedule reuse, duration and future bounds, idempotent replay and
+409, the planner tick, posting a log); stats and `last_performed_at` for timed
+and strength activities, blank activities and deleted workouts; the library
+sync (insert, re-run, adoption of an unslugged shared row, custom rows
+untouched, nothing deleted, bad files written nowhere, the command, the
+migration with and without the file); alias search, each exercise filter and
+`name=` preferring the reader's own; and that each new response field is
+optional and no activity is an enum.
