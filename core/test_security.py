@@ -333,7 +333,7 @@ class ProductionSettingsTests(SimpleTestCase):
             **os.environ,
             "DJANGO_SETTINGS_MODULE": "config.production", "DJANGO_DEBUG": "false",
             "DJANGO_SECRET_KEY": "unit-test-only-not-a-real-secret-" * 3,
-            "DJANGO_ALLOWED_HOSTS": "api.example.com", "DJANGO_MEDIA_ROOT": "/persistent/media",
+            "DJANGO_ALLOWED_HOSTS": "api.example.com", "DJANGO_MEDIA_ROOT": os.path.abspath("/persistent/media"),
             "REDIS_URL": "rediss://:test-password@cache.example.com:6379/0",
             "DATABASE_URL": "postgresql://test:test@db.example.com/rytivo",
             "DATABASE_SSLMODE": "verify-full", **extra,
