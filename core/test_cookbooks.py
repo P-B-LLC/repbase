@@ -98,11 +98,11 @@ class CookbookTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(SavedFoodMeal.objects.get(pk=recipe["id"]).cookbook_id, self.book.pk)
 
-    def test_long_recipe_titles_can_be_saved_without_suffix_truncation(self):
+    def test_long_recipe_titles_keep_saved_names_distinct(self):
         from .fixtures_for_tests import meal_post
         for index in range(3):
             post = meal_post(self.other)
-            post.meal.name = "L" * 150
+            post.meal.name = "L" * post.meal._meta.get_field("name").max_length
             post.meal.save(update_fields=["name"])
             response = self.client.post(f"/api/v1/social/posts/{post.pk}/save-meal/", {"cookbook": self.book.pk}, format="json")
             self.assertEqual(response.status_code, 201, response.data)
