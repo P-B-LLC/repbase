@@ -2446,6 +2446,21 @@ class FoodEntry(models.Model):
         return f"{self.name} x{self.servings}"
 
 
+class Cookbook(models.Model):
+    """A private, owner-scoped collection. Publishing freezes a separate snapshot."""
+
+    owner = models.ForeignKey(RepbaseUser, on_delete=models.CASCADE, related_name="cookbooks")
+    name = models.CharField(max_length=80)
+    source_post = models.ForeignKey("Post", on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="cookbook_copies")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name", "id")
+        constraints = [models.UniqueConstraint(fields=("owner", "name"), name="unique_cookbook_name_per_owner")]
+
+
 class SavedFoodMeal(models.Model):
     """A meal kept to reuse, with its ingredients.
 
@@ -2458,6 +2473,7 @@ class SavedFoodMeal(models.Model):
         on_delete=models.CASCADE,
         related_name="saved_food_meals",
     )
+    cookbook = models.ForeignKey(Cookbook, on_delete=models.RESTRICT, related_name="recipes")
     name = models.CharField(max_length=150)
     #: How it was made, when it was saved from a post that said.
     #:
@@ -2837,6 +2853,7 @@ class Post(models.Model):
     class Kind(models.TextChoices):
         WORKOUT = "workout", "Workout"
         MEAL = "meal", "Meal"
+        COOKBOOK = "cookbook", "Cookbook"
         PLANNER = "planner", "Planner"
         #: Someone else's post, passed on. The only kind with no snapshot
         #: sibling of its own: what it shows is the post it points at, read
@@ -3158,6 +3175,19 @@ class PostWorkoutExercise(models.Model):
 
     def __str__(self):
         return f"{self.name} x{self.set_count}"
+
+
+class PostCookbook(models.Model):
+    """One bounded publication snapshot, fetched in full only on detail."""
+
+    post = models.OneToOneField(Post, on_delete=models.CASCADE, related_name="cookbook")
+    name = models.CharField(max_length=80)
+    recipe_count = models.PositiveSmallIntegerField()
+    recipes = models.JSONField(default=list)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(recipe_count__gte=1, recipe_count__lte=20),
+                                               name="published_cookbook_recipe_limit")]
 
 
 class PostMeal(models.Model):

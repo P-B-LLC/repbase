@@ -582,7 +582,7 @@ class BatchSizeTests(RepbaseAPITestMixin, APITestCase):
         ingredients = [{"name": f"Thing {n}"} for n in range(101)]
         response = self.client.post(
             "/api/v1/food/saved-meals/",
-            {"name": "Feast", "ingredients": ingredients},
+            {**self.recipe_destination(), "name": "Feast", "ingredients": ingredients},
             format="json",
         )
         self.assertEqual(response.status_code, 400)

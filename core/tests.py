@@ -21,6 +21,7 @@ from rest_framework.test import APIClient, APITestCase
 from . import food_sources
 from .photos import FEED_PHOTO_BOX, feed_variant
 from .models import (
+    Cookbook,
     Block,
     Exercise,
     FoodEntry,
@@ -101,6 +102,10 @@ class RepbaseAPITestMixin:
 
     def authenticate(self, token):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+
+    def recipe_destination(self, profile=None):
+        profile = profile or self.profile
+        return {"cookbook": Cookbook.objects.get_or_create(owner=profile, name="Test recipes")[0].pk}
 
 
 class FoodDayCopyTests(RepbaseAPITestMixin, APITestCase):
@@ -2722,11 +2727,11 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         post = self._meal_post()
         url = f"/api/v1/social/posts/{post.id}/save-meal/"
 
-        first = self.client.post(url)
+        first = self.client.post(url, self.recipe_destination(), format="json")
         self.assertEqual(first.status_code, 201, first.data)
         self.assertFalse(first.data["already_saved"])
 
-        second = self.client.post(url)
+        second = self.client.post(url, self.recipe_destination(), format="json")
         # 200, not 201: nothing was created the second time.
         self.assertEqual(second.status_code, 200, second.data)
         self.assertTrue(second.data["already_saved"])
@@ -2763,7 +2768,7 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         post = self._meal_post()
         url = f"/api/v1/social/posts/{post.id}/save-meal/"
         for _ in range(10):
-            self.client.post(url)
+            self.client.post(url, self.recipe_destination(), format="json")
         self.assertEqual(SavedFoodMeal.objects.filter(owner=self.profile).count(), 1)
 
     def test_two_different_posts_are_two_meals(self):
@@ -2771,8 +2776,8 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         first_post = self._meal_post()
         second_post = self._meal_post()
 
-        self.client.post(f"/api/v1/social/posts/{first_post.id}/save-meal/")
-        self.client.post(f"/api/v1/social/posts/{second_post.id}/save-meal/")
+        self.client.post(f"/api/v1/social/posts/{first_post.id}/save-meal/", self.recipe_destination(), format="json")
+        self.client.post(f"/api/v1/social/posts/{second_post.id}/save-meal/", self.recipe_destination(), format="json")
 
         self.assertEqual(
             SavedFoodMeal.objects.filter(owner=self.profile).count(),
@@ -2784,11 +2789,11 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         """The copy is per person: mine existing is not you having one."""
         post = self._meal_post()
         url = f"/api/v1/social/posts/{post.id}/save-meal/"
-        self.client.post(url)
+        self.client.post(url, self.recipe_destination(), format="json")
 
         other_user, other_profile, other_token = self.create_account("second")
         self.authenticate(other_token)
-        theirs = self.client.post(url)
+        theirs = self.client.post(url, self.recipe_destination(other_profile), format="json")
 
         self.assertEqual(theirs.status_code, 201, theirs.data)
         self.assertFalse(theirs.data["already_saved"])
@@ -2808,7 +2813,7 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
         mine = [p for p in before.data["results"] if p["id"] == post.id][0]
         self.assertFalse(mine["viewer_saved"])
 
-        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/")
+        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/", self.recipe_destination(), format="json")
 
         after = self.client.get("/api/v1/social/posts/")
         mine = [p for p in after.data["results"] if p["id"] == post.id][0]
@@ -2816,7 +2821,7 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
 
     def test_one_reader_saving_does_not_mark_it_saved_for_another(self):
         post = self._meal_post()
-        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/")
+        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/", self.recipe_destination(), format="json")
 
         _, _, other_token = self.create_account("onlooker")
         self.authenticate(other_token)
@@ -2828,7 +2833,7 @@ class SavingTwiceSavesOnceTests(RepbaseAPITestMixin, APITestCase):
     def test_a_deleted_post_leaves_the_copy_alone(self):
         """SET_NULL, not CASCADE: the copy is the readers own once made."""
         post = self._meal_post()
-        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/")
+        self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/", self.recipe_destination(), format="json")
         saved = SavedFoodMeal.objects.get(owner=self.profile)
 
         post.delete()
@@ -3606,7 +3611,7 @@ class SavingKeepsTheRecipeTests(RepbaseAPITestMixin, APITestCase):
         return post
 
     def save(self, post):
-        response = self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/")
+        response = self.client.post(f"/api/v1/social/posts/{post.id}/save-meal/", self.recipe_destination(), format="json")
         self.assertIn(response.status_code, (200, 201), response.data)
         return SavedFoodMeal.objects.get(pk=response.data["meal"])
 
@@ -3653,7 +3658,7 @@ class SavingKeepsTheRecipeTests(RepbaseAPITestMixin, APITestCase):
         """The field is the saved meal's, not only the copier's."""
         response = self.client.post(
             "/api/v1/food/saved-meals/",
-            {
+            {**self.recipe_destination(),
                 "name": "Overnight oats",
                 "cooking_instructions": "Mix and leave until morning.",
                 "ingredients": [
@@ -3695,7 +3700,7 @@ class TheRecipeHasACeilingTests(RepbaseAPITestMixin, APITestCase):
     def write(self, instructions, name="Overnight oats"):
         return self.client.post(
             "/api/v1/food/saved-meals/",
-            {
+            {**self.recipe_destination(),
                 "name": name,
                 "cooking_instructions": instructions,
                 "ingredients": [
@@ -3754,7 +3759,7 @@ class TheRecipeHasACeilingTests(RepbaseAPITestMixin, APITestCase):
         """The ceiling must not turn an absent recipe into a required one."""
         response = self.client.post(
             "/api/v1/food/saved-meals/",
-            {
+            {**self.recipe_destination(),
                 "name": "Plain oats",
                 "ingredients": [
                     {

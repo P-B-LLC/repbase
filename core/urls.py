@@ -1,5 +1,6 @@
 from django.urls import path
 from .consent_views import SafetyConsentView, AccountAgreementView
+from .cookbook_views import CookbookViewSet
 from .video_pipeline_views import UploadStart, UploadFinish, PlaybackEvent, serve_asset
 from rest_framework.routers import DefaultRouter
 from .access_views import (MyAccessView, AccessUsersView, UserAccessView, UserStatusView,
@@ -75,6 +76,7 @@ router.register("gyms", GymViewSet)
 router.register("food/meals", FoodMealViewSet)
 router.register("food/entries", FoodEntryViewSet)
 router.register("food/saved-meals", SavedFoodMealViewSet)
+router.register("food/cookbooks", CookbookViewSet)
 router.register("social/posts", PostViewSet)
 router.register("social/comments", PostCommentViewSet)
 # An explicit basename: this viewset is a second view over Post, and the

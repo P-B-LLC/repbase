@@ -45,6 +45,7 @@ from .fixtures_for_tests import (
     workout_post,
 )
 from .models import (
+    Cookbook,
     Block,
     Follow,
     Personalization,
@@ -701,7 +702,7 @@ class RespondingToFeedbackTests(ForYouTestCase):
         PostLike.objects.create(post=liked, user=reader)
         PostComment.objects.create(post=commented, author=reader, body="nice")
         Post.objects.create(author=reader, kind=Post.Kind.REPOST, repost_of=reposted)
-        SavedFoodMeal.objects.create(owner=reader, name="Copy", source_post=saved_meal)
+        SavedFoodMeal.objects.create(cookbook=Cookbook.objects.create(owner=reader, name="Recipes"), owner=reader, name="Copy", source_post=saved_meal)
         WorkoutTemplate.objects.create(owner=reader, name="Copy", workout_type="lifting", source_post=saved_workout)
         shown = set(self.ids(self.feed(token, page_size=50)))
         for post in (liked, commented, reposted, saved_meal, saved_workout):

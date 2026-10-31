@@ -977,6 +977,168 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/food/cookbooks/:
+    get:
+      operationId: food_cookbooks_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCookbookList'
+          description: ''
+    post:
+      operationId: food_cookbooks_create
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+          format: uuid
+        description: Persist a fresh UUID per intended create and reuse it with the
+          same JSON body on retry. Successful responses are replayed without a second
+          create. Reusing the key with changed input returns 409. Keys are scoped
+          to the authenticated account and endpoint and retained until account deletion.
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CookbookRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CookbookRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CookbookRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cookbook'
+          description: ''
+  /api/v1/food/cookbooks/{id}/:
+    get:
+      operationId: food_cookbooks_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this cookbook.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cookbook'
+          description: ''
+    put:
+      operationId: food_cookbooks_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this cookbook.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CookbookRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CookbookRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CookbookRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cookbook'
+          description: ''
+    patch:
+      operationId: food_cookbooks_partial_update
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this cookbook.
+        required: true
+      tags:
+      - food
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedCookbookRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedCookbookRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedCookbookRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cookbook'
+          description: ''
+    delete:
+      operationId: food_cookbooks_destroy
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this cookbook.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/food/entries/:
     get:
       operationId: food_entries_list
@@ -1475,6 +1637,12 @@ paths:
       operationId: food_saved_meals_list
       description: Meals kept to reuse.
       parameters:
+      - in: query
+        name: cookbook
+        schema:
+          type: integer
+        description: Only recipes in this owned cookbook; omitted returns the owner's
+          complete recipe library.
       - name: page
         required: false
         in: query
@@ -5145,6 +5313,36 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/social/posts/{id}/cookbook/:
+    get:
+      operationId: social_posts_cookbook_retrieve
+      description: |-
+        Posts: what someone has chosen to show other people.
+
+        Reading and writing use different querysets on purpose. A reader gets
+        everything the visibility rules allow; an author gets their own rows and
+        nothing else, so somebody else's post is a 404 to a PATCH for the same
+        reason it is a 404 to a GET of a session that is not theirs — it was never
+        in the set.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublishedCookbook'
+          description: ''
   /api/v1/social/posts/{id}/fewer-like-this/:
     post:
       operationId: social_posts_fewer_like_this_create
@@ -5401,6 +5599,42 @@ paths:
               schema:
                 $ref: '#/components/schemas/Post'
           description: ''
+  /api/v1/social/posts/{id}/save-cookbook/:
+    post:
+      operationId: social_posts_save_cookbook_create
+      description: |-
+        Posts: what someone has chosen to show other people.
+
+        Reading and writing use different querysets on purpose. A reader gets
+        everything the visibility rules allow; an author gets their own rows and
+        nothing else, so somebody else's post is a 404 to a PATCH for the same
+        reason it is a 404 to a GET of a session that is not theirs — it was never
+        in the set.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cookbook'
+          description: ''
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cookbook'
+          description: ''
   /api/v1/social/posts/{id}/save-meal/:
     post:
       operationId: social_posts_save_meal_create
@@ -5417,6 +5651,18 @@ paths:
         required: true
       tags:
       - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CookbookDestinationRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CookbookDestinationRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CookbookDestinationRequest'
+        required: true
       security:
       - tokenAuth: []
       - cookieAuth: []
@@ -6811,6 +7057,102 @@ components:
         * `image/jpeg` - image/jpeg
         * `image/png` - image/png
         * `image/webp` - image/webp
+    Cookbook:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        name:
+          type: string
+          maxLength: 80
+        recipe_count:
+          type: integer
+          readOnly: true
+        capacity:
+          type: integer
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - capacity
+      - created_at
+      - id
+      - name
+      - recipe_count
+      - updated_at
+    CookbookDestinationRequest:
+      type: object
+      properties:
+        cookbook:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+      required:
+      - cookbook
+    CookbookIngredient:
+      type: object
+      properties:
+        name:
+          type: string
+        servings:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+        calories:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        protein_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        carbohydrate_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+        fat_grams:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+      required:
+      - calories
+      - carbohydrate_grams
+      - fat_grams
+      - name
+      - protein_grams
+      - servings
+    CookbookRecipe:
+      type: object
+      properties:
+        name:
+          type: string
+        cooking_instructions:
+          type: string
+        ingredients:
+          type: array
+          items:
+            $ref: '#/components/schemas/CookbookIngredient'
+      required:
+      - cooking_instructions
+      - ingredients
+      - name
+    CookbookRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+      required:
+      - name
     CopyFoodDayRequest:
       type: object
       description: |-
@@ -6834,12 +7176,14 @@ components:
       enum:
       - workout
       - meal
+      - cookbook
       - planner
       - media
       type: string
       description: |-
         * `workout` - Workout
         * `meal` - Meal
+        * `cookbook` - Cookbook
         * `planner` - Planner
         * `media` - Photo or video
     CreatePostRequest:
@@ -7543,6 +7887,11 @@ components:
           - $ref: '#/components/schemas/PostPlannerEntry'
           readOnly: true
           nullable: true
+        cookbook:
+          allOf:
+          - $ref: '#/components/schemas/PostCookbook'
+          readOnly: true
+          nullable: true
         source_id:
           type: integer
           nullable: true
@@ -7603,6 +7952,7 @@ components:
       - author
       - caption
       - comment_count
+      - cookbook
       - created_at
       - feed_image_url
       - id
@@ -8356,6 +8706,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BodyWeightEntry'
+    PaginatedCookbookList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/Cookbook'
     PaginatedDailyStepCountList:
       type: object
       required:
@@ -8912,6 +9285,13 @@ components:
         notes:
           type: string
           maxLength: 300
+    PatchedCookbookRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
     PatchedExerciseRequest:
       type: object
       properties:
@@ -9228,6 +9608,13 @@ components:
           type: string
           minLength: 1
           maxLength: 150
+        cookbook:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+          description: Required on creation. Omit on edits to keep the recipe in its
+            existing cookbook.
         ingredients:
           type: array
           items:
@@ -9896,6 +10283,11 @@ components:
           - $ref: '#/components/schemas/PostPlannerEntry'
           readOnly: true
           nullable: true
+        cookbook:
+          allOf:
+          - $ref: '#/components/schemas/PostCookbook'
+          readOnly: true
+          nullable: true
         source_id:
           type: integer
           nullable: true
@@ -9952,6 +10344,7 @@ components:
       - author
       - caption
       - comment_count
+      - cookbook
       - created_at
       - feed_image_url
       - id
@@ -10045,6 +10438,18 @@ components:
       required:
       - body
       - post
+    PostCookbook:
+      type: object
+      properties:
+        name:
+          type: string
+          readOnly: true
+        recipe_count:
+          type: integer
+          readOnly: true
+      required:
+      - name
+      - recipe_count
     PostMeal:
       type: object
       description: |-
@@ -10890,6 +11295,24 @@ components:
           type: boolean
         is_profile_public:
           type: boolean
+    PublishedCookbook:
+      type: object
+      properties:
+        name:
+          type: string
+          readOnly: true
+        recipe_count:
+          type: integer
+          readOnly: true
+        recipes:
+          type: array
+          items:
+            $ref: '#/components/schemas/CookbookRecipe'
+          readOnly: true
+      required:
+      - name
+      - recipe_count
+      - recipes
     PushDeviceRegistrationRequest:
       type: object
       properties:
@@ -11340,6 +11763,11 @@ components:
           - $ref: '#/components/schemas/PostPlannerEntry'
           readOnly: true
           nullable: true
+        cookbook:
+          allOf:
+          - $ref: '#/components/schemas/PostCookbook'
+          readOnly: true
+          nullable: true
         created_at:
           type: string
           format: date-time
@@ -11352,6 +11780,7 @@ components:
       required:
       - author
       - caption
+      - cookbook
       - created_at
       - feed_image_url
       - id
@@ -11468,6 +11897,13 @@ components:
         name:
           type: string
           maxLength: 150
+        cookbook:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+          description: Required on creation. Omit on edits to keep the recipe in its
+            existing cookbook.
         ingredients:
           type: array
           items:
@@ -11499,6 +11935,13 @@ components:
           type: string
           minLength: 1
           maxLength: 150
+        cookbook:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+          description: Required on creation. Omit on edits to keep the recipe in its
+            existing cookbook.
         ingredients:
           type: array
           items:
