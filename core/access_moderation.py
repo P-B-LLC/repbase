@@ -35,6 +35,7 @@ def report_review_data(row, kind, request):
     import json
     from django.core.serializers.json import DjangoJSONEncoder
     from .serializers import RepostedPostSerializer, PostVideoSerializer
+    from .cookbook_serializers import PublishedCookbookSerializer
     require(request.user, 'moderate')
     data = report_data(row, kind)
     post = row.post if kind == 'post' else row.comment.post
@@ -46,9 +47,13 @@ def report_review_data(row, kind, request):
             result['video'] = PostVideoSerializer(video, context={'request': request}).data
         result['visibility'] = value.visibility
         result['is_hidden'] = value.is_hidden
+        # Only the selected, role-gated review expands a cookbook. The queue
+        # and public feed keep their compact summaries.
+        if getattr(value, 'cookbook', None) is not None:
+            result['cookbook'] = PublishedCookbookSerializer(value.cookbook).data
         result['snapshots'] = [
             {'name': name.title(), 'data': json.dumps(result[name], indent=2, cls=DjangoJSONEncoder)}
-            for name in ('workout', 'meal', 'planner') if result.get(name)
+            for name in ('workout', 'meal', 'planner', 'cookbook') if result.get(name)
         ]
         return result
 

@@ -32,8 +32,9 @@ def save_publication(owner, source):
     snapshot = source.cookbook
     cookbook = Cookbook.objects.create(owner=owner, source_post=source,
         name=available_name(Cookbook, owner, snapshot.name, maximum=80))
-    # Names are owner-wide today. Allocate all names in memory before bulk work.
-    taken = {n.casefold() for n in SavedFoodMeal.objects.filter(owner=owner).values_list("name", flat=True)}
+    # A fresh cookbook can preserve the published names even when another
+    # collection contains recipes with the same names.
+    taken = set()
     recipes = []
     for item in snapshot.recipes:
         base = item["name"][:150]

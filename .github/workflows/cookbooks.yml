@@ -5,7 +5,7 @@ on:
     paths:
       - 'core/cookbook*'
       - 'core/test_cookbooks.py'
-      - 'core/migrations/0087_cookbooks.py'
+      - 'core/migrations/*cookbook*'
       - 'core/models.py'
       - 'core/serializers.py'
       - 'core/views.py'

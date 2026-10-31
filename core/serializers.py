@@ -402,6 +402,7 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SavedFoodMeal
+        validators = []  # Name checks below are case-insensitive and rechecked under the owner lock.
         fields = [
             "id",
             "name",
@@ -427,12 +428,13 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
         if self.instance is None and "cookbook_id" not in attrs:
             raise serializers.ValidationError({"cookbook": "Choose a cookbook for this recipe."})
         name = attrs.get("name", getattr(self.instance, "name", ""))
-        clash = SavedFoodMeal.objects.filter(owner=owner, name__iexact=name)
+        cookbook_id = attrs.get("cookbook_id", getattr(self.instance, "cookbook_id", None))
+        clash = SavedFoodMeal.objects.filter(owner=owner, cookbook_id=cookbook_id, name__iexact=name)
         if self.instance:
             clash = clash.exclude(pk=self.instance.pk)
         if clash.exists():
             raise serializers.ValidationError(
-                {"name": "You already have a saved meal with this name."}
+                {"name": "You already have a recipe with this name in this cookbook."}
             )
         return attrs
 

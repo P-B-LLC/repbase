@@ -84,6 +84,32 @@ class CookbookTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(saved.cookbook_id, self.book.pk)
         self.assertEqual(saved.name, "Dinner")
 
+    def test_recipe_names_are_scoped_to_their_cookbook(self):
+        self.assertEqual(self.add().status_code, 201)
+        another = Cookbook.objects.create(owner=self.profile, name="Lunches")
+        self.assertEqual(self.add(cookbook=another.pk).status_code, 201)
+        self.assertEqual(self.add("dinner").status_code, 400)
+
+    def test_move_into_name_collision_keeps_original_recipe(self):
+        recipe = self.add().data
+        another = Cookbook.objects.create(owner=self.profile, name="Lunches")
+        self.add(cookbook=another.pk)
+        response = self.client.patch(f"/api/v1/food/saved-meals/{recipe['id']}/", {"cookbook": another.pk}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(SavedFoodMeal.objects.get(pk=recipe["id"]).cookbook_id, self.book.pk)
+
+    def test_long_recipe_titles_can_be_saved_without_suffix_truncation(self):
+        from .fixtures_for_tests import meal_post
+        for index in range(3):
+            post = meal_post(self.other)
+            post.meal.name = "L" * 150
+            post.meal.save(update_fields=["name"])
+            response = self.client.post(f"/api/v1/social/posts/{post.pk}/save-meal/", {"cookbook": self.book.pk}, format="json")
+            self.assertEqual(response.status_code, 201, response.data)
+        names = list(self.book.recipes.values_list("name", flat=True))
+        self.assertEqual(len(set(names)), 3)
+        self.assertTrue(all(len(name) <= 150 for name in names))
+
     def test_move_counts_sync_on_a_second_client(self):
         recipe = self.add().data
         new_book = Cookbook.objects.create(owner=self.profile, name="Lunches")
@@ -153,6 +179,25 @@ class CookbookTests(RepbaseAPITestMixin, APITestCase):
             self.assertEqual(getattr(self.client, method)(f"/api/v1/social/posts/{private_id}/{endpoint}/").status_code, 404)
         Block.objects.create(blocker=self.other, blocked=self.profile)
         self.assertEqual(self.client.get(f"/api/v1/social/posts/{public_id}/cookbook/").status_code, 404)
+
+    def test_only_authorized_report_review_expands_full_cookbook(self):
+        from django.test import RequestFactory
+        from rest_framework.exceptions import PermissionDenied
+        from .access_models import AccountAccess
+        from .access_moderation import report_data, report_review_data
+        from .models import PostReport
+        self.add()
+        post_id = self.publish().data["id"]
+        report = PostReport.objects.create(post_id=post_id, reporter=self.other, reason="other")
+        request = RequestFactory().get("/access/reports/")
+        request.user = self.other_user
+        self.assertNotIn("recipes", report_data(report, "post"))
+        with self.assertRaises(PermissionDenied):
+            report_review_data(report, "post", request)
+        AccountAccess.objects.create(user=self.other_user, moderator=True)
+        data = report_review_data(report, "post", request)
+        self.assertEqual(data["post"]["cookbook"]["recipes"][0]["cooking_instructions"], "Roast until cooked.")
+        self.assertEqual(data["post"]["snapshots"][0]["name"], "Cookbook")
 
     def test_save_cookbook_twice_makes_one_collection_and_recipe_copy(self):
         self.add()

@@ -16,6 +16,8 @@ deployment or authorization to merge/release.
   not provider calls. Editing a recipe in its current full collection is allowed.
 - Every collection holds at most 20 recipes. Empty folders may be deleted;
   nonempty folders must be emptied first. Account deletion still cascades.
+- Recipe names are unique within their cookbook. Different cookbooks may keep
+  the same recipe name; moving into a name conflict is rejected atomically.
 - `food/saved-meals/?cookbook=ID` loads only the selected collection. Opening
   the cookbook overview does not load ingredients. The full saved-meal list
   remains available to the explicit meal-planning workflow.
@@ -34,6 +36,8 @@ deployment or authorization to merge/release.
 Migration `0087_cookbooks` preserves existing recipe IDs, ingredients and methods,
 placing recipes in `My recipes`, `My recipes 2`, etc., in groups of at most 20.
 No empty cookbook is created for accounts without saved recipes.
+Migration 0088 moves the old owner-wide recipe-name constraint to the cookbook,
+so testing databases that already applied 0087 can upgrade normally.
 
 Take a database backup and stop older API writers before applying the migration
 to a testing deployment. The new required destination is a write-contract change:

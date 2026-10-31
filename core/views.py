@@ -4536,7 +4536,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         cookbook = destination_for(owner, destination.validated_data["cookbook"])
         name = self._free_copy_name(
             set(
-                SavedFoodMeal.objects.filter(owner=owner)
+                SavedFoodMeal.objects.filter(owner=owner, cookbook=cookbook)
                 .values_list("name", flat=True)
             ),
             snapshot.name,
@@ -4616,7 +4616,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
     def _free_copy_name(taken, title, author, fallback):
         """A name this user does not already have.
 
-        Workouts and saved meals are both unique by name per user, so saving
+        Workouts are unique by name per user, recipes within their cookbook, so saving
         somebody's "Push Day" -- or their "Meal 1", which everyone has -- when
         you have your own would either fail or quietly hand back yours.
         Neither is what was asked for, so the copy is named after who it came
@@ -4629,12 +4629,14 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         if base not in taken:
             return base
 
-        from_author = f"{base} (from @{author.user.username})"[:150]
+        credit = f" (from @{author.user.username})"
+        from_author = (base[:max(1, 150 - len(credit))] + credit)[:150]
         if from_author not in taken:
             return from_author
 
         for suffix in range(2, 100):
-            numbered = f"{from_author} {suffix}"[:150]
+            tail = f" {suffix}"
+            numbered = from_author[:150 - len(tail)] + tail
             if numbered not in taken:
                 return numbered
         raise ValidationError({"post": "You already have too many copies of that."})

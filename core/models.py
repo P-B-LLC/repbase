@@ -2509,8 +2509,8 @@ class SavedFoodMeal(models.Model):
         ordering = ("name", "id")
         constraints = [
             models.UniqueConstraint(
-                fields=("owner", "name"),
-                name="unique_saved_meal_name_per_owner",
+                fields=("cookbook", "name"),
+                name="unique_saved_meal_name_per_cookbook",
             )
         ]
 
