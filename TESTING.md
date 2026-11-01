@@ -160,31 +160,38 @@ they do not know. Adding a value to an enum that appears in a *response* does
 break the generated Swift client, which decodes enums strictly; send new
 values as plain strings instead, as `Post.kind` does.
 
-## Workout schedule and planner synchronization (2026-10-28)
+## Workout schedule and planner synchronization (2026-11-01)
 
-The testing branch `work/testflight-calendar-sync-2026-10-28` adds migration
-`0081_plannerentry_source_schedule`. It records private provenance only for
-planner tasks newly created by `schedules/sync-planner/`; a manually authored
-task adopted for the same workout/date is never claimed as generated data.
-No API request/response fields change and no Swift client regeneration is needed.
+Training and Home's workout card read `WorkoutSchedule`; the calendar and
+Home's agenda read the `PlannerEntry` task each scheduled day is given. Every
+workout task is linked to its day by the private `source_schedule` key
+(migration 0081), and the two change together in both directions:
 
-Removing a schedule now removes its untouched, unfinished generated task in
-the same transaction, including bulk clear, weekly-repeat cleanup, rotation
-changes, and workout deletion. Completed records, manual/adopted tasks, and
-generated tasks customized with details/steps are retained and detached.
-Ending a rotation closes its rule and removes only its own future untrained
-dates. Recorded/active sessions, past dates, other rotations, and manually
-scheduled workouts remain intact. Training dates use the account's time zone.
-Moving or replacing a scheduled workout updates its untouched generated task
-in place. Renaming a workout updates untouched generated titles. Manual,
-customized, and completed task details are never rewritten by those updates;
-moving their former schedule detaches them and can offer a new task at the new
-date. A task already authored at the destination is adopted without ownership.
+- Removing a day -- one day, Clear schedule, ending a weekly repeat or a
+  rotation, deleting the saved workout -- removes its unfinished task, however
+  it was customized (time, notes, title, steps). A ticked-off task is a record
+  of training: it stays where it was ticked and is unlinked.
+- Deleting a workout task on the calendar removes its day. Moving it, or
+  choosing another workout, moves the day; onto a day that workout is already
+  planned, the two merge. Making it an ordinary task removes the day. Adding a
+  workout task on the calendar plans the workout on that day.
+- Moving a day moves its task with it. Renaming a workout retitles unfinished
+  tasks still showing the old name.
+- `sync-planner` gives a task to every day never offered one, and to any day
+  from today on that has lost its task. An existing unlinked task for the same
+  workout and day is adopted and linked, never duplicated.
+
+Migration `0087_link_workout_calendar_tasks` repairs data written before the
+link existed: it links each unlinked task to its day, returns tasks moved off
+their day, and deletes unfinished workout tasks whose day no longer exists --
+what deleting a workout used to leave behind. Completed tasks, events and
+tasks without a workout are untouched. It is irreversible (reverse is a
+no-op); take the usual `pg_dump` before deploying it.
 
 Focused validation:
 
 ```sh
-python manage.py test core.test_schedule_planner_sync
+python manage.py test core.test_schedule_planner_sync core.test_workout_calendar_consistency
 python manage.py makemigrations --check --dry-run
 python manage.py check
 ```
@@ -193,18 +200,21 @@ Run the focused tests again with `config.test_postgres` for real concurrent
 sync/removal validation; SQLite deliberately skips PostgreSQL row-lock tests.
 The full `core` suite and schema comparison remain release requirements.
 
-### Existing stale planner tasks need conservative review
+### What 0087 removes, and what it keeps
 
-This migration deliberately does not guess ownership for legacy tasks. Older
-syncs created some tasks and adopted others, but stored no way to distinguish
-them. Already orphaned tasks may therefore remain after upgrading, as may
-customized reminders that the user explicitly changed. Do not bulk-delete all
-workout-category tasks or infer generated ownership from a matching title.
+The 2026-10-28 change linked only tasks it created itself and left every older
+task alone, so deleting a workout in Training kept leaving it on the calendar
+and Home. 0087 settles those rows against the schedule instead of by title:
 
-For an affected account, review the exact unfinished stale task IDs with the
-user, then remove only the confirmed obsolete tasks through the authenticated
-planner UI/API. Preserve completed records and unrelated/custom reminders.
-No production data repair, deployment, or merge is performed by this change.
+- Deleted: unfinished, top-level workout tasks (`kind=task`, `workout` set)
+  whose workout is not scheduled on their date, with their steps. This
+  includes ones given a time or notes, and any written on the calendar for a
+  workout that was never scheduled there.
+- Kept: every completed task, every event, every task without a workout, and
+  every task whose workout is scheduled on its date (now linked).
+
+Run it on a copy of production first if the counts matter; there is no undo
+beyond the pre-deploy backup.
 
 ## Pillow security update (2026-10-28)
 

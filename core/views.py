@@ -54,7 +54,17 @@ from .post_publication import publication_media, PublicationMediaError, remove_p
 from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IDEMPOTENCY_KEY_PARAMETER, IdempotentCreateMixin
 from .activities import ACTIVITIES, label as activity_label, session_trained
-from .schedule_sync import delete_schedule_rows, lock_schedule_rows, untouched_generated_tasks
+from .schedule_sync import (
+    delete_schedule_rows,
+    lock_schedule_rows,
+    lock_workout_days,
+    move_schedule_tasks,
+    plan_workout_task,
+    retitle_workout_tasks,
+    schedule_id_for,
+    schedules_missing_tasks,
+    unplan_workout_task,
+)
 from .serializers import SessionFinishSerializer
 from .params import date_param, id_param
 from .throttles import (
@@ -1420,16 +1430,14 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
 
     def perform_update(self, serializer):
         with transaction.atomic():
-            schedule_ids = lock_schedule_rows(WorkoutSchedule.objects.filter(
+            lock_schedule_rows(WorkoutSchedule.objects.filter(
                 owner=serializer.instance.owner, workout=serializer.instance
             ))
-            generated_ids = list(untouched_generated_tasks(schedule_ids).values_list("pk", flat=True))
+            old_name = WorkoutTemplate.objects.values_list("name", flat=True).get(pk=serializer.instance.pk)
             saved = serializer.save()
-            # These IDs were proven unchanged and locked before the template
-            # name changed. Custom titles and completed records stay personal.
-            PlannerEntry.objects.filter(pk__in=generated_ids).update(
-                title=saved.name, updated_at=timezone.now()
-            )
+            # The calendar shows the workout by name. A title somebody chose
+            # and a finished task's title are kept.
+            retitle_workout_tasks(saved, old_name)
 
     def perform_destroy(self, instance):
         """Deletes a saved workout, unless a rotation in effect is built out of it.
@@ -1453,9 +1461,10 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
 
         Everything else the delete takes is fair. The days it was planned on
         and any weekly repeat of it go with it -- they are plans made of this
-        workout and mean nothing without it. Sessions already trained and
-        completed/manually authored planner tasks survive and are unlinked;
-        unfinished automatically generated tasks follow their removed plans.
+        workout and mean nothing without it -- and so does every unfinished
+        calendar task for it, or the calendar and Home would go on asking for
+        a workout that no longer exists. Sessions already trained and tasks
+        already ticked off survive and are unlinked: they are records.
         """
         today = today_for(instance.owner)
         rotations = list(
@@ -1495,6 +1504,12 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
             delete_schedule_rows(WorkoutSchedule.objects.filter(
                 owner=instance.owner, workout=instance
             ))
+            # A task for this workout on a day it was never planned on, as
+            # the calendar could write before every workout task had a day.
+            PlannerEntry.objects.filter(
+                owner=instance.owner, workout=instance, kind=PlannerEntry.Kind.TASK,
+                parent__isnull=True, completed_at__isnull=True,
+            ).delete()
             instance.delete()
 
     def get_queryset(self):
@@ -1586,35 +1601,16 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         with transaction.atomic():
-            schedule_ids = lock_schedule_rows(self.get_queryset().filter(pk=serializer.instance.pk))
+            lock_schedule_rows(self.get_queryset().filter(pk=serializer.instance.pk))
             previous = WorkoutSchedule.objects.select_related("workout").get(pk=serializer.instance.pk)
             serializer.instance = previous
-            generated_ids = list(untouched_generated_tasks(schedule_ids).values_list("pk", flat=True))
             old_identity = (previous.workout_id, previous.scheduled_date)
+            old_name = previous.workout.name
             saved = serializer.save()
             if old_identity == (saved.workout_id, saved.scheduled_date):
                 return
-
-            # A completed/customized task records its original date; do not
-            # move it with the future plan. It becomes an independent entry.
-            PlannerEntry.objects.filter(source_schedule=saved).exclude(
-                pk__in=generated_ids
-            ).update(source_schedule=None)
-            existing = PlannerEntry.objects.filter(
-                owner=saved.owner, workout=saved.workout,
-                scheduled_date=saved.scheduled_date, kind=PlannerEntry.Kind.TASK,
-            ).exclude(pk__in=generated_ids).first()
-            if existing is not None:
-                # A manual reminder already occupies the destination. Adopt
-                # it without claiming it as generated or overwriting details.
-                PlannerEntry.objects.filter(pk__in=generated_ids).delete()
-            elif generated_ids:
-                PlannerEntry.objects.filter(pk__in=generated_ids).update(
-                    workout=saved.workout, scheduled_date=saved.scheduled_date,
-                    title=saved.workout.name, updated_at=timezone.now(),
-                )
-            saved.planner_synced_at = timezone.now() if existing is not None or generated_ids else None
-            saved.save(update_fields=["planner_synced_at", "updated_at"])
+            # The calendar's task is this day; it goes where the day went.
+            move_schedule_tasks(saved, old_name)
 
     @extend_schema(
         request=PlanWeekSerializer,
@@ -1654,9 +1650,10 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         responses=PlannerEntrySerializer(many=True),
         description=(
             "Put a planner task on every scheduled day in the range that has "
-            "not had one yet, and return the tasks that were created. "
-            "Idempotent: a day whose task already exists, or whose task the "
-            "user deleted, is left alone."
+            "not had one yet, and on every day from today on that has lost "
+            "its task, and return the tasks that were created. Idempotent: a "
+            "day whose task already exists is left alone, and deleting a "
+            "workout's task removes the scheduled day as well."
         ),
     )
     @action(
@@ -1671,8 +1668,9 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
         The client used to do this: read the planner, work out which schedules
         had no task, and post one for each. It could not tell a day the user
         had cleared from a day never offered, so a deleted task came back on
-        the next launch. Only the server can answer that, because only the
-        server remembers having asked.
+        the next launch. Deleting a workout's task now removes its day too, so
+        a day still ahead with no task is one to repair rather than one the
+        user cleared; see `schedules_missing_tasks`.
         """
         serializer = PlannerSyncSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1682,16 +1680,7 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
         created = []
         with transaction.atomic():
-            pending = list(
-                WorkoutSchedule.objects.select_for_update(of=("self",))
-                .filter(
-                    owner=owner,
-                    scheduled_date__gte=start,
-                    scheduled_date__lte=end,
-                    planner_synced_at__isnull=True,
-                )
-                .order_by("scheduled_date", "id")
-            )
+            pending = list(schedules_missing_tasks(owner, start, end, today_for(owner)))
             # Read names after acquiring schedule locks. A joined template
             # would also be locked by SELECT FOR UPDATE and could invert a
             # rename's lock order; a pre-lock join could carry stale names.
@@ -1700,15 +1689,19 @@ class WorkoutScheduleViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
             ).only("id", "name")}
             for schedule in pending:
                 # A task may already exist from before this endpoint, or from a
-                # day the user made by hand. Adopt it rather than colliding
-                # with the uniqueness rule.
+                # day the user made by hand. It is this workout on this day --
+                # the database allows one -- so it is adopted and linked,
+                # rather than colliding with the uniqueness rule or being left
+                # behind when the day is removed.
                 entry = PlannerEntry.objects.filter(
                     owner=owner,
                     workout_id=schedule.workout_id,
                     scheduled_date=schedule.scheduled_date,
                     kind=PlannerEntry.Kind.TASK,
                 ).first()
-                if entry is None:
+                if entry is not None and entry.source_schedule_id is None:
+                    PlannerEntry.objects.filter(pk=entry.pk).update(source_schedule=schedule)
+                elif entry is None:
                     entry = PlannerEntry.objects.create(
                         owner=owner,
                         kind=PlannerEntry.Kind.TASK,
@@ -2291,12 +2284,21 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         return queryset
 
     def perform_create(self, serializer):
+        with transaction.atomic():
+            self._create(serializer)
+
+    def _create(self, serializer):
         # Write-only, so they are not fields of the row being saved.
         interval = serializer.validated_data.pop("repeat_every_days", None)
         weekdays = serializer.validated_data.pop("repeat_on_weekdays", None)
         ends_on = serializer.validated_data.pop("repeat_ends_on", None)
         owner = self.owner_profile()
+        workout = serializer.validated_data.get("workout")
+        lock_workout_days(owner, [(workout and workout.pk, serializer.validated_data.get("scheduled_date"))])
         entry = serializer.save(owner=owner)
+        # A workout put on the calendar is a workout planned for that day, so
+        # Training and Home show it too.
+        plan_workout_task(entry)
 
         if interval is not None or weekdays is not None:
             rule = PlannerRecurrence.objects.create(
@@ -2394,10 +2396,43 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
             )
 
     def perform_update(self, serializer):
-        entry = serializer.save()
-        sync_parent_completion(entry.parent)
+        instance = serializer.instance
+        data = serializer.validated_data
+        workout = data["workout"] if "workout" in data else instance.workout
+        day = data.get("scheduled_date", instance.scheduled_date)
+        with transaction.atomic():
+            # Schedules before tasks, as every schedule write takes them.
+            lock_workout_days(
+                instance.owner,
+                [(instance.workout_id, instance.scheduled_date), (workout and workout.pk, day)],
+                schedule_id=instance.source_schedule_id,
+            )
+            try:
+                instance.refresh_from_db(fields=["source_schedule"])
+            except PlannerEntry.DoesNotExist:
+                # Its day was removed while this waited for the lock, and the
+                # task went with it.
+                raise NotFound()
+            previous_id = schedule_id_for(instance)
+            entry = serializer.save()
+            # Moving a workout on the calendar, or choosing another, changes
+            # the plan Training and Home read; see `plan_workout_task`.
+            plan_workout_task(entry, previous_id)
+            sync_parent_completion(entry.parent)
 
     def perform_destroy(self, instance):
+        with transaction.atomic():
+            lock_workout_days(
+                instance.owner,
+                [(instance.workout_id, instance.scheduled_date)],
+                schedule_id=instance.source_schedule_id,
+            )
+            # Removing a workout from the calendar removes it from the day, so
+            # Training and Home stop showing it as well.
+            unplan_workout_task(instance)
+            self._destroy(instance)
+
+    def _destroy(self, instance):
         # `?scope=following` ends the repeat from this day on; anything else
         # removes this day alone. Default is the narrow one on purpose: a
         # delete that quietly took a year of tasks with it would be the worst
@@ -2410,6 +2445,8 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         # kind of thing that quietly stops working.
         parent = instance.parent
         day = instance.scheduled_date
+        # Already gone when it was an unfinished plan's task; deleting it again
+        # is a no-op.
         super().perform_destroy(instance)
 
         if rule is not None:
