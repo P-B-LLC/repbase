@@ -713,14 +713,13 @@ class WorkoutSchedule(models.Model):
         blank=True,
     )
     notes = models.CharField(max_length=300, blank=True)
-    #: When this day's planner task was created, if it ever was.
+    #: When this day was first given its planner task, if it ever was.
     #:
-    #: Set once and never cleared, including when the task is deleted. The
-    #: planner task is offered once per scheduled day; deleting it is an
-    #: answer, and without a record of having asked, "no task here" and "the
-    #: user removed the task" look identical and it comes back every launch.
-    #: The same reasoning as source_recurrence above: a day the user clears
-    #: stays cleared.
+    #: Deleting the task removes this day as well (see `core.schedule_sync`),
+    #: so a day ahead that has been offered a task and lost it is repaired by
+    #: the next sync. A day already past is left as it is: this is what tells
+    #: "never offered" from "the task went before deleting it unplanned the
+    #: day", which only the past can still hold.
     planner_synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1866,9 +1865,10 @@ class PlannerEntry(models.Model):
         null=True,
         blank=True,
     )
-    # Only tasks created automatically by sync-planner receive this link.
-    # An existing manually authored task may be adopted for a date but must
-    # never become disposable just because a schedule also uses that date.
+    #: The scheduled day this task stands for, so the calendar and Training
+    #: change together: see `core.schedule_sync`. Written by the server --
+    #: when sync-planner creates or adopts a day's task, and when a workout
+    #: task is written on the calendar -- never by a client.
     source_schedule = models.ForeignKey(
         WorkoutSchedule,
         on_delete=remove_unfinished_generated_tasks,

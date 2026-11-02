@@ -1,4 +1,4 @@
-"""Schedule changes remove only the unfinished planner tasks they generated."""
+"""A scheduled day and its planner task change together; finished tasks are records."""
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone as datetime_timezone
@@ -104,20 +104,22 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(self.sync(), [])
         response = self.client.delete(f"/api/v1/planner/{entry.pk}/")
         self.assertEqual(response.status_code, 204)
+        # Deleting the task removed the day it stood for, so nothing is owed.
+        self.assertFalse(WorkoutSchedule.objects.filter(pk=schedule.pk).exists())
         self.assertEqual(self.sync(), [])
-        self.assertFalse(PlannerEntry.objects.filter(source_schedule=schedule).exists())
+        self.assertFalse(PlannerEntry.objects.filter(workout=self.push).exists())
 
-    def test_adopted_manual_task_is_never_claimed_or_deleted_with_schedule(self):
+    def test_adopted_task_is_linked_and_leaves_with_its_schedule(self):
         schedule = self.schedule()
         manual = self.manual_task(self.today)
         self.assertEqual(self.sync(), [])
         manual.refresh_from_db()
-        self.assertIsNone(manual.source_schedule_id)
+        self.assertEqual(manual.source_schedule_id, schedule.pk)
         schedule.refresh_from_db()
         self.assertIsNotNone(schedule.planner_synced_at)
         response = self.client.delete(f"/api/v1/schedules/{schedule.pk}/")
         self.assertEqual(response.status_code, 204)
-        self.assertTrue(PlannerEntry.objects.filter(pk=manual.pk).exists())
+        self.assertFalse(PlannerEntry.objects.filter(pk=manual.pk).exists())
 
     def test_individual_unschedule_removes_only_its_generated_task(self):
         removed_schedule = self.schedule()
@@ -158,8 +160,8 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(self.sync(), [])
         self.assertEqual(PlannerEntry.objects.filter(source_schedule=schedule).count(), 1)
 
-    def test_moving_schedule_does_not_rewrite_manual_completed_or_customized_tasks(self):
-        for offset, kind in enumerate(("manual", "completed", "customized")):
+    def test_moving_schedule_takes_its_task_but_leaves_a_completed_one(self):
+        for offset, kind in enumerate(("manual", "customized")):
             with self.subTest(kind=kind):
                 schedule = self.schedule(offset)
                 old_date = schedule.scheduled_date
@@ -168,12 +170,8 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
                     self.assertEqual(self.sync(old_date), [])
                 else:
                     task = self.generated_task(schedule)
-                    if kind == "completed":
-                        task.completed_at = self.now
-                        task.save(update_fields=["completed_at"])
-                    else:
-                        task.notes = "Personal preparation notes"
-                        task.save(update_fields=["notes"])
+                    task.notes = "Personal preparation notes"
+                    task.save(update_fields=["notes"])
                 old_title = task.title
                 moved_to = old_date + timedelta(days=7)
                 response = self.client.patch(
@@ -181,24 +179,35 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
                 )
                 self.assertEqual(response.status_code, 200, response.data)
                 task.refresh_from_db()
-                self.assertEqual(task.scheduled_date, old_date)
+                self.assertEqual(task.scheduled_date, moved_to)
                 self.assertEqual(task.title, old_title)
-                self.assertEqual(task.workout_id, self.push.pk)
-                self.assertIsNone(task.source_schedule_id)
-                if kind == "completed":
-                    self.assertEqual(task.completed_at, self.now)
+                self.assertEqual(task.source_schedule_id, schedule.pk)
                 if kind == "customized":
                     self.assertEqual(task.notes, "Personal preparation notes")
-                new_tasks = self.sync(moved_to)
-                self.assertEqual(len(new_tasks), 1, new_tasks)
-                self.assertNotEqual(new_tasks[0]["id"], task.pk)
-                replacement = PlannerEntry.objects.get(pk=new_tasks[0]["id"])
-                self.assertEqual(replacement.source_schedule_id, schedule.pk)
+                self.assertEqual(self.sync(moved_to), [])
 
-    def test_template_rename_updates_only_untouched_generated_task_titles(self):
+        schedule = self.schedule(2)
+        old_date = schedule.scheduled_date
+        completed = self.generated_task(schedule)
+        completed.completed_at = self.now
+        completed.save(update_fields=["completed_at"])
+        moved_to = old_date + timedelta(days=7)
+        response = self.client.patch(
+            f"/api/v1/schedules/{schedule.pk}/", {"scheduled_date": str(moved_to)}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        completed.refresh_from_db()
+        self.assertEqual(completed.scheduled_date, old_date)
+        self.assertEqual(completed.completed_at, self.now)
+        self.assertIsNone(completed.source_schedule_id)
+        new_tasks = self.sync(moved_to)
+        self.assertEqual(len(new_tasks), 1, new_tasks)
+        self.assertEqual(PlannerEntry.objects.get(pk=new_tasks[0]["id"]).source_schedule_id, schedule.pk)
+
+    def test_template_rename_retitles_unfinished_tasks_still_showing_the_old_name(self):
         untouched = self.generated_task(self.schedule())
         customized = self.generated_task(self.schedule(1))
-        customized.notes = "Keep these notes with the original plan"
+        customized.notes = "Keep these notes with the plan"
         customized.save(update_fields=["notes"])
         completed = self.generated_task(self.schedule(2))
         completed.completed_at = self.now
@@ -208,16 +217,21 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
         manual.title = self.push.name
         manual.save(update_fields=["title"])
         self.assertEqual(self.sync(manual_schedule.scheduled_date), [])
+        retitled = self.generated_task(self.schedule(4))
+        retitled.title = "Bench focus"
+        retitled.save(update_fields=["title"])
         old_name = self.push.name
         response = self.client.patch(
             f"/api/v1/workouts/{self.push.pk}/", {"name": "Upper body strength"}, format="json"
         )
         self.assertEqual(response.status_code, 200, response.data)
-        untouched.refresh_from_db()
-        self.assertEqual(untouched.title, "Upper body strength")
-        for task in (customized, completed, manual):
+        for task in (untouched, customized, manual):
             task.refresh_from_db()
-            self.assertEqual(task.title, old_name)
+            self.assertEqual(task.title, "Upper body strength")
+        completed.refresh_from_db()
+        self.assertEqual(completed.title, old_name)
+        retitled.refresh_from_db()
+        self.assertEqual(retitled.title, "Bench focus")
 
     def test_clear_removes_generated_tasks_in_past_present_and_future(self):
         generated_ids = [
@@ -251,13 +265,16 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(session.status, "completed")
         self.assertEqual(session.workout_id, self.push.pk)
 
-    def test_legacy_unlinked_task_is_not_guess_deleted(self):
+    def test_clear_removes_a_legacy_task_on_a_cleared_day_only(self):
         legacy = self.manual_task(self.today)
         schedule = self.schedule(planner_synced_at=self.now)
+        elsewhere = self.manual_task(self.today, workout=self.pull)
         response = self.client.post(self.CLEAR, {}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
         self.assertFalse(WorkoutSchedule.objects.filter(pk=schedule.pk).exists())
-        self.assertTrue(PlannerEntry.objects.filter(pk=legacy.pk).exists())
+        self.assertFalse(PlannerEntry.objects.filter(pk=legacy.pk).exists())
+        # Not the day of anything cleared; the 0087 repair is what removes it.
+        self.assertTrue(PlannerEntry.objects.filter(pk=elsewhere.pk).exists())
 
     def test_clear_and_individual_delete_are_owner_scoped(self):
         _, other, _ = self.create_account("schedule-bystander")
@@ -283,21 +300,24 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
         self.assertTrue(WorkoutSchedule.objects.filter(pk=schedule.pk).exists())
         self.assertTrue(PlannerEntry.objects.filter(pk=task.pk).exists())
 
-    def test_client_cannot_claim_a_manual_task_as_schedule_generated(self):
-        schedule = self.schedule()
+    def test_client_cannot_choose_which_schedule_a_task_stands_for(self):
+        other_day = self.schedule(1, workout=self.pull)
         response = self.client.post(
             "/api/v1/planner/",
             {
                 "title": "Written by me", "kind": "task", "category": "workout",
                 "scheduled_date": str(self.today), "workout": self.push.pk,
-                "source_schedule": schedule.pk,
+                "source_schedule": other_day.pk,
             },
             format="json",
         )
         self.assertEqual(response.status_code, 201, response.data)
         task = PlannerEntry.objects.get(pk=response.data["id"])
-        self.assertIsNone(task.source_schedule_id)
+        # Linked to its own day, which the server planned, never the one named.
+        own_day = WorkoutSchedule.objects.get(owner=self.profile, workout=self.push, scheduled_date=self.today)
+        self.assertEqual(task.source_schedule_id, own_day.pk)
         self.assertNotIn("source_schedule", response.data)
+        self.assertTrue(WorkoutSchedule.objects.filter(pk=other_day.pk).exists())
 
     def test_schedule_delete_and_planner_cleanup_roll_back_together(self):
         schedule = self.schedule()
@@ -311,39 +331,33 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
         self.assertTrue(WorkoutSchedule.objects.filter(pk=schedule_id).exists())
         self.assertTrue(PlannerEntry.objects.filter(pk=task.pk, source_schedule_id=schedule_id).exists())
 
-    def test_moved_generated_task_is_preserved_and_detached(self):
+    def test_moving_a_task_moves_its_schedule(self):
         schedule = self.schedule()
         task = self.generated_task(schedule)
+        moved_to = self.today + timedelta(days=2)
         response = self.client.patch(
-            f"/api/v1/planner/{task.pk}/",
-            {"scheduled_date": str(self.today + timedelta(days=2))},
-            format="json",
+            f"/api/v1/planner/{task.pk}/", {"scheduled_date": str(moved_to)}, format="json",
         )
         self.assertEqual(response.status_code, 200, response.data)
+        schedule.refresh_from_db()
+        self.assertEqual(schedule.scheduled_date, moved_to)
         self.assertEqual(self.client.delete(f"/api/v1/schedules/{schedule.pk}/").status_code, 204)
-        task.refresh_from_db()
-        self.assertEqual(task.scheduled_date, self.today + timedelta(days=2))
-        self.assertIsNone(task.source_schedule_id)
+        self.assertFalse(PlannerEntry.objects.filter(pk=task.pk).exists())
 
-    def test_generated_task_with_authored_steps_is_preserved(self):
+    def test_task_with_steps_leaves_with_its_schedule(self):
         schedule = self.schedule()
         task = self.generated_task(schedule)
-        completed_step = PlannerEntry.objects.create(
-            owner=self.profile, parent=task, kind="task", category="other",
-            title="Warm up", scheduled_date=self.today, completed_at=self.now,
-        )
-        unfinished_step = PlannerEntry.objects.create(
-            owner=self.profile, parent=task, kind="task", category="other",
-            title="Record technique notes", scheduled_date=self.today,
-        )
+        steps = [
+            PlannerEntry.objects.create(
+                owner=self.profile, parent=task, kind="task", category="other",
+                title=title, scheduled_date=self.today, completed_at=done,
+            )
+            for title, done in (("Warm up", self.now), ("Record technique notes", None))
+        ]
         self.assertEqual(self.client.delete(f"/api/v1/schedules/{schedule.pk}/").status_code, 204)
-        task.refresh_from_db()
-        self.assertIsNone(task.source_schedule_id)
-        completed_step.refresh_from_db()
-        self.assertEqual(completed_step.completed_at, self.now)
-        self.assertTrue(PlannerEntry.objects.filter(pk=unfinished_step.pk, parent=task).exists())
+        self.assertFalse(PlannerEntry.objects.filter(pk__in=[task.pk, *(step.pk for step in steps)]).exists())
 
-    def test_customized_generated_task_is_preserved(self):
+    def test_customized_task_leaves_with_its_schedule(self):
         updates = (
             {"title": "Technique focus"},
             {"notes": "Go light on my shoulder"},
@@ -356,28 +370,27 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
                 response = self.client.patch(f"/api/v1/planner/{task.pk}/", update, format="json")
                 self.assertEqual(response.status_code, 200, response.data)
                 self.assertEqual(self.client.delete(f"/api/v1/schedules/{schedule.pk}/").status_code, 204)
-                task.refresh_from_db()
-                self.assertIsNone(task.source_schedule_id)
+                self.assertFalse(PlannerEntry.objects.filter(pk=task.pk).exists())
 
-    def test_deleting_template_cleans_generated_tasks_but_keeps_manual_and_history(self):
+    def test_deleting_template_cleans_its_unfinished_tasks_but_keeps_history(self):
         pending = self.generated_task(self.schedule())
         completed = self.generated_task(self.schedule(1))
         completed.completed_at = self.now
         completed.save(update_fields=["completed_at"])
-        manual = self.manual_task(self.today + timedelta(days=2))
+        unplanned = self.manual_task(self.today + timedelta(days=2))
+        other = self.manual_task(self.today + timedelta(days=2), workout=self.pull)
         session = WorkoutSession.objects.create(repbase_user=self.profile, workout=self.push, status="completed")
         response = self.client.delete(f"/api/v1/workouts/{self.push.pk}/")
         self.assertEqual(response.status_code, 204)
-        self.assertFalse(PlannerEntry.objects.filter(pk=pending.pk).exists())
+        self.assertFalse(PlannerEntry.objects.filter(pk__in=[pending.pk, unplanned.pk]).exists())
         completed.refresh_from_db()
         self.assertIsNone(completed.source_schedule_id)
         self.assertIsNone(completed.workout_id)
         self.assertEqual(completed.completed_at, self.now)
-        manual.refresh_from_db()
-        self.assertIsNone(manual.workout_id)
+        self.assertTrue(PlannerEntry.objects.filter(pk=other.pk, workout=self.pull).exists())
         self.assertTrue(WorkoutSession.objects.filter(pk=session.pk).exists())
 
-    def test_ending_weekly_repeat_cleans_only_its_future_generated_tasks(self):
+    def test_ending_weekly_repeat_cleans_only_its_future_tasks(self):
         monday = self.today - timedelta(days=self.today.weekday())
         recurrence = WorkoutRecurrence.objects.create(
             owner=self.profile, workout=self.push, weekday=self.today.weekday(),
@@ -392,7 +405,8 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 204)
         self.assertTrue(PlannerEntry.objects.filter(pk=current.pk).exists())
         self.assertFalse(PlannerEntry.objects.filter(pk=future.pk).exists())
-        self.assertTrue(PlannerEntry.objects.filter(pk=manual.pk).exists())
+        # Adopted by the sync, so it was that day's task and goes with it.
+        self.assertFalse(PlannerEntry.objects.filter(pk=manual.pk).exists())
 
     def test_ending_rotation_removes_own_future_untrained_rows_and_tasks(self):
         cycle = self.cycle()
@@ -515,16 +529,22 @@ class SchedulePlannerSyncTests(RepbaseAPITestMixin, APITestCase):
         theirs.refresh_from_db()
         self.assertIsNone(theirs.effective_until)
 
-    def test_shifting_rotation_preserves_adopted_manual_task(self):
+    def test_shifting_rotation_moves_the_calendar_with_it(self):
         cycle = self.cycle()
         schedule = self.schedule(source_cycle=cycle)
         manual = self.manual_task(schedule.scheduled_date)
         self.assertEqual(self.sync(), [])
         response = self.client.post(f"/api/v1/cycles/{cycle.pk}/shift/", {"days": 1}, format="json")
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertTrue(PlannerEntry.objects.filter(pk=manual.pk).exists())
-        manual.refresh_from_db()
-        self.assertIsNone(manual.source_schedule_id)
+        # The day it stood for moved, so the task does not stay behind on it.
+        self.assertFalse(PlannerEntry.objects.filter(pk=manual.pk).exists())
+        planned = set(WorkoutSchedule.objects.filter(owner=self.profile).values_list("scheduled_date", flat=True))
+        self.sync(self.today, self.today + timedelta(days=7))
+        on_calendar = set(PlannerEntry.objects.filter(owner=self.profile, workout=self.push).values_list("scheduled_date", flat=True))
+        self.assertEqual(
+            {day for day in on_calendar if day <= self.today + timedelta(days=7)},
+            {day for day in planned if day <= self.today + timedelta(days=7)},
+        )
 
 
 @skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row locks")
