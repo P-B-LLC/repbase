@@ -12,7 +12,7 @@ from .models import Cookbook, SavedFoodMeal, SavedFoodIngredient, Post, PostCook
 from .tests import RepbaseAPITestMixin
 
 
-class CookbookTests(RepbaseAPITestMixin, APITestCase):
+class CookbookFixtures(RepbaseAPITestMixin):
     def setUp(self):
         self.user, self.profile, self.token = self.create_account("cookbook-owner")
         self.other_user, self.other, self.other_token = self.create_account("cookbook-reader")
@@ -37,6 +37,8 @@ class CookbookTests(RepbaseAPITestMixin, APITestCase):
         return self.client.post("/api/v1/social/posts/", {"kind": "cookbook", "source_id": self.book.pk,
                                 "caption": "My dinners", "visibility": visibility}, format="json")
 
+
+class CookbookTests(CookbookFixtures, APITestCase):
     def test_recipe_requires_a_destination_and_rejects_null(self):
         data = self.recipe_data()
         data.pop("cookbook")
@@ -226,6 +228,224 @@ class CookbookTests(RepbaseAPITestMixin, APITestCase):
         self.assertFalse(Cookbook.objects.filter(owner_id=self.profile.pk).exists())
 
 
+class CookbookLifecycleTests(CookbookFixtures, APITestCase):
+    """Renames, deletes and the edges of sharing a cookbook."""
+
+    def setUp(self):
+        super().setUp()
+        self.third_user, self.third, self.third_token = self.create_account("cookbook-reposter")
+
+    def book_url(self, book=None):
+        return f"/api/v1/food/cookbooks/{(book or self.book).pk}/"
+
+    def recipe_with(self, name, ingredients, instructions="Simmer."):
+        recipe = SavedFoodMeal.objects.create(owner=self.profile, cookbook=self.book, name=name,
+                                              cooking_instructions=instructions)
+        for position, (food, calories) in enumerate(ingredients, start=1):
+            SavedFoodIngredient.objects.create(saved_meal=recipe, position=position, name=food,
+                                               servings="2.00", calories=calories)
+        return recipe
+
+    def published_as(self, token):
+        self.add()
+        post_id = self.publish().data["id"]
+        self.authenticate(token)
+        return post_id
+
+    def age(self, *books):
+        from datetime import datetime, timezone
+        old = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        Cookbook.objects.filter(pk__in=[b.pk for b in books]).update(updated_at=old)
+        return old
+
+    def updated(self, book):
+        return Cookbook.objects.get(pk=book.pk).updated_at
+
+    def test_rename_trims_and_rejects_another_cookbooks_name_in_any_case(self):
+        Cookbook.objects.create(owner=self.profile, name="Lunches")
+        self.assertEqual(self.client.patch(self.book_url(), {"name": "LUNCHES"}, format="json").status_code, 400)
+        self.assertEqual(self.client.patch(self.book_url(), {"name": "   "}, format="json").status_code, 400)
+        self.add()
+        response = self.client.patch(self.book_url(), {"name": "  WEEKNIGHT favorites "}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["name"], "WEEKNIGHT favorites")
+        self.assertEqual(response.data["recipe_count"], 1)
+        self.assertEqual(Cookbook.objects.get(pk=self.book.pk).name, "WEEKNIGHT favorites")
+
+    def test_names_are_unique_per_account_not_across_accounts(self):
+        response = self.client.post("/api/v1/food/cookbooks/", {"name": self.other_book.name}, format="json")
+        self.assertEqual(response.status_code, 201, response.data)
+
+    def test_cookbook_name_is_limited_to_eighty_characters(self):
+        self.assertEqual(self.client.post("/api/v1/food/cookbooks/", {"name": "C" * 81}, format="json").status_code, 400)
+        self.assertEqual(self.client.post("/api/v1/food/cookbooks/", {"name": "C" * 80}, format="json").status_code, 201)
+
+    def test_another_accounts_cookbook_cannot_be_renamed(self):
+        response = self.client.patch(self.book_url(self.other_book), {"name": "Mine now"}, format="json")
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(Cookbook.objects.get(pk=self.other_book.pk).name, "Private recipes")
+
+    def test_empty_cookbook_can_be_deleted(self):
+        self.assertEqual(self.client.delete(self.book_url()).status_code, 204)
+        self.assertFalse(Cookbook.objects.filter(pk=self.book.pk).exists())
+        self.assertTrue(Cookbook.objects.filter(pk=self.other_book.pk).exists())
+
+    def test_cookbook_becomes_deletable_once_its_last_recipe_is_deleted(self):
+        recipe = self.add().data
+        self.assertEqual(self.client.delete(self.book_url()).status_code, 400)
+        self.assertEqual(self.client.delete(f"/api/v1/food/saved-meals/{recipe['id']}/").status_code, 204)
+        self.assertEqual(self.client.delete(self.book_url()).status_code, 204)
+
+    def test_recipe_writes_mark_every_affected_cookbook_as_updated(self):
+        lunches = Cookbook.objects.create(owner=self.profile, name="Lunches")
+        old = self.age(self.book, lunches)
+        recipe = self.add().data
+        self.assertGreater(self.updated(self.book), old)
+        self.assertEqual(self.updated(lunches), old)
+
+        old = self.age(self.book, lunches)
+        response = self.client.patch(f"/api/v1/food/saved-meals/{recipe['id']}/", {"cookbook": lunches.pk}, format="json")
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertGreater(self.updated(self.book), old)
+        self.assertGreater(self.updated(lunches), old)
+
+        old = self.age(self.book, lunches)
+        self.assertEqual(self.client.delete(f"/api/v1/food/saved-meals/{recipe['id']}/").status_code, 204)
+        self.assertGreater(self.updated(lunches), old)
+        self.assertEqual(self.updated(self.book), old)
+
+    def test_recipe_can_move_out_of_a_full_cookbook_and_stay_put_in_it(self):
+        full = Cookbook.objects.create(owner=self.profile, name="Full")
+        self.fill(full, 19)
+        recipe = self.add(cookbook=full.pk).data
+        stay = self.client.patch(f"/api/v1/food/saved-meals/{recipe['id']}/", {"cookbook": full.pk}, format="json")
+        self.assertEqual(stay.status_code, 200, stay.data)
+        moved = self.client.patch(f"/api/v1/food/saved-meals/{recipe['id']}/", {"cookbook": self.book.pk}, format="json")
+        self.assertEqual(moved.status_code, 200, moved.data)
+        self.assertEqual(moved.data["cookbook"], self.book.pk)
+        self.assertEqual((full.recipes.count(), self.book.recipes.count()), (19, 1))
+
+    def test_recipe_cannot_be_moved_into_another_accounts_cookbook(self):
+        recipe = self.add().data
+        response = self.client.patch(f"/api/v1/food/saved-meals/{recipe['id']}/", {"cookbook": self.other_book.pk}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(SavedFoodMeal.objects.get(pk=recipe["id"]).cookbook_id, self.book.pk)
+        self.assertFalse(self.other_book.recipes.exists())
+
+    def test_recipe_needs_at_least_one_ingredient(self):
+        data = self.recipe_data()
+        data["ingredients"] = []
+        self.assertEqual(self.client.post("/api/v1/food/saved-meals/", data, format="json").status_code, 400)
+        self.assertFalse(SavedFoodMeal.objects.exists())
+
+    def test_cannot_publish_another_accounts_cookbook(self):
+        SavedFoodMeal.objects.create(owner=self.other, cookbook=self.other_book, name="Secret")
+        response = self.client.post("/api/v1/social/posts/", {"kind": "cookbook", "source_id": self.other_book.pk,
+                                    "caption": "Not mine", "visibility": "public"}, format="json")
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(Post.objects.exists())
+
+    def test_cannot_publish_a_recipe_without_ingredients(self):
+        self.add()
+        SavedFoodMeal.objects.create(owner=self.profile, cookbook=self.book, name="Unfinished")
+        self.assertEqual(self.publish().status_code, 400)
+        self.assertFalse(PostCookbook.objects.exists())
+
+    def test_published_snapshot_carries_only_recipe_content(self):
+        post_id = self.published_as(self.other_token)
+        recipe = self.client.get(f"/api/v1/social/posts/{post_id}/cookbook/").data["recipes"][0]
+        self.assertEqual(set(recipe), {"name", "cooking_instructions", "ingredients"})
+        self.assertEqual(set(recipe["ingredients"][0]),
+                         {"name", "servings", "calories", "protein_grams", "carbohydrate_grams", "fat_grams"})
+
+    def test_feed_card_carries_only_the_summary(self):
+        post_id = self.published_as(self.other_token)
+        cards = self.client.get("/api/v1/social/posts/").data["results"]
+        card = next(card for card in cards if card["id"] == post_id)
+        self.assertEqual(card["kind"], "cookbook")
+        self.assertEqual(card["cookbook"], {"name": "Weeknight favorites", "recipe_count": 1})
+        self.assertFalse(card["viewer_saved"])
+
+    def test_posts_without_a_cookbook_have_no_cookbook_to_open_or_save(self):
+        from .fixtures_for_tests import meal_post
+        post = meal_post(self.other)
+        self.assertEqual(self.client.get(f"/api/v1/social/posts/{post.pk}/cookbook/").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/v1/social/posts/{post.pk}/save-cookbook/").status_code, 404)
+        self.assertEqual(Cookbook.objects.filter(owner=self.profile).count(), 1)
+
+    def test_saved_copy_keeps_every_recipe_ingredient_and_method_in_order(self):
+        self.recipe_with("Curry", [("Rice", "200.00"), ("Lentils", "180.00")], "Simmer for twenty minutes.")
+        self.recipe_with("Salad", [("Lettuce", "15.00")], "")
+        post_id = self.publish().data["id"]
+        self.authenticate(self.other_token)
+        response = self.client.post(f"/api/v1/social/posts/{post_id}/save-cookbook/")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual((response.data["recipe_count"], response.data["capacity"]), (2, 20))
+        copy = Cookbook.objects.get(pk=response.data["id"])
+        self.assertEqual((copy.owner_id, copy.source_post_id), (self.other.pk, post_id))
+        curry, salad = copy.recipes.order_by("name")
+        self.assertEqual(curry.owner_id, self.other.pk)
+        self.assertEqual(curry.cooking_instructions, "Simmer for twenty minutes.")
+        self.assertEqual(salad.cooking_instructions, "")
+        self.assertEqual([(i.position, i.name, str(i.servings), str(i.calories)) for i in curry.ingredients.all()],
+                         [(1, "Rice", "2.00", "200.00"), (2, "Lentils", "2.00", "180.00")])
+        self.assertEqual(self.client.get(f"/api/v1/food/saved-meals/?cookbook={copy.pk}").data["count"], 2)
+
+    def test_saved_copy_gets_a_free_name_when_the_reader_already_uses_it(self):
+        Cookbook.objects.create(owner=self.other, name="weeknight FAVORITES")
+        post_id = self.published_as(self.other_token)
+        response = self.client.post(f"/api/v1/social/posts/{post_id}/save-cookbook/")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["name"], "Weeknight favorites 2")
+
+    def test_free_name_for_a_full_length_cookbook_name_stays_within_the_limit(self):
+        long_name = "N" * 80
+        Cookbook.objects.filter(pk=self.book.pk).update(name=long_name)
+        Cookbook.objects.create(owner=self.other, name=long_name)
+        post_id = self.published_as(self.other_token)
+        response = self.client.post(f"/api/v1/social/posts/{post_id}/save-cookbook/")
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data["name"], "N" * 78 + " 2")
+
+    def test_saving_through_a_repost_copies_the_original_cookbook(self):
+        post_id = self.published_as(self.third_token)
+        repost = self.client.post(f"/api/v1/social/posts/{post_id}/repost/")
+        self.assertEqual(repost.status_code, 200, repost.data)
+        repost_id = Post.objects.get(author=self.third, repost_of_id=post_id).pk
+        self.authenticate(self.other_token)
+        detail = self.client.get(f"/api/v1/social/posts/{repost_id}/cookbook/")
+        self.assertEqual(detail.status_code, 200, detail.data)
+        self.assertEqual(detail.data["name"], "Weeknight favorites")
+        saved = self.client.post(f"/api/v1/social/posts/{repost_id}/save-cookbook/")
+        self.assertEqual(saved.status_code, 201, saved.data)
+        self.assertEqual(Cookbook.objects.get(pk=saved.data["id"]).source_post_id, post_id)
+        again = self.client.post(f"/api/v1/social/posts/{post_id}/save-cookbook/")
+        self.assertEqual((again.status_code, again.data["id"]), (200, saved.data["id"]))
+
+    def test_saved_copy_outlives_the_original_post(self):
+        post_id = self.published_as(self.other_token)
+        copy_id = self.client.post(f"/api/v1/social/posts/{post_id}/save-cookbook/").data["id"]
+        Post.objects.filter(pk=post_id).delete()
+        copy = Cookbook.objects.get(pk=copy_id)
+        self.assertIsNone(copy.source_post_id)
+        self.assertEqual(copy.recipes.count(), 1)
+
+    def test_author_blocking_the_reader_hides_and_protects_the_publication(self):
+        post_id = self.published_as(self.other_token)
+        Block.objects.create(blocker=self.profile, blocked=self.other)
+        self.assertEqual(self.client.get(f"/api/v1/social/posts/{post_id}/cookbook/").status_code, 404)
+        self.assertEqual(self.client.post(f"/api/v1/social/posts/{post_id}/save-cookbook/").status_code, 404)
+        self.assertFalse(Cookbook.objects.filter(owner=self.other, source_post_id=post_id).exists())
+
+    def test_cookbook_endpoints_require_sign_in(self):
+        post_id = self.published_as(self.other_token)
+        self.client.credentials()
+        for method, url in (("get", "/api/v1/food/cookbooks/"), ("post", "/api/v1/food/cookbooks/"),
+                            ("get", f"/api/v1/social/posts/{post_id}/cookbook/"),
+                            ("post", f"/api/v1/social/posts/{post_id}/save-cookbook/")):
+            self.assertEqual(getattr(self.client, method)(url).status_code, 401, url)
+
+
 @skipUnless(connection.vendor == "postgresql", "Requires real row locks")
 class ConcurrentCookbookTests(RepbaseAPITestMixin, TransactionTestCase):
     def test_two_simultaneous_saves_cannot_claim_the_twentieth_slot(self):
@@ -255,6 +475,8 @@ class CookbookMigrationTests(TransactionTestCase):
             old = executor.loader.project_state([("core", "0086_media_posts")]).apps
             user = old.get_model("auth", "User").objects.create(username="migration-cook")
             owner = old.get_model("core", "RepbaseUser").objects.create(user_id=user.pk, height_cm=180, weight_kg=80)
+            no_recipes = old.get_model("auth", "User").objects.create(username="migration-no-recipes")
+            empty = old.get_model("core", "RepbaseUser").objects.create(user_id=no_recipes.pk, height_cm=170, weight_kg=70)
             Recipe = old.get_model("core", "SavedFoodMeal")
             Ingredient = old.get_model("core", "SavedFoodIngredient")
             original_ids = []
@@ -269,6 +491,9 @@ class CookbookMigrationTests(TransactionTestCase):
             self.assertEqual(SavedFoodIngredient.objects.count(), 43)
             self.assertFalse(SavedFoodMeal.objects.filter(cookbook__isnull=True).exists())
             self.assertEqual(SavedFoodMeal.objects.first().cooking_instructions, "Keep this method.")
+            self.assertEqual(sorted(Cookbook.objects.filter(owner_id=owner.pk).values_list("name", flat=True)),
+                             ["My recipes", "My recipes 2", "My recipes 3"])
+            self.assertFalse(Cookbook.objects.filter(owner_id=empty.pk).exists())
         finally:
             executor = MigrationExecutor(connection)
             executor.migrate(executor.loader.graph.leaf_nodes())
