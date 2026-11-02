@@ -27,7 +27,9 @@ from .activities import (
 )
 from .media import signed_media_url
 from .moderation import check_public_content
+from .cookbook_serializers import PostCookbookSerializer
 from .params import MAX_ID
+from .food_nutrition import FOOD_METADATA_FIELDS, FoodMetadataSerializerMixin
 from .uploads import check_image_dimensions, without_metadata
 from .throttles import FailedSignInLimit
 
@@ -244,7 +246,7 @@ class NutritionGoalSerializer(serializers.ModelSerializer):
         read_only_fields = ["updated_at"]
 
 
-class FoodEntrySerializer(serializers.ModelSerializer):
+class FoodEntrySerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     """One food. Nutrition is per serving; totals are derived, never stored,
     so a serving count and its totals cannot drift apart."""
 
@@ -258,6 +260,7 @@ class FoodEntrySerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "meal",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -364,11 +367,12 @@ class FoodMealSerializer(serializers.ModelSerializer):
         return self._total(meal, "fat_grams")
 
 
-class SavedFoodIngredientSerializer(serializers.ModelSerializer):
+class SavedFoodIngredientSerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = SavedFoodIngredient
         fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -386,7 +390,9 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
     #: Bounded, because applying a saved meal copies every ingredient onto
     #: each of up to 31 days in one transaction.
-    ingredients = SavedFoodIngredientSerializer(many=True, max_length=100)
+    ingredients = SavedFoodIngredientSerializer(many=True, max_length=100, allow_empty=False)
+    cookbook = serializers.IntegerField(source="cookbook_id", min_value=1, max_value=MAX_ID, required=False,
+        help_text="Required on creation. Omit on edits to keep the recipe in its existing cookbook.")
     #: Declared rather than left to the model field, which is a TextField and
     #: would otherwise be exposed with no ceiling at all. The number matches
     #: the one a post's instructions are held to, so a recipe copied out of a
@@ -399,9 +405,11 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SavedFoodMeal
+        validators = []  # Name checks below are case-insensitive and rechecked under the owner lock.
         fields = [
             "id",
             "name",
+            "cookbook",
             "ingredients",
             "cooking_instructions",
             "created_at",
@@ -420,31 +428,48 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         owner = self.context["request"].user.repbase_profile
+        if self.instance is None and "cookbook_id" not in attrs:
+            raise serializers.ValidationError({"cookbook": "Choose a cookbook for this recipe."})
         name = attrs.get("name", getattr(self.instance, "name", ""))
-        clash = SavedFoodMeal.objects.filter(owner=owner, name__iexact=name)
+        cookbook_id = attrs.get("cookbook_id", getattr(self.instance, "cookbook_id", None))
+        clash = SavedFoodMeal.objects.filter(owner=owner, cookbook_id=cookbook_id, name__iexact=name)
         if self.instance:
             clash = clash.exclude(pk=self.instance.pk)
         if clash.exists():
             raise serializers.ValidationError(
-                {"name": "You already have a saved meal with this name."}
+                {"name": "You already have a recipe with this name in this cookbook."}
             )
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
+        from .cookbooks import destination_for, lock_owner, touch
+        owner = lock_owner(validated_data["owner"])
+        self.validate(validated_data)
+        validated_data["cookbook"] = destination_for(owner, validated_data.pop("cookbook_id"))
         ingredients = validated_data.pop("ingredients", [])
         saved = SavedFoodMeal.objects.create(**validated_data)
         self._replace_ingredients(saved, ingredients)
+        touch([saved.cookbook_id])
         return saved
 
     @transaction.atomic
     def update(self, instance, validated_data):
+        from .cookbooks import destination_for, lock_owner, touch
+        lock_owner(instance.owner)
+        instance = SavedFoodMeal.objects.select_for_update().get(pk=instance.pk)
+        self.validate(validated_data)
+        previous_cookbook = instance.cookbook_id
+        validated_data["cookbook"] = destination_for(
+            instance.owner, validated_data.pop("cookbook_id", instance.cookbook_id), excluding=instance.pk
+        )
         ingredients = validated_data.pop("ingredients", None)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()
         if ingredients is not None:
             self._replace_ingredients(instance, ingredients)
+        touch([previous_cookbook, instance.cookbook_id])
         return instance
 
     def _replace_ingredients(self, saved, ingredients):
@@ -503,11 +528,11 @@ class EnsureFoodDaySerializer(serializers.Serializer):
     date = serializers.DateField()
 
 
-class RecentFoodSerializer(serializers.Serializer):
+class RecentFoodSerializer(FoodMetadataSerializerMixin, serializers.Serializer):
     """A food the user has logged before, for the picker."""
 
     name = serializers.CharField()
-    servings = serializers.DecimalField(max_digits=6, decimal_places=2)
+    servings = serializers.DecimalField(max_digits=10, decimal_places=6)
     calories = serializers.DecimalField(max_digits=8, decimal_places=2)
     protein_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
     carbohydrate_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
@@ -3257,7 +3282,7 @@ class PostWorkoutSerializer(serializers.ModelSerializer):
         return VOLUME_DECIMAL.to_representation(sum(volumes))
 
 
-class PostMealEntrySerializer(serializers.ModelSerializer):
+class PostMealEntrySerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     """One food inside a posted meal, per serving with its servings beside it."""
 
     total_calories = serializers.SerializerMethodField()
@@ -3269,6 +3294,7 @@ class PostMealEntrySerializer(serializers.ModelSerializer):
         model = PostMealEntry
         fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -3283,6 +3309,7 @@ class PostMealEntrySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -3494,6 +3521,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
     workout = PostWorkoutSerializer(read_only=True, allow_null=True)
     meal = PostMealSerializer(read_only=True, allow_null=True)
     planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
+    cookbook = PostCookbookSerializer(read_only=True, allow_null=True)
     image_url = serializers.SerializerMethodField()
     feed_image_url = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
@@ -3512,6 +3540,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
             "workout",
             "meal",
             "planner",
+            "cookbook",
             "created_at",
             "published_at",
         ]
@@ -3749,6 +3778,7 @@ class PostSerializer(serializers.ModelSerializer):
     workout = PostWorkoutSerializer(read_only=True, allow_null=True)
     meal = PostMealSerializer(read_only=True, allow_null=True)
     planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
+    cookbook = PostCookbookSerializer(read_only=True, allow_null=True)
     source_id = serializers.SerializerMethodField()
     #: True when this reader has already copied the post into their own.
     #:
@@ -3800,6 +3830,7 @@ class PostSerializer(serializers.ModelSerializer):
             "workout",
             "meal",
             "planner",
+            "cookbook",
             "source_id",
             "viewer_follows_author",
             "shows_weights",
@@ -4986,7 +5017,19 @@ class PersonalizationSerializer(serializers.ModelSerializer):
         return value
 
 
-class FoodSearchResultSerializer(serializers.Serializer):
+class FoodDiscoveryResultSerializer(serializers.Serializer):
+    """A search candidate, not nutrition and never a loggable food entry.
+
+    Resolve source_id through food/search with barcode:<GTIN> before showing
+    portions or saving. The search index does not preserve a reliable basis.
+    """
+
+    source_id = serializers.CharField()
+    name = serializers.CharField()
+    brand = serializers.CharField(allow_blank=True)
+
+
+class FoodSearchResultSerializer(FoodMetadataSerializerMixin, serializers.Serializer):
     """One food from the public catalogue, in the shape the app logs.
 
     Deliberately the same four figures a FoodEntry holds, and nothing else the
@@ -4994,6 +5037,8 @@ class FoodSearchResultSerializer(serializers.Serializer):
     reason every other nutrition figure here is: a calorie count that travels
     as a JSON number comes back from some parsers as 232.99999999999997.
     """
+
+    optional_response_fields = ("reference_quantity", "reference_unit", "nutrients")
 
     source_id = serializers.CharField()
     name = serializers.CharField()

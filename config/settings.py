@@ -509,8 +509,9 @@ else:
         },
     }
 
-# Open Food Facts: no API key. Shared database gates bound upstream requests
-# across workers; cached lookups do not consume provider allowance.
+# Open Food Facts: no API key. Shared rolling-minute gates permit a modest
+# burst (10 searches / 15 product reads) across workers; cached lookups do not
+# consume provider allowance. Discovery uses a separately pinned public host.
 OPEN_FOOD_FACTS_ORIGIN = os.getenv("OPEN_FOOD_FACTS_ORIGIN", "https://world.openfoodfacts.org")
 OPEN_FOOD_FACTS_USER_AGENT = os.getenv("OPEN_FOOD_FACTS_USER_AGENT", "Rytivo/1.0 (support@rytivo.app)")
 

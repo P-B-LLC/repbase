@@ -50,9 +50,12 @@ from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
+from .food_nutrition import food_metadata_snapshot
 from .post_publication import publication_media, PublicationMediaError, remove_profile_photo
 from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IDEMPOTENCY_KEY_PARAMETER, IdempotentCreateMixin
+from .cookbook_serializers import (CookbookDestinationSerializer, CookbookSerializer,
+                                   PublishedCookbookSerializer)
 from .activities import ACTIVITIES, label as activity_label, session_trained
 from .schedule_sync import (
     delete_schedule_rows,
@@ -75,6 +78,7 @@ from .throttles import (
 )
 from .videos import ReceivedVideo, VideoUploadParser, attach_video, remove_video
 from .models import (
+    Cookbook,
     CYCLE_MATERIALIZE_DAYS,
     BodyWeightEntry,
     DailyStepCount,
@@ -203,6 +207,7 @@ from .serializers import (
     CreatePostSerializer,
     PostCommentSerializer,
     FoodSearchResultSerializer,
+    FoodDiscoveryResultSerializer,
     PasswordResetConfirmSerializer,
     PersonalizationSerializer,
     PasswordResetRequestSerializer,
@@ -421,6 +426,51 @@ class PersonalizationView(APIView):
         return record
 
 
+class FoodDiscoverView(APIView):
+    """Discover public products; fetch authoritative barcode details on selection."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "food_search"
+    throttle_classes = [ScopedRateThrottle]
+
+    @extend_schema(
+        operation_id="food_discover_list",
+        parameters=[OpenApiParameter(
+            name="q", type=str, location=OpenApiParameter.QUERY, required=True,
+            description="Submit a food/brand search (two characters minimum), not every keystroke.",
+        )],
+        responses={200: FoodDiscoveryResultSerializer(many=True)},
+        description=(
+            "Searches the Open Food Facts index for product identities only. "
+            "Candidates contain no nutrition or serving basis. Before offering portions "
+            "or logging, resolve the source_id barcode with food/search. Attribute Open Food Facts (ODbL)."
+        ),
+    )
+    def get(self, request):
+        term = FoodSearchCache.normalize(request.query_params.get("q", ""))[:100].strip()
+        if len(term) < 2:
+            return Response([])
+        try:
+            foods = food_sources.cached_lookup(term, discovery=True)
+        except food_sources.FoodSourceUnavailable as error:
+            return food_unavailable(error)
+        return Response(FoodDiscoveryResultSerializer(foods, many=True).data)
+
+
+def food_unavailable(error):
+    detail = (
+        "The food database is busy. Please retry shortly, or reuse a food you "
+        "have logged before."
+    ) if error.retry_after is not None else (
+        "The food database could not be reached. You can still reuse a "
+        "food you have logged before, or enter one by hand."
+    )
+    response = Response({"detail": detail}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    if error.retry_after is not None:
+        response["Retry-After"] = str(error.retry_after)
+    return response
+
+
 class FoodSearchView(APIView):
     """Cached Open Food Facts search/barcodes without forwarding user identity."""
 
@@ -454,32 +504,15 @@ class FoodSearchView(APIView):
             return Response([])
 
         try:
-            key = food_sources.cache_key(term)
+            food_sources.cache_key(term)
         except ValueError as error:
             raise ValidationError({"q": str(error)})
 
-        cached = FoodSearchCache.objects.filter(term=key).first()
-        if cached is not None and cached.is_fresh:
-            return Response(cached.payload)
-
         try:
-            foods = food_sources.search(term)
-        except food_sources.FoodSourceUnavailable:
-            # A stale answer beats no answer: the figures are reference data,
-            # and a week-old calorie count for oats is still the calorie count
-            # for oats.
-            if cached is not None and timezone.now() - cached.fetched_at < FoodSearchCache.RETENTION:
-                return Response(cached.payload)
-            raise ServiceUnavailable(
-                "The food database could not be reached. You can still reuse a "
-                "food you have logged before, or enter one by hand."
-            )
-
-        payload = FoodSearchResultSerializer(foods, many=True).data
-        FoodSearchCache.objects.update_or_create(
-            term=key, defaults={"payload": payload}
-        )
-        return Response(payload)
+            foods = food_sources.cached_lookup(term)
+        except food_sources.FoodSourceUnavailable as error:
+            return food_unavailable(error)
+        return Response(FoodSearchResultSerializer(foods, many=True).data)
 
 
 class AfterResponse(Response):
@@ -1900,6 +1933,7 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                         carbohydrate_grams=entry.carbohydrate_grams,
                         fat_grams=entry.fat_grams,
                         position=position,
+                        **food_metadata_snapshot(entry),
                     )
                     for position, entry in enumerate(
                         source_meal.entries.all(), start=1
@@ -1963,6 +1997,9 @@ class NutritionGoalView(APIView):
         return Response(serializer.data)
 
 
+@extend_schema_view(list=extend_schema(parameters=[OpenApiParameter(
+    name="cookbook", type=int, location=OpenApiParameter.QUERY,
+    description="Only recipes in this owned cookbook; omitted returns the owner's complete recipe library.")]))
 class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Meals kept to reuse."""
 
@@ -1971,10 +2008,20 @@ class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mo
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return self.scope_to_owner(super().get_queryset())
+        queryset = self.scope_to_owner(super().get_queryset())
+        cookbook_id = id_param(self.request, "cookbook")
+        return queryset.filter(cookbook_id=cookbook_id) if cookbook_id else queryset
 
     def perform_create(self, serializer):
         serializer.save(owner=self.owner_profile())
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        from .cookbooks import lock_owner, touch
+        lock_owner(self.owner_profile())
+        cookbook_id = instance.cookbook_id
+        instance.delete()
+        touch([cookbook_id])
 
     @extend_schema(
         request=ApplySavedMealSerializer,
@@ -2022,6 +2069,7 @@ class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mo
                         carbohydrate_grams=ingredient.carbohydrate_grams,
                         fat_grams=ingredient.fat_grams,
                         position=used + offset + 1,
+                        **food_metadata_snapshot(ingredient),
                     )
                     for offset, ingredient in enumerate(ingredients)
                 ])
@@ -3394,6 +3442,9 @@ def annotate_social_counts(viewer, queryset):
         )
         | Exists(
             SavedFoodMeal.objects.filter(source_post=OuterRef("pk"), owner=viewer)
+        )
+        | Exists(
+            Cookbook.objects.filter(source_post=OuterRef("pk"), owner=viewer)
         ),
     )
 
@@ -3534,6 +3585,7 @@ def posts_for_cards():
         "workout",
         "meal",
         "planner",
+        "cookbook",
         # A one-to-one, so a join rather than a prefetch, for the same reason
         # the snapshots are: a clip per card would otherwise be a query per
         # card.
@@ -3544,8 +3596,9 @@ def posts_for_cards():
         "repost_of__workout",
         "repost_of__meal",
         "repost_of__planner",
+        "repost_of__cookbook",
         "repost_of__video",
-    ).prefetch_related(
+    ).defer("cookbook__recipes", "repost_of__cookbook__recipes").prefetch_related(
         "author__disciplines",
         "author__prompts",
         "author__social_links",
@@ -3571,6 +3624,9 @@ def public_text_for_source(source, kind):
     The relations walked here are the ones `source_for` prefetches, which is
     not a coincidence: those are what the snapshot builder reads.
     """
+    if kind == Post.Kind.COOKBOOK:
+        from .cookbook_publication import recipe_snapshot
+        return {"name": source.name, "recipes": recipe_snapshot(source)}
     if kind == Post.Kind.WORKOUT:
         return {
             'title': getattr(source.workout, 'name', '') or '',
@@ -3606,6 +3662,14 @@ def source_for(author, kind, source_id):
     cross-owner check in this codebase does. 403 is wrong under either reading:
     it answers "that row exists, and it is not yours".
     """
+    if kind == Post.Kind.COOKBOOK:
+        from .models import Cookbook
+        from .cookbook_publication import recipe_snapshot
+        source = Cookbook.objects.filter(pk=source_id, owner=author).prefetch_related("recipes__ingredients").first()
+        if source is None:
+            raise ValidationError({"source_id": "Choose one of your cookbooks."})
+        recipe_snapshot(source)
+        return source
     if kind == Post.Kind.WORKOUT:
         source = (
             WorkoutSession.objects.filter(pk=source_id, repbase_user=author)
@@ -3766,6 +3830,7 @@ def snapshot_meal(post, meal, cooking_instructions=""):
                 carbohydrate_grams=entry.carbohydrate_grams,
                 fat_grams=entry.fat_grams,
                 position=entry.position,
+                **food_metadata_snapshot(entry),
             )
             for entry in meal.entries.all()
         ]
@@ -3833,6 +3898,11 @@ def create_post_from_source(
         snapshot_meal(post, source, cooking_instructions=cooking_instructions)
     elif kind == Post.Kind.PLANNER:
         snapshot_planner(post, source)
+    elif kind == Post.Kind.COOKBOOK:
+        from .models import PostCookbook
+        from .cookbook_publication import recipe_snapshot
+        recipes = recipe_snapshot(source)
+        PostCookbook.objects.create(post=post, name=source.name, recipe_count=len(recipes), recipes=recipes)
     # A media post has no snapshot: its photo or clip is the post.
     return post
 
@@ -4475,7 +4545,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         )
 
     @extend_schema(
-        request=None,
+        request=CookbookDestinationSerializer,
         responses={
             200: SavedMealResultSerializer,
             201: SavedMealResultSerializer,
@@ -4490,9 +4560,14 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         ),
     )
     @action(detail=True, methods=["post"], url_path="save-meal")
+    @transaction.atomic
     def save_meal(self, request, pk=None):
         post = self.get_object()
         owner = self.owner_profile()
+        from .cookbooks import destination_for, lock_owner, touch
+        lock_owner(owner)
+        destination = CookbookDestinationSerializer(data=request.data)
+        destination.is_valid(raise_exception=True)
         # A repost carries nothing of its own; what is being saved is the meal
         # in the post underneath it.
         source = post.repost_of or post
@@ -4528,9 +4603,10 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                 status=status.HTTP_200_OK,
             )
 
+        cookbook = destination_for(owner, destination.validated_data["cookbook"])
         name = self._free_copy_name(
             set(
-                SavedFoodMeal.objects.filter(owner=owner)
+                SavedFoodMeal.objects.filter(owner=owner, cookbook=cookbook)
                 .values_list("name", flat=True)
             ),
             snapshot.name,
@@ -4540,6 +4616,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         with transaction.atomic():
             saved = SavedFoodMeal.objects.create(
                 owner=owner,
+                cookbook=cookbook,
                 name=name,
                 source_post=source,
                 # The recipe comes with the food. Saving a meal whose author
@@ -4561,9 +4638,12 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                     carbohydrate_grams=entry.carbohydrate_grams,
                     fat_grams=entry.fat_grams,
                     position=position,
+                    **food_metadata_snapshot(entry),
                 )
                 for position, entry in enumerate(entries, start=1)
             )
+
+        touch([cookbook.pk])
 
         return Response(
             SavedMealResultSerializer(
@@ -4579,11 +4659,35 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             status=status.HTTP_201_CREATED,
         )
 
+    @extend_schema(responses={200: PublishedCookbookSerializer})
+    @action(detail=True, methods=["get"], url_path="cookbook")
+    def cookbook(self, request, pk=None):
+        post = self.get_object()
+        source = post.repost_of or post
+        snapshot = getattr(source, "cookbook", None)
+        if snapshot is None:
+            raise NotFound("This post has no cookbook.")
+        return Response(PublishedCookbookSerializer(snapshot).data)
+
+    @extend_schema(request=None, responses={200: CookbookSerializer, 201: CookbookSerializer})
+    @action(detail=True, methods=["post"], url_path="save-cookbook")
+    def save_cookbook(self, request, pk=None):
+        from .cookbook_publication import save_publication
+        from .models import Cookbook
+        post = self.get_object()
+        source = post.repost_of or post
+        if getattr(source, "cookbook", None) is None:
+            raise NotFound("This post has no cookbook.")
+        cookbook, created = save_publication(self.owner_profile(), source)
+        cookbook = Cookbook.objects.annotate(recipe_count=Count("recipes")).get(pk=cookbook.pk)
+        return Response(CookbookSerializer(cookbook).data,
+                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
     @staticmethod
     def _free_copy_name(taken, title, author, fallback):
         """A name this user does not already have.
 
-        Workouts and saved meals are both unique by name per user, so saving
+        Workouts are unique by name per user, recipes within their cookbook, so saving
         somebody's "Push Day" -- or their "Meal 1", which everyone has -- when
         you have your own would either fail or quietly hand back yours.
         Neither is what was asked for, so the copy is named after who it came
@@ -4596,12 +4700,14 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         if base not in taken:
             return base
 
-        from_author = f"{base} (from @{author.user.username})"[:150]
+        credit = f" (from @{author.user.username})"
+        from_author = (base[:max(1, 150 - len(credit))] + credit)[:150]
         if from_author not in taken:
             return from_author
 
         for suffix in range(2, 100):
-            numbered = f"{from_author} {suffix}"[:150]
+            tail = f" {suffix}"
+            numbered = from_author[:150 - len(tail)] + tail
             if numbered not in taken:
                 return numbered
         raise ValidationError({"post": "You already have too many copies of that."})

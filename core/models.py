@@ -2411,7 +2411,23 @@ class FoodMeal(models.Model):
         return f"{self.date}: {self.name}"
 
 
-class FoodEntry(models.Model):
+class FoodNutritionSnapshot(models.Model):
+    """Optional source/reference metadata; historical unknowns stay unknown."""
+
+    source_id = models.CharField(max_length=40, blank=True, default="")
+    serving_description = models.CharField(max_length=160, blank=True, default="")
+    reference_quantity = models.DecimalField(
+        max_digits=12, decimal_places=4, null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0.0001")), MaxValueValidator(Decimal("100000"))],
+    )
+    reference_unit = models.CharField(max_length=2, blank=True, default="")
+    nutrients = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        abstract = True
+
+
+class FoodEntry(FoodNutritionSnapshot):
     """One food inside a meal.
 
     Nutrition is held per serving with a separate serving count, so editing
@@ -2426,10 +2442,10 @@ class FoodEntry(models.Model):
     )
     name = models.CharField(max_length=150)
     servings = models.DecimalField(
-        max_digits=6,
-        decimal_places=2,
+        max_digits=10,
+        decimal_places=6,
         default=Decimal("1"),
-        validators=[MinValueValidator(Decimal("0.01"))],
+        validators=[MinValueValidator(Decimal("0.000001")), MaxValueValidator(Decimal("9999.99"))],
     )
     calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
     protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
@@ -2446,6 +2462,21 @@ class FoodEntry(models.Model):
         return f"{self.name} x{self.servings}"
 
 
+class Cookbook(models.Model):
+    """A private, owner-scoped collection. Publishing freezes a separate snapshot."""
+
+    owner = models.ForeignKey(RepbaseUser, on_delete=models.CASCADE, related_name="cookbooks")
+    name = models.CharField(max_length=80)
+    source_post = models.ForeignKey("Post", on_delete=models.SET_NULL, null=True, blank=True,
+                                    related_name="cookbook_copies")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("name", "id")
+        constraints = [models.UniqueConstraint(fields=("owner", "name"), name="unique_cookbook_name_per_owner")]
+
+
 class SavedFoodMeal(models.Model):
     """A meal kept to reuse, with its ingredients.
 
@@ -2458,6 +2489,7 @@ class SavedFoodMeal(models.Model):
         on_delete=models.CASCADE,
         related_name="saved_food_meals",
     )
+    cookbook = models.ForeignKey(Cookbook, on_delete=models.RESTRICT, related_name="recipes")
     name = models.CharField(max_length=150)
     #: How it was made, when it was saved from a post that said.
     #:
@@ -2493,8 +2525,8 @@ class SavedFoodMeal(models.Model):
         ordering = ("name", "id")
         constraints = [
             models.UniqueConstraint(
-                fields=("owner", "name"),
-                name="unique_saved_meal_name_per_owner",
+                fields=("cookbook", "name"),
+                name="unique_saved_meal_name_per_cookbook",
             )
         ]
 
@@ -2502,7 +2534,7 @@ class SavedFoodMeal(models.Model):
         return self.name
 
 
-class SavedFoodIngredient(models.Model):
+class SavedFoodIngredient(FoodNutritionSnapshot):
     """One food inside a saved meal. Mirrors FoodEntry so applying one is a
     straight copy rather than a translation."""
 
@@ -2513,10 +2545,10 @@ class SavedFoodIngredient(models.Model):
     )
     name = models.CharField(max_length=150)
     servings = models.DecimalField(
-        max_digits=6,
-        decimal_places=2,
+        max_digits=10,
+        decimal_places=6,
         default=Decimal("1"),
-        validators=[MinValueValidator(Decimal("0.01"))],
+        validators=[MinValueValidator(Decimal("0.000001")), MaxValueValidator(Decimal("9999.99"))],
     )
     calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
     protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
@@ -2837,6 +2869,7 @@ class Post(models.Model):
     class Kind(models.TextChoices):
         WORKOUT = "workout", "Workout"
         MEAL = "meal", "Meal"
+        COOKBOOK = "cookbook", "Cookbook"
         PLANNER = "planner", "Planner"
         #: Someone else's post, passed on. The only kind with no snapshot
         #: sibling of its own: what it shows is the post it points at, read
@@ -3160,6 +3193,19 @@ class PostWorkoutExercise(models.Model):
         return f"{self.name} x{self.set_count}"
 
 
+class PostCookbook(models.Model):
+    """One bounded publication snapshot, fetched in full only on detail."""
+
+    post = models.OneToOneField(Post, on_delete=models.CASCADE, related_name="cookbook")
+    name = models.CharField(max_length=80)
+    recipe_count = models.PositiveSmallIntegerField()
+    recipes = models.JSONField(default=list)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(recipe_count__gte=1, recipe_count__lte=20),
+                                               name="published_cookbook_recipe_limit")]
+
+
 class PostMeal(models.Model):
     """What a posted meal looked like the moment it was posted.
 
@@ -3190,7 +3236,7 @@ class PostMeal(models.Model):
         return f"{self.date}: {self.name}"
 
 
-class PostMealEntry(models.Model):
+class PostMealEntry(FoodNutritionSnapshot):
     """One food inside a posted meal.
 
     Mirrors `FoodEntry` field for field, per-serving split included, so
@@ -3205,10 +3251,10 @@ class PostMealEntry(models.Model):
     )
     name = models.CharField(max_length=150)
     servings = models.DecimalField(
-        max_digits=6,
-        decimal_places=2,
+        max_digits=10,
+        decimal_places=6,
         default=Decimal("1"),
-        validators=[MinValueValidator(Decimal("0.01"))],
+        validators=[MinValueValidator(Decimal("0.000001")), MaxValueValidator(Decimal("9999.99"))],
     )
     calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
     protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
@@ -4593,9 +4639,13 @@ class FoodSearchCache(models.Model):
     @classmethod
     def prune(cls, now=None):
         """Drop terms nobody has looked up in a long time. Returns the count."""
-        cutoff = (now or timezone.now()) - cls.RETENTION
+        current = now or timezone.now()
+        abandoned, _ = cls.objects.filter(
+            term__startswith="off:lease:", fetched_at__lt=current - timedelta(minutes=2)
+        ).delete()
+        cutoff = current - cls.RETENTION
         deleted, _ = cls.objects.filter(fetched_at__lt=cutoff).delete()
-        return deleted
+        return deleted + abandoned
 
     @staticmethod
     def normalize(term):

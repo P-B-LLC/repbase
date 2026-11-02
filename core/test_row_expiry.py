@@ -66,7 +66,11 @@ class SearchingStillFallsBackAfterPruningTests(RepbaseAPITestMixin, APITestCase)
 
     def test_an_outage_serves_the_stale_entry_a_prune_left_behind(self):
         entry = FoodSearchCache.objects.create(
-            term="off:v1:search:oats", payload=[{"description": "Oats, rolled"}]
+            term="off:v1:search:oats", payload=[{
+                "source_id": "off:3017620422003", "name": "Oats, rolled", "brand": "",
+                "serving_description": "100 g", "calories": "389.00",
+                "protein_grams": "16.90", "carbohydrate_grams": "66.30", "fat_grams": "6.90",
+            }]
         )
         aged(entry, "fetched_at", FoodSearchCache.LIFETIME + timedelta(days=1))
         FoodSearchCache.prune()
@@ -78,7 +82,7 @@ class SearchingStillFallsBackAfterPruningTests(RepbaseAPITestMixin, APITestCase)
             response = self.client.get("/api/v1/food/search/?q=oats")
 
         self.assertEqual(response.status_code, 200, response.data)
-        self.assertEqual(response.data[0]["description"], "Oats, rolled")
+        self.assertEqual(response.data[0]["name"], "Oats, rolled")
 
 
 class ReceiptsStopReplayingEventuallyTests(RepbaseAPITestMixin, APITestCase):

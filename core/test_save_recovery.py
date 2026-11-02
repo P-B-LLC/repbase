@@ -128,7 +128,7 @@ class CreateSaveRecoveryTests(RepbaseAPITestMixin, APITestCase):
                      'protein_grams': '2', 'carbohydrate_grams': '20', 'fat_grams': '1'}
         for path, payload, model in [
             ('/api/v1/food/entries/', {**nutrition, 'meal': meal.pk}, FoodEntry),
-            ('/api/v1/food/saved-meals/', {'name': 'Lunch', 'ingredients': [nutrition]}, SavedFoodMeal),
+            ('/api/v1/food/saved-meals/', {**self.recipe_destination(), 'name': 'Lunch', 'ingredients': [nutrition]}, SavedFoodMeal),
         ]:
             self.path = path
             first = self.save(payload)
