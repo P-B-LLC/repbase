@@ -472,12 +472,24 @@ def _label_reference(raw, serving):
     if quantity is not None and Decimal("0.0001") <= quantity <= 100000 and unit in ("g", "ml"):
         return quantity.quantize(Decimal("0.0001")), unit
     if isinstance(serving, str):
-        matches = re.findall(r"(?<![\w.,+\-])([0-9]+(?:\.[0-9]+)?)\s*(g|ml)\b", serving, re.I)
-        references = {(_number(amount), symbol.lower()) for amount, symbol in matches}
-        references = {(amount, symbol) for amount, symbol in references if amount is not None and Decimal("0.0001") <= amount <= 100000}
-        if len(references) == 1:
-            amount, symbol = references.pop()
-            return amount.quantize(Decimal("0.0001")), symbol
+        text = serving.strip()
+        mass = r"(?P<amount>[0-9]+(?:\.[0-9]+)?)\s*(?P<unit>g|ml)"
+        match = re.fullmatch(mass, text, re.I)
+        if match is None:
+            # Accept only a complete mass expression, not a denominator or
+            # the last number in a range/multiplier. A count/cup description
+            # may precede an explicit parenthesized mass, e.g. 1/2 cup (120ml).
+            match = re.fullmatch(mass + r"\s*\((?P<label>[^()]*)\)", text, re.I)
+            if match is None:
+                match = re.fullmatch(r"(?P<label>[^()]*)\(\s*" + mass + r"\s*\)", text, re.I)
+            if match is not None:
+                label = match.group("label")
+                if re.search(r"\b(?:g|ml)\b|\d\s*[-–—]\s*\d|\d\s*[x×*]|(?<!\w)[x×*](?!\w)", label, re.I):
+                    match = None
+        if match is not None:
+            amount = _number(match.group("amount"))
+            if amount is not None and Decimal("0.0001") <= amount <= 100000:
+                return amount.quantize(Decimal("0.0001")), match.group("unit").lower()
     return None, ""
 
 

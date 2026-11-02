@@ -49,6 +49,31 @@ class FoodReferenceNormalizationTests(TestCase):
                                   "carbohydrates_serving": 7.5, "fat_serving": 1.25})
         self.assertEqual(off.normalize(raw)["reference_quantity"], 25)
 
+    def test_only_complete_simple_or_parenthesized_mass_labels_are_recognized(self):
+        for label, quantity, unit in (("20g", 20, "g"), ("20 g (1 bar)", 20, "g"),
+                                      ("1 bar (25 g)", 25, "g"), ("1/2 cup (120ml)", 120, "ml"),
+                                      (" ( 12.5 G ) ", Decimal("12.5"), "g")):
+            with self.subTest(label=label):
+                self.assertEqual(off._label_reference({}, label), (quantity, unit))
+
+    def test_fraction_range_and_multiplier_text_never_becomes_denominator_mass(self):
+        labels = ("1/2 g", "1/4g", "1 / 2g", "1 1/2g", "20-30g", "20 g -30g", "2 x20g",
+                  "2 x (20g)", "2x(20g)", "20g (30 g)", "1 bar (1/2g)")
+        for label in labels:
+            with self.subTest(label=label):
+                self.assertEqual(off._label_reference({}, label), (None, ""))
+                raw = product(serving_size=label, nutrition_data_per="serving")
+                raw["nutriments"] = {"energy-kcal_serving": 50, "proteins_serving": 1,
+                                      "carbohydrates_serving": 2, "fat_serving": 1}
+                result = off.normalize(raw)
+                self.assertIsNone(result["reference_quantity"])
+                self.assertEqual(result["reference_unit"], "")
+                self.assertEqual(result["calories"], 50)
+
+    def test_explicit_provider_quantity_is_authoritative_over_free_text(self):
+        self.assertEqual(off._label_reference({"serving_quantity": "0.5", "serving_quantity_unit": "g"}, "1/2 g"),
+                         (Decimal("0.5"), "g"))
+
     def test_liquid_is_ml_never_assumed_grams(self):
         raw = product(serving_size="1 cup (250 ml)", nutrition_data_per="100ml")
         raw["nutriments"].update({"energy-kcal_serving": 500, "proteins_serving": 25,
