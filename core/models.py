@@ -4623,9 +4623,13 @@ class FoodSearchCache(models.Model):
     @classmethod
     def prune(cls, now=None):
         """Drop terms nobody has looked up in a long time. Returns the count."""
-        cutoff = (now or timezone.now()) - cls.RETENTION
+        current = now or timezone.now()
+        abandoned, _ = cls.objects.filter(
+            term__startswith="off:lease:", fetched_at__lt=current - timedelta(minutes=2)
+        ).delete()
+        cutoff = current - cls.RETENTION
         deleted, _ = cls.objects.filter(fetched_at__lt=cutoff).delete()
-        return deleted
+        return deleted + abandoned
 
     @staticmethod
     def normalize(term):

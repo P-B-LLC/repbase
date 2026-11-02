@@ -196,6 +196,7 @@ from .serializers import (
     CreatePostSerializer,
     PostCommentSerializer,
     FoodSearchResultSerializer,
+    FoodDiscoveryResultSerializer,
     PasswordResetConfirmSerializer,
     PersonalizationSerializer,
     PasswordResetRequestSerializer,
@@ -414,6 +415,51 @@ class PersonalizationView(APIView):
         return record
 
 
+class FoodDiscoverView(APIView):
+    """Discover public products; fetch authoritative barcode details on selection."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "food_search"
+    throttle_classes = [ScopedRateThrottle]
+
+    @extend_schema(
+        operation_id="food_discover_list",
+        parameters=[OpenApiParameter(
+            name="q", type=str, location=OpenApiParameter.QUERY, required=True,
+            description="Submit a food/brand search (two characters minimum), not every keystroke.",
+        )],
+        responses={200: FoodDiscoveryResultSerializer(many=True)},
+        description=(
+            "Searches the Open Food Facts index for product identities only. "
+            "Candidates contain no nutrition or serving basis. Before offering portions "
+            "or logging, resolve the source_id barcode with food/search. Attribute Open Food Facts (ODbL)."
+        ),
+    )
+    def get(self, request):
+        term = FoodSearchCache.normalize(request.query_params.get("q", ""))[:100].strip()
+        if len(term) < 2:
+            return Response([])
+        try:
+            foods = food_sources.cached_lookup(term, discovery=True)
+        except food_sources.FoodSourceUnavailable as error:
+            return food_unavailable(error)
+        return Response(FoodDiscoveryResultSerializer(foods, many=True).data)
+
+
+def food_unavailable(error):
+    detail = (
+        "The food database is busy. Please retry shortly, or reuse a food you "
+        "have logged before."
+    ) if error.retry_after is not None else (
+        "The food database could not be reached. You can still reuse a "
+        "food you have logged before, or enter one by hand."
+    )
+    response = Response({"detail": detail}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    if error.retry_after is not None:
+        response["Retry-After"] = str(error.retry_after)
+    return response
+
+
 class FoodSearchView(APIView):
     """Cached Open Food Facts search/barcodes without forwarding user identity."""
 
@@ -447,32 +493,15 @@ class FoodSearchView(APIView):
             return Response([])
 
         try:
-            key = food_sources.cache_key(term)
+            food_sources.cache_key(term)
         except ValueError as error:
             raise ValidationError({"q": str(error)})
 
-        cached = FoodSearchCache.objects.filter(term=key).first()
-        if cached is not None and cached.is_fresh:
-            return Response(cached.payload)
-
         try:
-            foods = food_sources.search(term)
-        except food_sources.FoodSourceUnavailable:
-            # A stale answer beats no answer: the figures are reference data,
-            # and a week-old calorie count for oats is still the calorie count
-            # for oats.
-            if cached is not None and timezone.now() - cached.fetched_at < FoodSearchCache.RETENTION:
-                return Response(cached.payload)
-            raise ServiceUnavailable(
-                "The food database could not be reached. You can still reuse a "
-                "food you have logged before, or enter one by hand."
-            )
-
-        payload = FoodSearchResultSerializer(foods, many=True).data
-        FoodSearchCache.objects.update_or_create(
-            term=key, defaults={"payload": payload}
-        )
-        return Response(payload)
+            foods = food_sources.cached_lookup(term)
+        except food_sources.FoodSourceUnavailable as error:
+            return food_unavailable(error)
+        return Response(FoodSearchResultSerializer(foods, many=True).data)
 
 
 class AfterResponse(Response):

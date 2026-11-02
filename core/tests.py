@@ -1591,7 +1591,7 @@ class FoodSearchViewTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(first.data, second.data)
         # Case and spacing fold, so this is one term and not three.
         upstream.assert_called_once()
-        self.assertEqual(FoodSearchCache.objects.count(), 1)
+        self.assertEqual(FoodSearchCache.objects.filter(term__startswith="off:v1:").count(), 1)
 
     def test_a_stale_answer_beats_no_answer(self):
         """Reference nutrition does not go off. A week-old figure for oats is
@@ -1600,8 +1600,9 @@ class FoodSearchViewTests(RepbaseAPITestMixin, APITestCase):
             self.client.get(self.URL, {"q": "oats"})
 
         entry = FoodSearchCache.objects.get(term="off:v1:search:oats")
-        entry.fetched_at = timezone.now() - FoodSearchCache.LIFETIME - timedelta(days=1)
-        entry.save(update_fields=["fetched_at"])
+        FoodSearchCache.objects.filter(pk=entry.pk).update(
+            fetched_at=timezone.now() - FoodSearchCache.LIFETIME - timedelta(days=1)
+        )
 
         with mock.patch(
             "core.views.food_sources.search",

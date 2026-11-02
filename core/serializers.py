@@ -5012,6 +5012,18 @@ class PersonalizationSerializer(serializers.ModelSerializer):
         return value
 
 
+class FoodDiscoveryResultSerializer(serializers.Serializer):
+    """A search candidate, not nutrition and never a loggable food entry.
+
+    Resolve source_id through food/search with barcode:<GTIN> before showing
+    portions or saving. The search index does not preserve a reliable basis.
+    """
+
+    source_id = serializers.CharField()
+    name = serializers.CharField()
+    brand = serializers.CharField(allow_blank=True)
+
+
 class FoodSearchResultSerializer(serializers.Serializer):
     """One food from the public catalogue, in the shape the app logs.
 

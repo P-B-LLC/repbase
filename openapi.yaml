@@ -1139,6 +1139,35 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/food/discover/:
+    get:
+      operationId: food_discover_list
+      description: Searches the Open Food Facts index for product identities only.
+        Candidates contain no nutrition or serving basis. Before offering portions
+        or logging, resolve the source_id barcode with food/search. Attribute Open
+        Food Facts (ODbL).
+      parameters:
+      - in: query
+        name: q
+        schema:
+          type: string
+        description: Submit a food/brand search (two characters minimum), not every
+          keystroke.
+        required: true
+      tags:
+      - food
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/FoodDiscoveryResult'
+          description: ''
   /api/v1/food/entries/:
     get:
       operationId: food_entries_list
@@ -7572,6 +7601,24 @@ components:
       - profile_photo_url
       - requester_id
       - username
+    FoodDiscoveryResult:
+      type: object
+      description: |-
+        A search candidate, not nutrition and never a loggable food entry.
+
+        Resolve source_id through food/search with barcode:<GTIN> before showing
+        portions or saving. The search index does not preserve a reliable basis.
+      properties:
+        source_id:
+          type: string
+        name:
+          type: string
+        brand:
+          type: string
+      required:
+      - brand
+      - name
+      - source_id
     FoodEntry:
       type: object
       description: |-

@@ -49,6 +49,7 @@ from .views import (
     RegisterView,
     RepbaseUserViewSet,
     FoodSearchView,
+    FoodDiscoverView,
     PersonalizationView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
@@ -143,6 +144,7 @@ urlpatterns = [
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/login/", LoginView.as_view(), name="login"),
     path("food/search/", FoodSearchView.as_view(), name="food-search"),
+    path("food/discover/", FoodDiscoverView.as_view(), name="food-discover"),
     path(
         "me/personalization/",
         PersonalizationView.as_view(),
