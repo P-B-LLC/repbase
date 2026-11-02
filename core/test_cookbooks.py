@@ -356,7 +356,8 @@ class CookbookLifecycleTests(CookbookFixtures, APITestCase):
         recipe = self.client.get(f"/api/v1/social/posts/{post_id}/cookbook/").data["recipes"][0]
         self.assertEqual(set(recipe), {"name", "cooking_instructions", "ingredients"})
         self.assertEqual(set(recipe["ingredients"][0]),
-                         {"name", "servings", "calories", "protein_grams", "carbohydrate_grams", "fat_grams"})
+                         {"name", "servings", "calories", "protein_grams", "carbohydrate_grams", "fat_grams",
+                          "source_id", "serving_description", "reference_quantity", "reference_unit", "nutrients"})
 
     def test_feed_card_carries_only_the_summary(self):
         post_id = self.published_as(self.other_token)
@@ -388,7 +389,7 @@ class CookbookLifecycleTests(CookbookFixtures, APITestCase):
         self.assertEqual(curry.cooking_instructions, "Simmer for twenty minutes.")
         self.assertEqual(salad.cooking_instructions, "")
         self.assertEqual([(i.position, i.name, str(i.servings), str(i.calories)) for i in curry.ingredients.all()],
-                         [(1, "Rice", "2.00", "200.00"), (2, "Lentils", "2.00", "180.00")])
+                         [(1, "Rice", "2.000000", "200.00"), (2, "Lentils", "2.000000", "180.00")])
         self.assertEqual(self.client.get(f"/api/v1/food/saved-meals/?cookbook={copy.pk}").data["count"], 2)
 
     def test_saved_copy_gets_a_free_name_when_the_reader_already_uses_it(self):

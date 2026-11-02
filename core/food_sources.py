@@ -284,7 +284,21 @@ class PartialFoodResults(list):
 
 
 def _cache_payload(rows):
-    return [{key: format(value, "f") if isinstance(value, Decimal) else value for key, value in row.items()} for row in rows]
+    def encoded(value):
+        if isinstance(value, Decimal):
+            return format(value, "f")
+        if isinstance(value, dict):
+            return {key: encoded(item) for key, item in value.items()}
+        return value
+    payload = [encoded(row) for row in rows]
+    # Legacy fixtures/adapters may not have metadata; absence remains an
+    # honest unknown rather than invented serving mass or nutrients.
+    for row in payload:
+        if "calories" in row:
+            row.setdefault("reference_quantity", None)
+            row.setdefault("reference_unit", "")
+            row.setdefault("nutrients", {})
+    return payload
 
 
 def _cache_age(row):
@@ -311,11 +325,34 @@ def _safe_cache(row, discovery):
             or any(_number(item.get(field)) is None for field in ("calories", "protein_grams", "carbohydrate_grams", "fat_grams"))
         ):
             return None
+        if not discovery and "nutrients" in item:
+            nutrients = item["nutrients"]
+            if not isinstance(nutrients, dict) or set(nutrients) - set(NUTRIENT_SOURCES):
+                return None
+            if any(_number(value, maximum=99999999) is None for value in nutrients.values()):
+                return None
+        if not discovery and "reference_quantity" in item:
+            quantity = item["reference_quantity"]
+            unit = item.get("reference_unit", "")
+            if quantity is None:
+                if unit:
+                    return None
+            elif _number(quantity) is None or not Decimal("0.0001") <= _number(quantity) <= 100000 or unit not in {"g", "ml"}:
+                return None
     return row
 
 
 def _fresh(row):
-    return row is not None and isinstance(row.payload, list) and _cache_age(row) < (NEGATIVE_LIFETIME if not row.payload else row.LIFETIME)
+    if row is None or not isinstance(row.payload, list):
+        return False
+    if row.term.startswith("off:v1:") and row.payload and any(
+        not all(field in item for field in ("reference_quantity", "reference_unit", "nutrients"))
+        for item in row.payload
+    ):
+        # Refresh pre-metadata product caches, without deleting their useful
+        # macro snapshots: retained fallback can still serve them in an outage.
+        return False
+    return _cache_age(row) < (NEGATIVE_LIFETIME if not row.payload else row.LIFETIME)
 
 
 def _lease(key):
@@ -404,14 +441,64 @@ def cached_lookup(term, *, discovery=False, timeout=8):
             logger.warning("Food catalogue lease cleanup failed")
 
 
-def _number(value):
+def _number(value, maximum=999999):
     if isinstance(value, bool) or value is None:
         return None
     try:
         number = Decimal(str(value))
-        return number if number.is_finite() and 0 <= number <= 999999 else None
+        return number if number.is_finite() and 0 <= number <= maximum else None
     except (InvalidOperation, ValueError):
         return None
+
+
+NUTRIENT_SOURCES = {
+    "fiber_g": ("fiber", Decimal("1")),
+    "saturated_fat_g": ("saturated-fat", Decimal("1")),
+    "sugars_g": ("sugars", Decimal("1")),
+    "sodium_mg": ("sodium", Decimal("1000")),
+    "potassium_mg": ("potassium", Decimal("1000")),
+    "calcium_mg": ("calcium", Decimal("1000")),
+    "iron_mg": ("iron", Decimal("1000")),
+    "magnesium_mg": ("magnesium", Decimal("1000")),
+    "vitamin_c_mg": ("vitamin-c", Decimal("1000")),
+    "vitamin_d_ug": ("vitamin-d", Decimal("1000000")),
+}
+
+
+def _label_reference(raw, serving):
+    """An explicit gram/ml quantity, never a guessed cup, count or density."""
+    quantity = _number(raw.get("serving_quantity"))
+    unit = raw.get("serving_quantity_unit")
+    if quantity is not None and Decimal("0.0001") <= quantity <= 100000 and unit in {"g", "ml"}:
+        return quantity.quantize(Decimal("0.0001")), unit
+    if isinstance(serving, str):
+        matches = re.findall(r"(?<![\w.,+\-])([0-9]+(?:\.[0-9]+)?)\s*(g|ml)\b", serving, re.I)
+        references = {(_number(amount), symbol.lower()) for amount, symbol in matches}
+        references = {(amount, symbol) for amount, symbol in references if amount is not None and Decimal("0.0001") <= amount <= 100000}
+        if len(references) == 1:
+            amount, symbol = references.pop()
+            return amount.quantize(Decimal("0.0001")), symbol
+    return None, ""
+
+
+def _additional_nutrients(nutrients, suffix, reference_quantity=None, reference_unit="", base_unit=""):
+    # OFF *_100g/*_serving mass values are normalized GRAMS, even when its
+    # *_unit describes a contributor's mg input. Never multiply that input
+    # unit twice. Unknown or invalid optional values stay absent.
+    result = {}
+    for key, (source, multiplier) in NUTRIENT_SOURCES.items():
+        value = _number(nutrients.get(source + "_" + suffix))
+        if value is None and suffix == "serving" and reference_quantity is not None and reference_unit == base_unit:
+            per_hundred = _number(nutrients.get(source + "_100g"))
+            if per_hundred is not None:
+                # Exact known same-unit reference scaling, not an estimated
+                # serving size or an inferred gram/ml density.
+                value = per_hundred * reference_quantity / Decimal("100")
+        if value is not None:
+            converted = value * multiplier
+            if converted <= Decimal("99999999"):
+                result[key] = converted.quantize(Decimal("0.000001"))
+    return result
 
 
 def normalize(raw):
@@ -430,10 +517,16 @@ def normalize(raw):
     # Use one explicitly labelled basis for ALL four figures. Missing is not
     # zero. Do not derive calories from 4/4/9 (fibre/polyols make that wrong).
     serving = raw.get("serving_size")
+    label_quantity, label_unit = _label_reference(raw, serving)
     basis = raw.get("nutrition_data_per")
     if basis not in ("100g", "100ml", "serving"):
         return None
-    unit = raw.get("serving_quantity_unit") or raw.get("product_quantity_unit")
+    if basis == "100ml" and label_unit == "g":
+        # Conflicting supplier metadata cannot establish liquid density.
+        # Prefer the explicitly volume-based 100ml nutrition below, rather
+        # than enabling a gram conversion from the contradictory label.
+        label_quantity, label_unit = None, ""
+    unit = label_unit or raw.get("serving_quantity_unit") or raw.get("product_quantity_unit")
     if basis == "100ml":
         unit = "ml"
     if not unit:
@@ -442,7 +535,12 @@ def normalize(raw):
         unit = "ml" if isinstance(serving, str) and re.search(r"\bml\b", serving, re.I) else "g"
     if unit not in ("g", "ml"):
         return None
-    for suffix in (("serving", "100g") if isinstance(serving, str) and serving.strip() else ("100g",)):
+    # If a label gives only an unweighed count ("1 piece"), prefer complete
+    # 100g/ml data, so weight entry never asks users to invent a piece's mass.
+    suffixes = ("serving", "100g") if label_quantity is not None else ("100g", "serving")
+    for suffix in suffixes:
+        if suffix == "serving" and not (isinstance(serving, str) and serving.strip()):
+            continue
         values = {field: _number(nutrients.get(key + "_" + suffix)) for field, key in (
             ("calories", "energy-kcal"), ("protein_grams", "proteins"),
             ("carbohydrate_grams", "carbohydrates"), ("fat_grams", "fat"))}
@@ -457,8 +555,13 @@ def normalize(raw):
         if suffix == "100g" and (values["calories"] > 1000 or any(values[f] > 100 for f in ("protein_grams", "carbohydrate_grams", "fat_grams"))):
             continue
         brand = raw.get("brands")
+        reference_quantity = label_quantity if suffix == "serving" else Decimal("100")
+        reference_unit = label_unit if suffix == "serving" else unit
         return {"source_id": "off:" + code, "name": name.strip()[:240],
                 "brand": brand[:240] if isinstance(brand, str) else "",
                 "serving_description": serving.strip()[:160] if suffix == "serving" else "100 " + unit,
+                "reference_quantity": reference_quantity,
+                "reference_unit": reference_unit,
+                "nutrients": _additional_nutrients(nutrients, suffix, reference_quantity, reference_unit, unit),
                 **{key: value.quantize(Decimal("0.01")) for key, value in values.items()}}
     return None

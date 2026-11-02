@@ -50,6 +50,7 @@ from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
 from . import food_sources
+from .food_nutrition import food_metadata_snapshot
 from .post_publication import publication_media, PublicationMediaError, remove_profile_photo
 from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IDEMPOTENCY_KEY_PARAMETER, IdempotentCreateMixin
@@ -1939,6 +1940,7 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                         carbohydrate_grams=entry.carbohydrate_grams,
                         fat_grams=entry.fat_grams,
                         position=position,
+                        **food_metadata_snapshot(entry),
                     )
                     for position, entry in enumerate(
                         source_meal.entries.all(), start=1
@@ -2074,6 +2076,7 @@ class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mo
                         carbohydrate_grams=ingredient.carbohydrate_grams,
                         fat_grams=ingredient.fat_grams,
                         position=used + offset + 1,
+                        **food_metadata_snapshot(ingredient),
                     )
                     for offset, ingredient in enumerate(ingredients)
                 ])
@@ -3790,6 +3793,7 @@ def snapshot_meal(post, meal, cooking_instructions=""):
                 carbohydrate_grams=entry.carbohydrate_grams,
                 fat_grams=entry.fat_grams,
                 position=entry.position,
+                **food_metadata_snapshot(entry),
             )
             for entry in meal.entries.all()
         ]
@@ -4597,6 +4601,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                     carbohydrate_grams=entry.carbohydrate_grams,
                     fat_grams=entry.fat_grams,
                     position=position,
+                    **food_metadata_snapshot(entry),
                 )
                 for position, entry in enumerate(entries, start=1)
             )

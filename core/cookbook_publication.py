@@ -5,6 +5,7 @@ from rest_framework.exceptions import ValidationError
 from .cookbooks import MAX_COOKBOOK_RECIPES, available_name, lock_owner
 from .cookbook_serializers import CookbookRecipeSerializer
 from .models import Cookbook, PostCookbook, SavedFoodIngredient, SavedFoodMeal
+from .food_nutrition import food_metadata_snapshot
 
 
 def recipe_snapshot(cookbook):
@@ -17,8 +18,9 @@ def recipe_snapshot(cookbook):
         if not ingredients:
             raise ValidationError({"source_id": "Every recipe needs at least one ingredient."})
         rows.append({"name": recipe.name, "cooking_instructions": recipe.cooking_instructions,
-                     "ingredients": [{field: str(getattr(item, field)) for field in
-                        ("name", "servings", "calories", "protein_grams", "carbohydrate_grams", "fat_grams")}
+                     "ingredients": [{**{field: str(getattr(item, field)) for field in
+                        ("name", "servings", "calories", "protein_grams", "carbohydrate_grams", "fat_grams")},
+                        **food_metadata_snapshot(item)}
                                      for item in ingredients]})
     return list(CookbookRecipeSerializer(rows, many=True).data)
 

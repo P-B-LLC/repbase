@@ -1,6 +1,7 @@
 from django.db import transaction
 from django.db.models import Count
 from rest_framework import serializers
+from .food_nutrition import FoodMetadataSerializerMixin
 
 from .cookbooks import MAX_COOKBOOK_RECIPES, lock_owner
 from .models import Cookbook, PostCookbook
@@ -62,9 +63,9 @@ class PostCookbookSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
-class CookbookIngredientSerializer(serializers.Serializer):
+class CookbookIngredientSerializer(FoodMetadataSerializerMixin, serializers.Serializer):
     name = serializers.CharField()
-    servings = serializers.DecimalField(max_digits=6, decimal_places=2)
+    servings = serializers.DecimalField(max_digits=10, decimal_places=6)
     calories = serializers.DecimalField(max_digits=8, decimal_places=2)
     protein_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
     carbohydrate_grams = serializers.DecimalField(max_digits=8, decimal_places=2)

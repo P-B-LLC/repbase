@@ -29,6 +29,7 @@ from .media import signed_media_url
 from .moderation import check_public_content
 from .cookbook_serializers import PostCookbookSerializer
 from .params import MAX_ID
+from .food_nutrition import FOOD_METADATA_FIELDS, FoodMetadataSerializerMixin
 from .uploads import check_image_dimensions, without_metadata
 from .throttles import FailedSignInLimit
 
@@ -245,7 +246,7 @@ class NutritionGoalSerializer(serializers.ModelSerializer):
         read_only_fields = ["updated_at"]
 
 
-class FoodEntrySerializer(serializers.ModelSerializer):
+class FoodEntrySerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     """One food. Nutrition is per serving; totals are derived, never stored,
     so a serving count and its totals cannot drift apart."""
 
@@ -259,6 +260,7 @@ class FoodEntrySerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "meal",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -365,11 +367,12 @@ class FoodMealSerializer(serializers.ModelSerializer):
         return self._total(meal, "fat_grams")
 
 
-class SavedFoodIngredientSerializer(serializers.ModelSerializer):
+class SavedFoodIngredientSerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = SavedFoodIngredient
         fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -525,11 +528,11 @@ class EnsureFoodDaySerializer(serializers.Serializer):
     date = serializers.DateField()
 
 
-class RecentFoodSerializer(serializers.Serializer):
+class RecentFoodSerializer(FoodMetadataSerializerMixin, serializers.Serializer):
     """A food the user has logged before, for the picker."""
 
     name = serializers.CharField()
-    servings = serializers.DecimalField(max_digits=6, decimal_places=2)
+    servings = serializers.DecimalField(max_digits=10, decimal_places=6)
     calories = serializers.DecimalField(max_digits=8, decimal_places=2)
     protein_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
     carbohydrate_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
@@ -3279,7 +3282,7 @@ class PostWorkoutSerializer(serializers.ModelSerializer):
         return VOLUME_DECIMAL.to_representation(sum(volumes))
 
 
-class PostMealEntrySerializer(serializers.ModelSerializer):
+class PostMealEntrySerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     """One food inside a posted meal, per serving with its servings beside it."""
 
     total_calories = serializers.SerializerMethodField()
@@ -3291,6 +3294,7 @@ class PostMealEntrySerializer(serializers.ModelSerializer):
         model = PostMealEntry
         fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -3305,6 +3309,7 @@ class PostMealEntrySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -5024,7 +5029,7 @@ class FoodDiscoveryResultSerializer(serializers.Serializer):
     brand = serializers.CharField(allow_blank=True)
 
 
-class FoodSearchResultSerializer(serializers.Serializer):
+class FoodSearchResultSerializer(FoodMetadataSerializerMixin, serializers.Serializer):
     """One food from the public catalogue, in the shape the app logs.
 
     Deliberately the same four figures a FoodEntry holds, and nothing else the
@@ -5032,6 +5037,8 @@ class FoodSearchResultSerializer(serializers.Serializer):
     reason every other nutrition figure here is: a calorie count that travels
     as a JSON number comes back from some parsers as 232.99999999999997.
     """
+
+    optional_response_fields = ("reference_quantity", "reference_unit", "nutrients")
 
     source_id = serializers.CharField()
     name = serializers.CharField()

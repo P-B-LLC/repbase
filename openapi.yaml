@@ -7129,12 +7129,34 @@ components:
     CookbookIngredient:
       type: object
       properties:
+        source_id:
+          type: string
+          maxLength: 40
+        serving_description:
+          type: string
+          maxLength: 160
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
         servings:
           type: string
           format: decimal
-          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,4}(?:\.\d{0,6})?$
         calories:
           type: string
           format: decimal
@@ -7630,13 +7652,35 @@ components:
           readOnly: true
         meal:
           type: integer
+        source_id:
+          type: string
+          maxLength: 40
+        serving_description:
+          type: string
+          maxLength: 160
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
           maxLength: 150
         servings:
           type: string
           format: decimal
-          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,4}(?:\.\d{0,6})?$
         calories:
           type: string
           format: decimal
@@ -7704,6 +7748,28 @@ components:
       properties:
         meal:
           type: integer
+        source_id:
+          type: string
+          maxLength: 40
+        serving_description:
+          type: string
+          maxLength: 160
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
           minLength: 1
@@ -7711,7 +7777,7 @@ components:
         servings:
           type: string
           format: decimal
-          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,4}(?:\.\d{0,6})?$
         calories:
           type: string
           format: decimal
@@ -7833,11 +7899,27 @@ components:
       properties:
         source_id:
           type: string
+        serving_description:
+          type: string
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
         brand:
-          type: string
-        serving_description:
           type: string
         calories:
           type: string
@@ -9357,6 +9439,28 @@ components:
       properties:
         meal:
           type: integer
+        source_id:
+          type: string
+          maxLength: 40
+        serving_description:
+          type: string
+          maxLength: 160
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
           minLength: 1
@@ -9364,7 +9468,7 @@ components:
         servings:
           type: string
           format: decimal
-          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,4}(?:\.\d{0,6})?$
         calories:
           type: string
           format: decimal
@@ -10559,13 +10663,35 @@ components:
         id:
           type: integer
           readOnly: true
+        source_id:
+          type: string
+          maxLength: 40
+        serving_description:
+          type: string
+          maxLength: 160
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
           readOnly: true
         servings:
           type: string
           format: decimal
-          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,4}(?:\.\d{0,6})?$
           readOnly: true
         calories:
           type: string
@@ -11453,12 +11579,34 @@ components:
       type: object
       description: A food the user has logged before, for the picker.
       properties:
+        source_id:
+          type: string
+          maxLength: 40
+        serving_description:
+          type: string
+          maxLength: 160
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
         servings:
           type: string
           format: decimal
-          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,4}(?:\.\d{0,6})?$
         calories:
           type: string
           format: decimal
@@ -11867,13 +12015,35 @@ components:
         id:
           type: integer
           readOnly: true
+        source_id:
+          type: string
+          maxLength: 40
+        serving_description:
+          type: string
+          maxLength: 160
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
           maxLength: 150
         servings:
           type: string
           format: decimal
-          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,4}(?:\.\d{0,6})?$
         calories:
           type: string
           format: decimal
@@ -11901,6 +12071,28 @@ components:
     SavedFoodIngredientRequest:
       type: object
       properties:
+        source_id:
+          type: string
+          maxLength: 40
+        serving_description:
+          type: string
+          maxLength: 160
+        reference_quantity:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,8}(?:\.\d{0,4})?$
+          nullable: true
+        reference_unit:
+          type: string
+          maxLength: 2
+        nutrients:
+          type: object
+          additionalProperties:
+            type: string
+            format: decimal
+            pattern: ^-?\d{0,8}(?:\.\d{0,6})?$
+          description: Per-reference amounts. Missing keys are unknown; keys carry
+            canonical g/mg/ug units.
         name:
           type: string
           minLength: 1
@@ -11908,7 +12100,7 @@ components:
         servings:
           type: string
           format: decimal
-          pattern: ^-?\d{0,4}(?:\.\d{0,2})?$
+          pattern: ^-?\d{0,4}(?:\.\d{0,6})?$
         calories:
           type: string
           format: decimal

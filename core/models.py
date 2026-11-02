@@ -2411,7 +2411,23 @@ class FoodMeal(models.Model):
         return f"{self.date}: {self.name}"
 
 
-class FoodEntry(models.Model):
+class FoodNutritionSnapshot(models.Model):
+    """Optional source/reference metadata; historical unknowns stay unknown."""
+
+    source_id = models.CharField(max_length=40, blank=True, default="")
+    serving_description = models.CharField(max_length=160, blank=True, default="")
+    reference_quantity = models.DecimalField(
+        max_digits=12, decimal_places=4, null=True, blank=True,
+        validators=[MinValueValidator(Decimal("0.0001")), MaxValueValidator(Decimal("100000"))],
+    )
+    reference_unit = models.CharField(max_length=2, blank=True, default="")
+    nutrients = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        abstract = True
+
+
+class FoodEntry(FoodNutritionSnapshot):
     """One food inside a meal.
 
     Nutrition is held per serving with a separate serving count, so editing
@@ -2426,10 +2442,10 @@ class FoodEntry(models.Model):
     )
     name = models.CharField(max_length=150)
     servings = models.DecimalField(
-        max_digits=6,
-        decimal_places=2,
+        max_digits=10,
+        decimal_places=6,
         default=Decimal("1"),
-        validators=[MinValueValidator(Decimal("0.01"))],
+        validators=[MinValueValidator(Decimal("0.000001")), MaxValueValidator(Decimal("9999.99"))],
     )
     calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
     protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
@@ -2518,7 +2534,7 @@ class SavedFoodMeal(models.Model):
         return self.name
 
 
-class SavedFoodIngredient(models.Model):
+class SavedFoodIngredient(FoodNutritionSnapshot):
     """One food inside a saved meal. Mirrors FoodEntry so applying one is a
     straight copy rather than a translation."""
 
@@ -2529,10 +2545,10 @@ class SavedFoodIngredient(models.Model):
     )
     name = models.CharField(max_length=150)
     servings = models.DecimalField(
-        max_digits=6,
-        decimal_places=2,
+        max_digits=10,
+        decimal_places=6,
         default=Decimal("1"),
-        validators=[MinValueValidator(Decimal("0.01"))],
+        validators=[MinValueValidator(Decimal("0.000001")), MaxValueValidator(Decimal("9999.99"))],
     )
     calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
     protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
@@ -3220,7 +3236,7 @@ class PostMeal(models.Model):
         return f"{self.date}: {self.name}"
 
 
-class PostMealEntry(models.Model):
+class PostMealEntry(FoodNutritionSnapshot):
     """One food inside a posted meal.
 
     Mirrors `FoodEntry` field for field, per-serving split included, so
@@ -3235,10 +3251,10 @@ class PostMealEntry(models.Model):
     )
     name = models.CharField(max_length=150)
     servings = models.DecimalField(
-        max_digits=6,
-        decimal_places=2,
+        max_digits=10,
+        decimal_places=6,
         default=Decimal("1"),
-        validators=[MinValueValidator(Decimal("0.01"))],
+        validators=[MinValueValidator(Decimal("0.000001")), MaxValueValidator(Decimal("9999.99"))],
     )
     calories = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
     protein_grams = models.DecimalField(default=Decimal("0"), **NUTRITION_FIELD)
