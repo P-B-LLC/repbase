@@ -66,6 +66,38 @@ class FoodReferenceNormalizationTests(TestCase):
             self.assertIsNone(result["reference_quantity"], label)
             self.assertEqual(result["reference_unit"], "", label)
 
+    def test_unweighed_serving_never_turns_unknown_liquid_basis_into_grams(self):
+        raw = product(serving_size="1 cup", serving_quantity=1, nutrition_data_per="serving")
+        raw["nutriments"].update({"energy-kcal_serving": 50, "proteins_serving": 1,
+                                  "carbohydrates_serving": 2, "fat_serving": 1,
+                                  "fiber_serving": 3, "fiber_100g": 12, "calcium_100g": "0.2"})
+        result = off.normalize(raw)
+        self.assertEqual(result["calories"], 50)
+        self.assertEqual(result["serving_description"], "1 cup")
+        self.assertIsNone(result["reference_quantity"])
+        self.assertEqual(result["reference_unit"], "")
+        self.assertEqual(result["nutrients"]["fiber_g"], 3)
+        self.assertNotIn("calcium_mg", result["nutrients"])
+
+    def test_unknown_serving_unit_with_only_100g_values_is_not_loggable(self):
+        raw = product(serving_size="1 cup", nutrition_data_per="serving")
+        self.assertIsNone(off.normalize(raw))
+
+    def test_explicit_100g_basis_still_supports_weight_when_label_is_a_count(self):
+        result = off.normalize(product(serving_size="1 cup", nutrition_data_per="100g"))
+        self.assertEqual(result["reference_quantity"], 100)
+        self.assertEqual(result["reference_unit"], "g")
+
+    def test_malformed_provider_unit_never_crashes_or_establishes_weight(self):
+        for unit in (["g"], {"unit": "ml"}):
+            raw = product(serving_size="1 cup", serving_quantity=1,
+                          serving_quantity_unit=unit, nutrition_data_per="serving")
+            raw["nutriments"].update({"energy-kcal_serving": 50, "proteins_serving": 1,
+                                      "carbohydrates_serving": 2, "fat_serving": 1})
+            result = off.normalize(raw)
+            self.assertIsNone(result["reference_quantity"])
+            self.assertEqual(result["reference_unit"], "")
+
     def test_nutrient_unit_conversion_uses_normalized_grams_not_input_unit(self):
         raw = product()
         raw["nutriments"].update({"fiber_100g": 4, "sodium_100g": "0.125",

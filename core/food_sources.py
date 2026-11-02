@@ -337,7 +337,7 @@ def _safe_cache(row, discovery):
             if quantity is None:
                 if unit:
                     return None
-            elif _number(quantity) is None or not Decimal("0.0001") <= _number(quantity) <= 100000 or unit not in {"g", "ml"}:
+            elif _number(quantity) is None or not Decimal("0.0001") <= _number(quantity) <= 100000 or unit not in ("g", "ml"):
                 return None
     return row
 
@@ -469,7 +469,7 @@ def _label_reference(raw, serving):
     """An explicit gram/ml quantity, never a guessed cup, count or density."""
     quantity = _number(raw.get("serving_quantity"))
     unit = raw.get("serving_quantity_unit")
-    if quantity is not None and Decimal("0.0001") <= quantity <= 100000 and unit in {"g", "ml"}:
+    if quantity is not None and Decimal("0.0001") <= quantity <= 100000 and unit in ("g", "ml"):
         return quantity.quantize(Decimal("0.0001")), unit
     if isinstance(serving, str):
         matches = re.findall(r"(?<![\w.,+\-])([0-9]+(?:\.[0-9]+)?)\s*(g|ml)\b", serving, re.I)
@@ -529,15 +529,20 @@ def normalize(raw):
     unit = label_unit or raw.get("serving_quantity_unit") or raw.get("product_quantity_unit")
     if basis == "100ml":
         unit = "ml"
-    if not unit:
+    if basis == "serving" and unit not in ("g", "ml"):
+        # A serving such as "1 cup" does not establish whether normalized
+        # *_100g values refer to 100g or 100ml. Preserve complete serving
+        # nutrition, but never invent its mass or liquid density.
+        unit = ""
+    elif not unit:
         # OFF stores liquid values under *_100g as well. Do not label a liquid
         # as grams if a serving explicitly specifies millilitres.
         unit = "ml" if isinstance(serving, str) and re.search(r"\bml\b", serving, re.I) else "g"
-    if unit not in ("g", "ml"):
+    if unit not in ("", "g", "ml"):
         return None
     # If a label gives only an unweighed count ("1 piece"), prefer complete
     # 100g/ml data, so weight entry never asks users to invent a piece's mass.
-    suffixes = ("serving", "100g") if label_quantity is not None else ("100g", "serving")
+    suffixes = ("serving",) if not unit else (("serving", "100g") if label_quantity is not None else ("100g", "serving"))
     for suffix in suffixes:
         if suffix == "serving" and not (isinstance(serving, str) and serving.strip()):
             continue
