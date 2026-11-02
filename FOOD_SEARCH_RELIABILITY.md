@@ -72,6 +72,13 @@ passed. The full core suite and Linux/PostgreSQL CI remain separate gates.
 Draft validation PRs: [backend #40](https://github.com/P-B-LLC/repbase/pull/40)
 and [iOS #42](https://github.com/P-B-LLC/IOS-Frontend/pull/42).
 
+PR merge-candidate CI on food commit `f037e39` stops before tests because main's
+`0087_link_workout_calendar_tasks` and this branch's `0088_recipe_names_per_cookbook`
+are separate migration leaves. This is an existing integration conflict, not a
+passing CI result. The same read-only CI now permits manual exact-branch runs;
+their results do not validate the main merge candidate. Reconcile the migration
+graph and iOS main conflicts, then rerun required checks before promotion.
+
 A bounded real-provider adapter smoke check, with a temporary in-memory cache,
 returned 25 rice candidates, loaded complete details for the selected rice with
 an explicit 100 g basis, and served its repeated discovery from cache. The old-

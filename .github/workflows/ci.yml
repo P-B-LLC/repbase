@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  # Allow exact testing-head validation independently of a conflicted or
+  # otherwise unready PR merge candidate. This does not authorize release.
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
