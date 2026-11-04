@@ -1813,6 +1813,16 @@ class PlannerEntry(models.Model):
         TASK = "task", "Task"
         EVENT = "event", "Event"
 
+    class Color(models.TextChoices):
+        CORAL = "coral", "Coral"
+        AMBER = "amber", "Amber"
+        SAGE = "sage", "Sage"
+        TEAL = "teal", "Teal"
+        SKY = "sky", "Sky"
+        LAVENDER = "lavender", "Lavender"
+        ROSE = "rose", "Rose"
+        SLATE = "slate", "Slate"
+
     class Priority(models.TextChoices):
         """How much this one matters, relative to the rest of its day.
 
@@ -1847,6 +1857,11 @@ class PlannerEntry(models.Model):
     scheduled_date = models.DateField(db_index=True)
     #: When it needs to be done. Null means the day is enough.
     scheduled_time = models.TimeField(null=True, blank=True)
+    color = models.CharField(max_length=12, choices=Color.choices, blank=True, default="")
+    # A wall-clock time plus its IANA zone, not a fixed UTC interval. Keeping
+    # the zone on the entry means changing a profile's zone does not silently
+    # move an existing appointment or its later occurrences.
+    scheduling_timezone = models.CharField(max_length=64, blank=True, default="")
     #: How long it runs, in minutes. Null is the ordinary case: a reminder has
     #: a moment, not a length. Set, it is what a calendar blocks out.
     #:
@@ -1904,6 +1919,10 @@ class PlannerEntry(models.Model):
         null=True,
         blank=True,
     )
+    # Original occurrence identity. Unlike scheduled_date this never changes
+    # when one occurrence is moved. Series grants and private exceptions use
+    # it so moving an event cannot accidentally grant access to another day.
+    recurrence_date = models.DateField(null=True, blank=True, editable=False)
     #: True on a task that is itself a step of another.
     #:
     #: Denormalised from ``parent_id`` so the one-level rule can be a database
@@ -1938,6 +1957,8 @@ class PlannerEntry(models.Model):
         ordering = ("scheduled_date", PRIORITY_RANK, "scheduled_time", "id")
         indexes = [
             models.Index(fields=("owner", "scheduled_date")),
+            models.Index(fields=("recurrence", "recurrence_date"), name="planner_occurrence_identity"),
+            models.Index(fields=("recurrence", "scheduled_date"), name="planner_shared_date"),
         ]
         constraints = [
             # One task per workout per day. The app puts a scheduled workout on
@@ -2028,7 +2049,7 @@ def plan_ahead_limit(owner):
 
 
 class PlannerRecurrence(models.Model):
-    """A task that comes back every so many days.
+    """A task or event that comes back every so many days.
 
     The rule is the thing that repeats; the rows it writes are ordinary tasks.
     That is deliberate — a repeating task has to be tickable, editable and
@@ -2049,6 +2070,21 @@ class PlannerRecurrence(models.Model):
         RepbaseUser,
         on_delete=models.CASCADE,
         related_name="planner_recurrences",
+    )
+    # A split changes a rule's primary key, never the series' identity.
+    series_id = models.UUIDField(default=uuid.uuid4, editable=False, db_index=True)
+    kind = models.CharField(max_length=10, choices=PlannerEntry.Kind.choices, default="task")
+    color = models.CharField(
+        max_length=12, choices=PlannerEntry.Color.choices, blank=True, default=""
+    )
+    scheduling_timezone = models.CharField(max_length=64, blank=True, default="")
+    # Map a moved series' new calendar dates back to their original occurrence
+    # dates. A grant beginning on Monday must not grow when that Monday is
+    # moved to Sunday. Zero for all legacy rules and new unshifted series.
+    identity_offset_days = models.IntegerField(default=0, editable=False)
+    workout = models.ForeignKey(
+        WorkoutTemplate, on_delete=models.SET_NULL, related_name="planner_recurrences",
+        null=True, blank=True,
     )
     #: Every day is 1, every other day 2, and so on.
     interval_days = models.PositiveSmallIntegerField(default=1)
@@ -2085,11 +2121,12 @@ class PlannerRecurrence(models.Model):
                 condition=models.Q(interval_days__gte=1, interval_days__lte=365),
                 name="planner_repeat_interval_within_bounds",
             ),
-            # An empty range describes nothing, and would write no rows while
-            # looking like a live repeat on screen.
+            # A retired rule may have an empty range when its first occurrence
+            # was edited with following scope. Retaining it keeps completed
+            # history and series identity rather than nulling their foreign key.
             models.CheckConstraint(
                 condition=models.Q(ends_on__isnull=True)
-                | models.Q(ends_on__gt=models.F("starts_on")),
+                | models.Q(ends_on__gte=models.F("starts_on")),
                 name="planner_repeat_ends_after_it_starts",
             ),
         ]
@@ -2099,7 +2136,7 @@ class PlannerRecurrence(models.Model):
 
     def step_titles(self):
         """The steps every day of this repeat starts with, in order."""
-        return list(self.steps.order_by("position", "id").values_list("title", flat=True))
+        return [step.title for step in self.steps.all()]
 
     def covers(self, day):
         """Whether this rule writes a task on `day`."""
@@ -2149,7 +2186,8 @@ class PlannerRecurrenceStep(models.Model):
         return self.title
 
 
-def materialize_planner_repeats(owner, through):
+@transaction.atomic
+def materialize_planner_repeats(owner, through, *, recurrence_ids=None):
     """Write out every repeating task due on or before `through`.
 
     Returns the entries created. Idempotent: a day already written, or one the
@@ -2157,14 +2195,18 @@ def materialize_planner_repeats(owner, through):
     again.
     """
     created = []
+    type(owner).objects.select_for_update().get(pk=owner.pk)
     # Whatever the caller asked for, nothing past the horizon: `through`
     # comes from a query parameter, and every day up to it is a row.
     through = min(through, plan_ahead_limit(owner))
-    rules = PlannerRecurrence.objects.filter(owner=owner).prefetch_related("steps")
+    rules = PlannerRecurrence.objects.select_for_update().filter(owner=owner)
+    if recurrence_ids is not None:
+        rules = rules.filter(pk__in=recurrence_ids)
+    rules = rules.prefetch_related("steps")
     for rule in rules:
         if rule.ends_on is not None and rule.ends_on <= rule.starts_on:
             continue
-        step_titles = rule.step_titles()
+        step_titles = rule.step_titles() if rule.kind == PlannerEntry.Kind.TASK else []
         written_through = rule.materialized_through
         for day in rule.days_through(through):
             # Already dealt with on a previous pass. Skipping rather than
@@ -2172,13 +2214,32 @@ def materialize_planner_repeats(owner, through):
             # have it stay deleted.
             if written_through is not None and day <= written_through:
                 continue
+            occurrence_identity = day + timedelta(days=rule.identity_offset_days)
+            # Workout tasks already on the day are a separate intention. Do
+            # not adopt, overwrite or duplicate them just because a repeat
+            # reaches that date. The database's workout/day uniqueness rule
+            # remains the last line of defence for concurrent writers.
+            if rule.kind == PlannerEntry.Kind.TASK and rule.workout_id:
+                existing = PlannerEntry.objects.filter(
+                    owner=owner, workout_id=rule.workout_id,
+                    scheduled_date=day, kind=PlannerEntry.Kind.TASK,
+                ).first()
+                if existing is not None and (
+                    existing.recurrence_id != rule.pk or existing.recurrence_date != occurrence_identity
+                ):
+                    written_through = day
+                    continue
             entry, was_created = PlannerEntry.objects.get_or_create(
                 owner=owner,
                 recurrence=rule,
-                scheduled_date=day,
+                recurrence_date=occurrence_identity,
                 parent=None,
                 defaults={
-                    "kind": PlannerEntry.Kind.TASK,
+                    "scheduled_date": day,
+                    "kind": rule.kind,
+                    "color": rule.color,
+                    "scheduling_timezone": rule.scheduling_timezone,
+                    "workout_id": rule.workout_id,
                     "title": rule.title,
                     "category": rule.category,
                     "priority": rule.priority,
@@ -4698,3 +4759,8 @@ class PasswordResetCode(models.Model):
             and self.attempts < self.MAX_ATTEMPTS
             and timezone.now() < self.expires_at
         )
+
+
+# Imported after planner/follow/block models so invitations remain separate
+# from the owner-only task API and their relationship signals are registered.
+from .calendar_sharing_models import CalendarShare, CalendarShareExclusion  # noqa: E402,F401

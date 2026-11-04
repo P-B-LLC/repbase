@@ -11,7 +11,7 @@ from django.contrib.auth import authenticate, get_user_model, password_validatio
 from django.contrib.auth.validators import ASCIIUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -2093,6 +2093,9 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
     """
 
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    recurrence_id = serializers.IntegerField(read_only=True, allow_null=True)
+    scheduling_timezone = serializers.CharField(required=False, allow_blank=True, max_length=64)
+    optional_response_fields = frozenset({"recurrence_id", "color", "scheduling_timezone"})
     # Explicitly nullable: most entries have no workout, and without this the
     # schema promises a string where the API sends null, which makes every
     # ordinary task fail to decode in a generated client.
@@ -2167,6 +2170,9 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "priority",
             "scheduled_date",
             "scheduled_time",
+            "color",
+            "scheduling_timezone",
+            "recurrence_id",
             "duration_minutes",
             "is_complete",
             "completed_at",
@@ -2188,6 +2194,7 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "owner",
+            "recurrence_id",
             "completed_at",
             "workout_name",
             "subtasks",
@@ -2229,6 +2236,12 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Give the task a name.")
         return title
 
+    def validate_scheduling_timezone(self, value):
+        name = value.strip()
+        if name and name not in available_timezones():
+            raise serializers.ValidationError("Use an IANA time zone this server knows.")
+        return name
+
     def validate_workout(self, value):
         if value is None:
             return value
@@ -2267,22 +2280,30 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         # leave the pair in the state the database constraint forbids, and the
         # refusal would arrive as a 500 instead of a named field error.
         duration = self._resulting(attrs, "duration_minutes")
-        start = self._resulting(attrs, "scheduled_time")
+        start_time = self._resulting(attrs, "scheduled_time")
         # The range is the field's own business. What is left here is the
         # part no single field can see: a length is only meaningful next to a
         # start, and either half can arrive in a different request.
-        if duration is not None and start is None:
+        if duration is not None and start_time is None:
             raise serializers.ValidationError(
                 {"duration_minutes": "Give it a start time before a length."}
             )
 
         # An event happens at a time; it is not something to tick off. Letting
         # one be "completed" would put a checkbox on a birthday.
-        kind = attrs.get("kind", getattr(self.instance, "kind", None))
-        if kind == PlannerEntry.Kind.EVENT and attrs.get("is_complete"):
+        kind = attrs.get("kind", getattr(self.instance, "kind", PlannerEntry.Kind.TASK))
+        if kind == PlannerEntry.Kind.EVENT and (
+            attrs.get("is_complete")
+            or (
+                self.instance is not None and self.instance.completed_at is not None
+                and attrs.get("is_complete") is not False
+            )
+        ):
             raise serializers.ValidationError(
                 {"is_complete": "An event happens rather than being completed."}
             )
+        if kind == PlannerEntry.Kind.EVENT and self.instance is not None and self.instance.subtasks.exists():
+            raise serializers.ValidationError({"kind": "An event cannot have steps."})
 
         # A task with steps does not own its own checkbox: the steps are the
         # record of the work and the heading is derived from them. The same
@@ -2307,35 +2328,57 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         # holding none of its own work.
         parent = attrs.get("parent", getattr(self.instance, "parent", None))
         if parent is not None:
+            if kind == PlannerEntry.Kind.EVENT:
+                raise serializers.ValidationError({"parent": "An event cannot be a step."})
+            if self.instance is not None and self.instance.recurrence_id:
+                raise serializers.ValidationError({"parent": "A repeating entry must stand on its own."})
             attrs["scheduled_date"] = parent.scheduled_date
             attrs["kind"] = PlannerEntry.Kind.TASK
 
-        # Repeats belong to tasks that stand on their own. An event happens
-        # once by definition, and a step repeating independently of the task
-        # it belongs to describes nothing.
+        # The narrower default edits this occurrence. Changing the repeat is
+        # only permitted with an explicit following scope on its owner route;
+        # a read-only recurrence ID can never assign another person's rule.
+        request = self.context.get("request")
+        scope = request.query_params.get("scope", "occurrence") if request else "occurrence"
+        if scope not in ("occurrence", "following"):
+            raise serializers.ValidationError({"scope": "Use occurrence or following."})
+        following = self.instance is not None and scope == "following"
+        if following and (self.instance.recurrence_id is None or self.instance.parent_id is not None):
+            raise serializers.ValidationError({"scope": "Following requires a repeating top-level entry."})
+        if following and (attrs.get("is_complete") is True or self.instance.completed_at is not None):
+            raise serializers.ValidationError({"is_complete": "Complete one occurrence, not a series."})
         interval = attrs.get("repeat_every_days")
         weekdays = attrs.get("repeat_on_weekdays")
         if interval is not None and weekdays is not None:
             raise serializers.ValidationError({"repeat_on_weekdays": "Choose weekdays or an interval, not both."})
-        if self.instance is not None and any(key in attrs for key in ("repeat_every_days", "repeat_on_weekdays", "repeat_ends_on")):
-            raise serializers.ValidationError({"repeat_on_weekdays": "Stop the existing repeat and create a new task to change its schedule."})
-        if interval is not None or weekdays is not None:
-            if kind == PlannerEntry.Kind.EVENT:
-                raise serializers.ValidationError(
-                    {"repeat_every_days": "An event happens once. Use a task to repeat."}
-                )
+        repeat_fields = ("repeat_every_days", "repeat_on_weekdays", "repeat_ends_on")
+        if self.instance is not None and any(key in attrs for key in repeat_fields) and not following:
+            raise serializers.ValidationError({"repeat_on_weekdays": "Use scope=following to change the repeat's schedule."})
+        if interval is not None or weekdays is not None or following:
             if parent is not None:
                 raise serializers.ValidationError(
                     {"repeat_every_days": "A step repeats with its task, not on its own."}
                 )
-            ends = attrs.get("repeat_ends_on")
-            start = attrs.get("scheduled_date", getattr(self.instance, "scheduled_date", None))
+            rule = self.instance.recurrence if following else None
+            effective_weekdays = weekdays if weekdays is not None else (
+                rule.weekdays if rule is not None and interval is None else []
+            )
+            ends = attrs.get("repeat_ends_on", rule.ends_on if rule else None)
+            original_date = (self.instance.recurrence_date or self.instance.scheduled_date) if following else None
+            source_date = original_date - timedelta(days=rule.identity_offset_days) if rule else None
+            start = attrs.get("scheduled_date", source_date)
             repeater = getattr(self.instance, "owner", None) or self.context["request"].user.repbase_profile
+            if following and start is not None and start < today_for(repeater):
+                raise serializers.ValidationError({"scheduled_date": "Following edits cannot move a series into the past."})
             if start is not None and start > plan_ahead_limit(repeater):
                 raise serializers.ValidationError({"repeat_every_days": "A repeat can start at most a year from today."})
-            if weekdays and start is not None:
-                start += timedelta(days=min((weekday - start.weekday()) % 7 for weekday in weekdays))
+            if effective_weekdays and start is not None and (
+                self.instance is None or "scheduled_date" in attrs or weekdays is not None
+            ):
+                start += timedelta(days=min((weekday - start.weekday()) % 7 for weekday in effective_weekdays))
                 attrs["scheduled_date"] = start
+            if self.instance is None and start is not None and start < today_for(repeater) - timedelta(days=30):
+                raise serializers.ValidationError({"scheduled_date": "A new repeat can start at most 30 days before today."})
             if ends is not None and start is not None and ends <= start:
                 raise serializers.ValidationError(
                     {"repeat_ends_on": "The repeat has to end after the day it starts."}
@@ -2352,12 +2395,12 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             if self.instance is None:
                 running = PlannerRecurrence.objects.filter(owner=repeater).filter(
                     Q(ends_on__isnull=True) | Q(ends_on__gt=today_for(repeater))
-                )
-                if running.count() >= core_models.MAX_ACTIVE_PLANNER_REPEATS:
+                ).exclude(ends_on__lte=F("starts_on"))
+                if running.values("series_id").distinct().count() >= core_models.MAX_ACTIVE_PLANNER_REPEATS:
                     raise serializers.ValidationError(
                         {
                             "repeat_every_days": (
-                                "You have as many repeating tasks as one account can "
+                                "You have as many repeating entries as one account can "
                                 "hold. End one before adding another."
                             )
                         }
@@ -2366,6 +2409,15 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"repeat_ends_on": "Say how often it repeats before saying when it stops."}
             )
+
+        if start_time is not None:
+            # scheduled_time is a floating local wall time, made stable by
+            # persisting its zone. Legacy clients may omit this new field.
+            zone = attrs.get("scheduling_timezone", getattr(self.instance, "scheduling_timezone", ""))
+            if not zone:
+                profile = getattr(self.instance, "owner", None) or self.context["request"].user.repbase_profile
+                profile_zone = profile.time_zone
+                attrs["scheduling_timezone"] = profile_zone if profile_zone in available_timezones() else "UTC"
 
         # A workout that was trained cannot be un-trained by a checkbox.
         #

@@ -46,7 +46,7 @@ class PlannerWeekdayTests(RepbaseAPITestMixin, APITestCase):
                       dict(repeat_on_weekdays=[7]), dict(repeat_on_weekdays=[1.5]),
                       dict(repeat_on_weekdays=[0], scheduled_date='9999-12-31'),
                       dict(repeat_on_weekdays=[0], repeat_every_days=2),
-                      dict(repeat_on_weekdays=[0], kind='event', category='appointment')]:
+                      dict(repeat_on_weekdays=[0], kind='event', category='appointment', is_complete=True)]:
             with self.subTest(extra=extra):
                 self.assertEqual(self.create(**extra).status_code, 400)
         self.assertEqual(PlannerRecurrence.objects.count(), 0)

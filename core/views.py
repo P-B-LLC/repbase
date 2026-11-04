@@ -125,6 +125,8 @@ from .models import (
     sync_parent_completion,
     PlannerRecurrence,
     PlannerRecurrenceStep,
+    EVENT_CATEGORIES,
+    TASK_CATEGORIES,
     PLANNER_REPEAT_HORIZON_DAYS,
     SetType,
     performed_sessions,
@@ -2256,21 +2258,34 @@ class GymViewSet(viewsets.ModelViewSet):
             ),
         ]
     ),
+    update=extend_schema(
+        parameters=[OpenApiParameter(
+            name="scope", type=str, location=OpenApiParameter.QUERY,
+            enum=["occurrence", "following"], default="occurrence",
+            description="Occurrence edits one entry. Following splits its repeat from this original occurrence onward; earlier and completed occurrences are unchanged.",
+        )],
+    ),
+    partial_update=extend_schema(
+        parameters=[OpenApiParameter(
+            name="scope", type=str, location=OpenApiParameter.QUERY,
+            enum=["occurrence", "following"], default="occurrence",
+            description="Occurrence edits one entry. Following may change repeat_every_days, repeat_on_weekdays or repeat_ends_on for this and future unfinished occurrences. Read access to a shared calendar never permits editing.",
+        )],
+    ),
     destroy=extend_schema(
         parameters=[
             OpenApiParameter(
                 name="scope",
                 type=str,
                 location=OpenApiParameter.QUERY,
-                enum=["following"],
+                enum=["occurrence", "following"],
+                default="occurrence",
                 description=(
-                    "`following` ends a repeating task from this day on, "
-                    "clearing the unfinished days after it. Omitted, only this "
-                    "day is removed -- a delete that quietly took a year of "
-                    "tasks with it is the worst kind of surprise, so the wider "
-                    "act has to be asked for. Days already ticked off are kept "
-                    "either way: ending a habit is not saying it never "
-                    "happened."
+                    "Following ends this repeat from the addressed original "
+                    "occurrence and removes unfinished future projections, "
+                    "preserving completed history and earlier dates. A "
+                    "completed occurrence cannot use following scope. "
+                    "Occurrence (the default) deletes only the addressed entry."
                 ),
             ),
         ]
@@ -2287,7 +2302,7 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
     # is eleven queries, and the serializer reads `subtasks` three times per
     # row -- for the array and for both counts -- so the prefetched cache is
     # what keeps that one query rather than thirty.
-    queryset = PlannerEntry.objects.select_related("owner", "workout").prefetch_related(
+    queryset = PlannerEntry.objects.select_related("owner", "workout", "recurrence").prefetch_related(
         "subtasks"
     )
     serializer_class = PlannerEntrySerializer
@@ -2338,12 +2353,17 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
             queryset = queryset.filter(completed_at__isnull=not wants_complete)
         return queryset
 
+    @transaction.atomic
     def perform_create(self, serializer):
+        owner = self.owner_profile()
+        type(owner).objects.select_for_update().get(pk=owner.pk)
+        serializer.validated_data.update(serializer.validate(dict(serializer.validated_data)))
+        if self.request.query_params.get("scope", "occurrence") != "occurrence":
+            raise ValidationError({"scope": "Create an entry before editing a series."})
         # Write-only, so they are not fields of the row being saved.
         interval = serializer.validated_data.pop("repeat_every_days", None)
         weekdays = serializer.validated_data.pop("repeat_on_weekdays", None)
         ends_on = serializer.validated_data.pop("repeat_ends_on", None)
-        owner = self.owner_profile()
         entry = serializer.save(owner=owner)
 
         if interval is not None or weekdays is not None:
@@ -2359,12 +2379,17 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
                 scheduled_time=entry.scheduled_time,
                 duration_minutes=entry.duration_minutes,
                 notes=entry.notes,
+                kind=entry.kind,
+                color=entry.color,
+                scheduling_timezone=entry.scheduling_timezone,
+                workout=entry.workout,
             )
             # The day the person actually filled in belongs to the rule too,
             # and is already written -- so it is claimed rather than written
             # again, and the rule starts counting from the day after.
             entry.recurrence = rule
-            entry.save(update_fields=["recurrence", "updated_at"])
+            entry.recurrence_date = entry.scheduled_date
+            entry.save(update_fields=["recurrence", "recurrence_date", "updated_at"])
             rule.materialized_through = entry.scheduled_date
             rule.save(update_fields=["materialized_through", "updated_at"])
             materialize_planner_repeats(
@@ -2441,23 +2466,216 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
                 ]
             )
 
+    @transaction.atomic
     def perform_update(self, serializer):
-        entry = serializer.save()
-        sync_parent_completion(entry.parent)
+        owner = self.owner_profile()
+        type(owner).objects.select_for_update().get(pk=owner.pk)
+        # The owner filter is deliberately repeated under the lock. A shared
+        # calendar grants read access; it never enters this mutation route.
+        serializer.instance = get_object_or_404(
+            self.scope_to_owner(PlannerEntry.objects.select_for_update()).select_related("recurrence"),
+            pk=serializer.instance.pk,
+        )
+        serializer.validated_data.update(serializer.validate(dict(serializer.validated_data)))
+        if self.request.query_params.get("scope") == "following":
+            serializer.instance = self._update_following(serializer)
+        else:
+            entry = serializer.save()
+            sync_parent_completion(entry.parent)
 
+    def _update_following(self, serializer):
+        """Split a rule, not its history, keeping each occurrence's identity.
+
+        Unmentioned occurrence-specific changes survive a metadata edit. An
+        explicit date/weekday/interval change rebuilds future dates, but never
+        changes the original occurrence date used for sharing boundaries and
+        privacy exceptions. Completed rows stay on their original rule.
+        """
+        entry = serializer.instance
+        owner = entry.owner
+        rule = get_object_or_404(
+            PlannerRecurrence.objects.select_for_update(), pk=entry.recurrence_id, owner=owner,
+        )
+        identity = entry.recurrence_date or entry.scheduled_date
+        boundary = identity - timedelta(days=rule.identity_offset_days)
+        if boundary < today_for(owner):
+            raise ValidationError({"scope": "Edit a past occurrence on its own; following starts today or later."})
+        if not rule.covers(boundary):
+            raise ValidationError({"scope": "This occurrence no longer belongs to an active stretch of the repeat."})
+        changes = dict(serializer.validated_data)
+        changes.pop("is_complete", None)  # False is a harmless legacy form value, not a series action.
+        if not serializer.partial:
+            for field in serializer.SCHEDULE_FIELDS_CLEARED_BY_PUT:
+                changes.setdefault(field, None)
+        interval = changes.pop("repeat_every_days", None)
+        weekdays = changes.pop("repeat_on_weekdays", None)
+        ends = changes.pop("repeat_ends_on", rule.ends_on)
+        calendar_changed = "scheduled_date" in changes or interval is not None or weekdays is not None
+        first_day = changes.pop("scheduled_date", boundary)
+        fields = (
+            "kind", "title", "category", "priority", "scheduled_time", "duration_minutes",
+            "notes", "color", "scheduling_timezone", "workout",
+        )
+        template = {name: changes.get(name, getattr(rule, name)) for name in fields}
+        self._validate_repeat_projection(template)
+        future = list(PlannerEntry.objects.select_for_update().filter(
+            owner=owner, recurrence=rule, parent__isnull=True,
+        ).filter(
+            Q(recurrence_date__gte=identity)
+            | Q(recurrence_date__isnull=True, scheduled_date__gte=boundary)
+        ).prefetch_related("subtasks"))
+        if template["kind"] == PlannerEntry.Kind.EVENT and any(
+            row.completed_at is None and row.subtasks.all() for row in future
+        ):
+            raise ValidationError({"kind": "Remove the task steps before changing a series to events."})
+        next_rule = PlannerRecurrence(
+            owner=owner, series_id=rule.series_id, starts_on=first_day, ends_on=ends,
+            interval_days=interval if interval is not None else (1 if weekdays is not None else rule.interval_days),
+            weekdays=weekdays if weekdays is not None else ([] if interval is not None else rule.weekdays),
+            identity_offset_days=(identity - first_day).days,
+            **template,
+        )
+        horizon = min(
+            max(rule.materialized_through or boundary, first_day + timedelta(days=PLANNER_REPEAT_HORIZON_DAYS)),
+            plan_ahead_limit(owner),
+        )
+        desired = {
+            day + timedelta(days=next_rule.identity_offset_days): day
+            for day in next_rule.days_through(horizon)
+        }
+        existing = {(row.recurrence_date or row.scheduled_date): row for row in future}
+        updates, deletions, creations = [], [], []
+        for occurrence_identity, row in existing.items():
+            if row.completed_at is not None:
+                continue
+            if occurrence_identity not in desired:
+                deletions.append(row.pk)
+                continue
+            for name in fields:
+                if name in changes:
+                    setattr(row, name, changes[name])
+            if calendar_changed:
+                row.scheduled_date = desired[occurrence_identity]
+            row.recurrence_date = occurrence_identity
+            self._validate_repeat_projection({name: getattr(row, name) for name in fields})
+            updates.append(row)
+        for occurrence_identity, day in desired.items():
+            if occurrence_identity in existing:
+                continue
+            old_day = occurrence_identity - timedelta(days=rule.identity_offset_days)
+            if (
+                rule.materialized_through is not None and old_day <= rule.materialized_through
+                and rule.covers(old_day)
+            ):
+                # A deliberately deleted occurrence stays deleted when merely
+                # renaming or recoloring its series.
+                continue
+            creations.append(PlannerEntry(
+                owner=owner, scheduled_date=day, recurrence_date=occurrence_identity, **template,
+            ))
+
+        # Check the final state before changing anything. In particular, a
+        # workout repeat cannot steal a separately created workout/day row.
+        affected_ids = deletions + [row.pk for row in updates]
+        targets = set()
+        for row in updates + creations:
+            if row.kind != PlannerEntry.Kind.TASK or not row.workout_id:
+                continue
+            key = (row.workout_id, row.scheduled_date)
+            if key in targets:
+                raise ValidationError({"workout": "A workout is already planned on one of the resulting dates."})
+            targets.add(key)
+        if targets:
+            clashes = PlannerEntry.objects.filter(
+                owner=owner, kind=PlannerEntry.Kind.TASK,
+                workout_id__in={target[0] for target in targets},
+                scheduled_date__in={target[1] for target in targets},
+            ).exclude(pk__in=affected_ids).values_list("workout_id", "scheduled_date")
+            if targets.intersection(clashes):
+                raise ValidationError({"workout": "A workout is already planned on one of the resulting dates."})
+        next_rule.save()
+        step_titles = rule.step_titles() if next_rule.kind == PlannerEntry.Kind.TASK else []
+        PlannerRecurrenceStep.objects.bulk_create([
+            PlannerRecurrenceStep(recurrence=next_rule, title=title, position=at)
+            for at, title in enumerate(step_titles)
+        ])
+        rule.ends_on = boundary
+        rule.save(update_fields=["ends_on", "updated_at"])
+        PlannerEntry.objects.filter(owner=owner, pk__in=deletions).delete()
+        # Temporarily remove workout links inside this transaction so shifting
+        # a sequence of task dates does not collide with its own previous day.
+        PlannerEntry.objects.filter(owner=owner, pk__in=[row.pk for row in updates]).update(workout=None)
+        now = timezone.now()
+        for row in updates:
+            row.recurrence = next_rule
+            row.updated_at = now
+        PlannerEntry.objects.bulk_update(
+            updates, [*fields, "recurrence", "recurrence_date", "scheduled_date", "updated_at"],
+        )
+        if calendar_changed and updates:
+            PlannerEntry.objects.filter(parent_id__in=[row.pk for row in updates]).update(
+                scheduled_date=Case(*[
+                    When(parent_id=row.pk, then=Value(row.scheduled_date)) for row in updates
+                ], output_field=models.DateField()),
+                updated_at=now,
+            )
+        for row in creations:
+            row.recurrence = next_rule
+        PlannerEntry.objects.bulk_create(creations)
+        if step_titles:
+            PlannerEntry.objects.bulk_create([
+                PlannerEntry(
+                    owner=owner, kind=PlannerEntry.Kind.TASK, title=title,
+                    category=row.category, scheduled_date=row.scheduled_date,
+                    parent=row, is_subtask=True,
+                ) for row in creations for title in step_titles
+            ])
+        next_rule.materialized_through = horizon
+        next_rule.save(update_fields=["materialized_through", "updated_at"])
+        entry.refresh_from_db()
+        return entry
+
+    @staticmethod
+    def _validate_repeat_projection(values):
+        # Validation against just the addressed occurrence is not enough:
+        # that occurrence may have different overrides from the rule or from
+        # another future row. Reject every resulting invalid pair before any
+        # bulk update, rather than relying on a constraint to turn it into 500.
+        if values["duration_minutes"] is not None and values["scheduled_time"] is None:
+            raise ValidationError({"duration_minutes": "Include a start time or remove the duration for the resulting series."})
+        categories = EVENT_CATEGORIES if values["kind"] == PlannerEntry.Kind.EVENT else TASK_CATEGORIES
+        if values["category"] not in categories:
+            raise ValidationError({"category": "Choose a category matching every resulting entry's kind."})
+
+    @transaction.atomic
     def perform_destroy(self, instance):
         # `?scope=following` ends the repeat from this day on; anything else
         # removes this day alone. Default is the narrow one on purpose: a
         # delete that quietly took a year of tasks with it would be the worst
         # kind of surprise, so the wider act has to be asked for.
-        following = self.request.query_params.get("scope") == "following"
+        owner = self.owner_profile()
+        type(owner).objects.select_for_update().get(pk=owner.pk)
+        scope = self.request.query_params.get("scope", "occurrence")
+        if scope not in ("occurrence", "following"):
+            raise ValidationError({"scope": "Use occurrence or following."})
+        instance = get_object_or_404(
+            self.scope_to_owner(PlannerEntry.objects.select_for_update()).select_related("recurrence"), pk=instance.pk,
+        )
+        following = scope == "following"
+        if following and (instance.recurrence_id is None or instance.parent_id is not None):
+            raise ValidationError({"scope": "Following requires a repeating top-level entry."})
+        if following and instance.completed_at is not None:
+            raise ValidationError({"scope": "Delete a completed occurrence on its own, not with following scope."})
         rule = instance.recurrence if following else None
 
         # Held before the row goes: afterwards `instance.parent` still answers
         # from the in-memory object, but reading it after the delete is the
         # kind of thing that quietly stops working.
         parent = instance.parent
-        day = instance.scheduled_date
+        identity = instance.recurrence_date or instance.scheduled_date
+        day = identity - timedelta(days=rule.identity_offset_days) if rule else instance.scheduled_date
+        if following and day < today_for(owner):
+            raise ValidationError({"scope": "Delete a past occurrence on its own; following starts today or later."})
         super().perform_destroy(instance)
 
         if rule is not None:
@@ -2467,23 +2685,14 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
             PlannerEntry.objects.filter(
                 owner=instance.owner,
                 recurrence=rule,
-                scheduled_date__gte=day,
+                recurrence_date__gte=identity,
                 completed_at__isnull=True,
             ).delete()
 
-            if day <= rule.starts_on:
-                # Ended on the day it began, so it never ran. There is no
-                # earlier stretch to preserve and closing it here would ask for
-                # an empty range, which the rule refuses to be. Anything it did
-                # write and that survived is detached rather than removed --
-                # the foreign key is SET_NULL, so a day already ticked off
-                # stays on the calendar it happened on.
-                rule.delete()
-            else:
-                # Closed rather than deleted, so the days before this one keep
-                # resolving through the rule that planned them.
-                rule.ends_on = day
-                rule.save(update_fields=["ends_on", "updated_at"])
+            # Closed even at its first occurrence, so surviving history keeps
+            # the original rule/series identity and never loses its privacy key.
+            rule.ends_on = min(day, rule.ends_on) if rule.ends_on else day
+            rule.save(update_fields=["ends_on", "updated_at"])
         # Deleting the last outstanding step can finish the parent, and
         # deleting every step hands the checkbox back to the parent itself --
         # `sync_parent_completion` leaves a childless task alone, so what it

@@ -476,6 +476,325 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/calendar/invitations/:
+    get:
+      operationId: calendar_invitations_list
+      description: Questions addressed only to the signed-in follower; no social push.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarShareList'
+          description: ''
+  /api/v1/calendar/invitations/{id}/accept/:
+    post:
+      operationId: calendar_invitations_accept_create
+      description: Questions addressed only to the signed-in follower; no social push.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarShare'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarShareConflict'
+          description: ''
+  /api/v1/calendar/invitations/{id}/decline/:
+    post:
+      operationId: calendar_invitations_decline_create
+      description: Questions addressed only to the signed-in follower; no social push.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarShare'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarShareConflict'
+          description: ''
+  /api/v1/calendar/share-recipients/:
+    get:
+      operationId: calendar_share_recipients_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Search your followers, not the people you follow. At most 80
+          characters are matched.
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarPersonList'
+          description: ''
+  /api/v1/calendar/shared/day/:
+    get:
+      operationId: calendar_shared_day_list
+      description: Read-only shared items, separate from own tasks, counters and reminders.
+      parameters:
+      - in: query
+        name: date
+        schema:
+          type: string
+          format: date
+        required: true
+      - in: query
+        name: owner_ids
+        schema:
+          type: string
+        description: Optional comma-separated visible shared owner ids (at most 250).
+          Omit for all accepted calendars; explicit empty value hides all. Applied
+          before counts and the two-item preview.
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSharedCalendarItemList'
+          description: ''
+  /api/v1/calendar/shared/month/:
+    get:
+      operationId: calendar_shared_month_retrieve
+      description: Read-only shared items, separate from own tasks, counters and reminders.
+      parameters:
+      - in: query
+        name: end
+        schema:
+          type: string
+          format: date
+        required: true
+      - in: query
+        name: owner_ids
+        schema:
+          type: string
+        description: Optional comma-separated visible shared owner ids (at most 250).
+          Omit for all accepted calendars; explicit empty value hides all. Applied
+          before counts and the two-item preview.
+      - in: query
+        name: start
+        schema:
+          type: string
+          format: date
+        required: true
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SharedCalendarMonth'
+          description: ''
+  /api/v1/calendar/shared/people/:
+    get:
+      operationId: calendar_shared_people_list
+      description: Read-only shared items, separate from own tasks, counters and reminders.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarPersonList'
+          description: ''
+  /api/v1/calendar/shares/:
+    get:
+      operationId: calendar_shares_list
+      description: Owner management; never reads another account's private planner
+        row.
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - in: query
+        name: source_entry_id
+        schema:
+          type: integer
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedCalendarShareList'
+          description: ''
+    post:
+      operationId: calendar_shares_create
+      description: Invite up to 20 current followers. Default scope is only this occurrence.
+        An old declined/revoked invitation requires explicit reinvite=true; retries
+        never silently reactivate it.
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarShareCreateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarShareCreateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarShareCreateRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarShareBatch'
+          description: ''
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarShareBatch'
+          description: ''
+        '409':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarShareConflict'
+          description: ''
+  /api/v1/calendar/shares/{id}/revoke/:
+    post:
+      operationId: calendar_shares_revoke_create
+      description: Owner management; never reads another account's private planner
+        row.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - calendar
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CalendarShare'
+          description: ''
+  /api/v1/calendar/shares/privacy/:
+    post:
+      operationId: calendar_shares_privacy_create
+      description: Make only this occurrence private, or stop sharing its entire repeating
+        lineage. Privacy exceptions survive date moves and future-rule edits.
+      tags:
+      - calendar
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CalendarSharePrivacyRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CalendarSharePrivacyRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CalendarSharePrivacyRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
   /api/v1/cycles/:
     get:
       operationId: cycles_list
@@ -3001,6 +3320,16 @@ paths:
           type: integer
         description: A unique integer value identifying this planner entry.
         required: true
+      - in: query
+        name: scope
+        schema:
+          type: string
+          enum:
+          - following
+          - occurrence
+          default: occurrence
+        description: Occurrence edits one entry. Following splits its repeat from
+          this original occurrence onward; earlier and completed occurrences are unchanged.
       tags:
       - planner
       requestBody:
@@ -3039,6 +3368,17 @@ paths:
           type: integer
         description: A unique integer value identifying this planner entry.
         required: true
+      - in: query
+        name: scope
+        schema:
+          type: string
+          enum:
+          - following
+          - occurrence
+          default: occurrence
+        description: Occurrence edits one entry. Following may change repeat_every_days,
+          repeat_on_weekdays or repeat_ends_on for this and future unfinished occurrences.
+          Read access to a shared calendar never permits editing.
       tags:
       - planner
       requestBody:
@@ -3082,11 +3422,12 @@ paths:
           type: string
           enum:
           - following
-        description: '`following` ends a repeating task from this day on, clearing
-          the unfinished days after it. Omitted, only this day is removed -- a delete
-          that quietly took a year of tasks with it is the worst kind of surprise,
-          so the wider act has to be asked for. Days already ticked off are kept either
-          way: ending a habit is not saying it never happened.'
+          - occurrence
+          default: occurrence
+        description: Following ends this repeat from the addressed original occurrence
+          and removes unfinished future projections, preserving completed history
+          and earlier dates. A completed occurrence cannot use following scope. Occurrence
+          (the default) deletes only the addressed entry.
       tags:
       - planner
       security:
@@ -6839,6 +7180,9 @@ components:
       required:
       - token
       - user
+    BlankEnum:
+      enum:
+      - ''
     Block:
       type: object
       description: |-
@@ -6945,6 +7289,122 @@ components:
       required:
       - csrf_token
       - user
+    CalendarPerson:
+      type: object
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        display_name:
+          type: string
+        profile_photo_url:
+          type: string
+          nullable: true
+      required:
+      - display_name
+      - id
+      - profile_photo_url
+      - username
+    CalendarShare:
+      type: object
+      properties:
+        id:
+          type: integer
+        owner:
+          $ref: '#/components/schemas/CalendarPerson'
+        recipient:
+          $ref: '#/components/schemas/CalendarPerson'
+        scope:
+          type: string
+        status:
+          type: string
+        starts_on:
+          type: string
+          format: date
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        responded_at:
+          type: string
+          format: date-time
+          nullable: true
+        item:
+          allOf:
+          - $ref: '#/components/schemas/SharedCalendarItem'
+          nullable: true
+        applies_to_selected_occurrence:
+          type: boolean
+          description: 'Owner management only: whether an active or pending grant
+            covers the selected occurrence. False for a later series boundary or a
+            private exception; acceptance is still required for recipient visibility.'
+      required:
+      - created_at
+      - id
+      - item
+      - owner
+      - recipient
+      - responded_at
+      - scope
+      - starts_on
+      - status
+    CalendarShareBatch:
+      type: object
+      properties:
+        shares:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarShare'
+      required:
+      - shares
+    CalendarShareConflict:
+      type: object
+      properties:
+        code:
+          type: string
+          description: reinvite_required, scope_conflict, or state_conflict. Plain
+            string for forward compatibility.
+        detail:
+          type: string
+      required:
+      - code
+      - detail
+    CalendarShareCreateRequest:
+      type: object
+      properties:
+        source_entry_id:
+          type: integer
+          minimum: 1
+        recipient_ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          maxItems: 20
+          minItems: 1
+        scope:
+          allOf:
+          - $ref: '#/components/schemas/ScopeEnum'
+          default: occurrence
+        reinvite:
+          type: boolean
+          default: false
+      required:
+      - recipient_ids
+      - source_entry_id
+    CalendarSharePrivacyRequest:
+      type: object
+      properties:
+        source_entry_id:
+          type: integer
+          minimum: 1
+        scope:
+          allOf:
+          - $ref: '#/components/schemas/ScopeEnum'
+          default: occurrence
+      required:
+      - source_entry_id
     Capabilities:
       type: object
       properties:
@@ -7062,6 +7522,26 @@ components:
           readOnly: true
       required:
       - cleared
+    ColorEnum:
+      enum:
+      - coral
+      - amber
+      - sage
+      - teal
+      - sky
+      - lavender
+      - rose
+      - slate
+      type: string
+      description: |-
+        * `coral` - Coral
+        * `amber` - Amber
+        * `sage` - Sage
+        * `teal` - Teal
+        * `sky` - Sky
+        * `lavender` - Lavender
+        * `rose` - Rose
+        * `slate` - Slate
     CommunitySpotlight:
       type: object
       properties:
@@ -8835,6 +9315,52 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BodyWeightEntry'
+    PaginatedCalendarPersonList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarPerson'
+    PaginatedCalendarShareList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/CalendarShare'
     PaginatedCookbookList:
       type: object
       required:
@@ -9222,6 +9748,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SetEntry'
+    PaginatedSharedCalendarItemList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedCalendarItem'
     PaginatedWorkoutCycleList:
       type: object
       required:
@@ -9623,6 +10172,13 @@ components:
           type: string
           format: time
           nullable: true
+        color:
+          oneOf:
+          - $ref: '#/components/schemas/ColorEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        scheduling_timezone:
+          type: string
+          maxLength: 64
         duration_minutes:
           type: integer
           maximum: 1440
@@ -10150,6 +10706,17 @@ components:
           type: string
           format: time
           nullable: true
+        color:
+          oneOf:
+          - $ref: '#/components/schemas/ColorEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        scheduling_timezone:
+          type: string
+          maxLength: 64
+        recurrence_id:
+          type: integer
+          readOnly: true
+          nullable: true
         duration_minutes:
           type: integer
           maximum: 1440
@@ -10255,6 +10822,13 @@ components:
           type: string
           format: time
           nullable: true
+        color:
+          oneOf:
+          - $ref: '#/components/schemas/ColorEnum'
+          - $ref: '#/components/schemas/BlankEnum'
+        scheduling_timezone:
+          type: string
+          maxLength: 64
         duration_minutes:
           type: integer
           maximum: 1440
@@ -12253,6 +12827,14 @@ components:
       - name
       - renamed
       - workout
+    ScopeEnum:
+      enum:
+      - occurrence
+      - series
+      type: string
+      description: |-
+        * `occurrence` - occurrence
+        * `series` - series
     SessionCardioRequest:
       type: object
       description: A cardio finisher performed after a session's exercises.
@@ -12536,6 +13118,79 @@ components:
         * `warmup` - Warm-up
         * `drop` - Drop set
         * `failure` - Failure
+    SharedCalendarDaySummary:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        total:
+          type: integer
+          minimum: 0
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedCalendarItem'
+      required:
+      - date
+      - items
+      - total
+    SharedCalendarItem:
+      type: object
+      properties:
+        id:
+          type: string
+        share_id:
+          type: integer
+        owner:
+          $ref: '#/components/schemas/CalendarPerson'
+        kind:
+          type: string
+        title:
+          type: string
+        category:
+          type: string
+        color:
+          type: string
+        scheduling_timezone:
+          type: string
+        scheduled_date:
+          type: string
+          format: date
+        scheduled_time:
+          type: string
+          format: time
+          nullable: true
+        duration_minutes:
+          type: integer
+          nullable: true
+        is_recurring:
+          type: boolean
+        is_complete:
+          type: boolean
+      required:
+      - category
+      - color
+      - duration_minutes
+      - id
+      - is_complete
+      - is_recurring
+      - kind
+      - owner
+      - scheduled_date
+      - scheduled_time
+      - scheduling_timezone
+      - share_id
+      - title
+    SharedCalendarMonth:
+      type: object
+      properties:
+        days:
+          type: array
+          items:
+            $ref: '#/components/schemas/SharedCalendarDaySummary'
+      required:
+      - days
     StatusEnum:
       enum:
       - planned

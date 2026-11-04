@@ -4649,11 +4649,15 @@ class PlannerRepeatTests(RepbaseAPITestMixin, APITestCase):
 
     # -------------------------------------------------------------- refusing
 
-    def test_an_event_cannot_repeat(self):
-        refused = self.make("Dentist", kind="event", category="appointment",
+    def test_an_event_can_repeat_but_cannot_be_completed(self):
+        created = self.make("Dentist", kind="event", category="appointment",
                             repeat_every_days=1)
+        self.assertEqual(created.status_code, 201, created.data)
+        refused = self.client.patch(
+            f"{self.PLANNER}{created.data['id']}/", {"is_complete": True}, format="json",
+        )
         self.assertEqual(refused.status_code, 400)
-        self.assertIn("repeat_every_days", refused.data)
+        self.assertIn("is_complete", refused.data)
 
     def test_a_step_cannot_repeat_on_its_own(self):
         parent = self.make("Move house", category="errand")

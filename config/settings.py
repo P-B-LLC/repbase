@@ -358,6 +358,9 @@ REST_FRAMEWORK = {
         # Following is how spam accounts announce themselves to everybody at
         # once. Generous for a person, tight for a script.
         'follow': os.environ.get('REPBASE_THROTTLE_FOLLOW', '200/hour'),
+        # Invitations target at most 20 followers each; an explicit grant cap
+        # bounds projection work independently of this per-owner write limit.
+        'calendar_invite': os.environ.get('REPBASE_THROTTLE_CALENDAR_INVITE', '30/hour'),
         # Reports reach a human queue. A person files a few; a flood is an
         # attempt to bury the queue or to get something taken down by volume.
         'report': os.environ.get('REPBASE_THROTTLE_REPORT', '30/hour'),

@@ -1,6 +1,8 @@
 from django.urls import path
 from .consent_views import SafetyConsentView, AccountAgreementView
 from .cookbook_views import CookbookViewSet
+from .calendar_sharing_views import (CalendarInvitationViewSet, CalendarShareRecipientViewSet,
+                                     CalendarShareViewSet, SharedCalendarViewSet)
 from .video_pipeline_views import UploadStart, UploadFinish, PlaybackEvent, serve_asset
 from rest_framework.routers import DefaultRouter
 from .access_views import (MyAccessView, AccessUsersView, UserAccessView, UserStatusView,
@@ -73,6 +75,10 @@ router.register("workout-exercises", WorkoutExerciseViewSet)
 router.register("schedules", WorkoutScheduleViewSet)
 router.register("recurrences", WorkoutRecurrenceViewSet)
 router.register("planner", PlannerEntryViewSet)
+router.register("calendar/shares", CalendarShareViewSet, basename="calendar-share")
+router.register("calendar/invitations", CalendarInvitationViewSet, basename="calendar-invitation")
+router.register("calendar/share-recipients", CalendarShareRecipientViewSet, basename="calendar-share-recipient")
+router.register("calendar/shared", SharedCalendarViewSet, basename="shared-calendar")
 router.register("gyms", GymViewSet)
 router.register("food/meals", FoodMealViewSet)
 router.register("food/entries", FoodEntryViewSet)
