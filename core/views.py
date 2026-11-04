@@ -2470,10 +2470,12 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
     def perform_update(self, serializer):
         owner = self.owner_profile()
         type(owner).objects.select_for_update().get(pk=owner.pk)
+        # Lock only the entry: recurrence is nullable, and PostgreSQL refuses
+        # FOR UPDATE on that outer-joined side. The rule is locked separately.
         # The owner filter is deliberately repeated under the lock. A shared
         # calendar grants read access; it never enters this mutation route.
         serializer.instance = get_object_or_404(
-            self.scope_to_owner(PlannerEntry.objects.select_for_update()).select_related("recurrence"),
+            self.scope_to_owner(PlannerEntry.objects.select_for_update(of=("self",))).select_related("recurrence"),
             pk=serializer.instance.pk,
         )
         serializer.validated_data.update(serializer.validate(dict(serializer.validated_data)))
@@ -2659,7 +2661,7 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
         if scope not in ("occurrence", "following"):
             raise ValidationError({"scope": "Use occurrence or following."})
         instance = get_object_or_404(
-            self.scope_to_owner(PlannerEntry.objects.select_for_update()).select_related("recurrence"), pk=instance.pk,
+            self.scope_to_owner(PlannerEntry.objects.select_for_update(of=("self",))).select_related("recurrence"), pk=instance.pk,
         )
         following = scope == "following"
         if following and (instance.recurrence_id is None or instance.parent_id is not None):
