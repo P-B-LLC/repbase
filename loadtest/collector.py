@@ -63,7 +63,7 @@ class Collector:
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.connections, self.lock_waiters, self.active = [], [], []
         self.queue_samples = {name: [] for name in QUEUE_AGES}
-        self.cpu_totals = {}
+        self.cpu_first, self.cpu_latest = {}, {}
         self.cpu_started = self.cpu_stopped = None
         self.statements_available = False
 
@@ -81,8 +81,18 @@ class Collector:
             except Exception:  # noqa: BLE001 - a provider may refuse CONFIG; the stat is then None
                 self.redis = None
 
+    def _sample_cpu(self, starting=False):
+        """Backends come and go as workers recycle, and a process that has
+        exited can no longer be asked, so CPU time is read on every tick. A
+        process first seen after the start did all its work during the run."""
+        if not self.local:
+            return
+        for pid, seconds in (postgres_cpu_seconds() or {}).items():
+            self.cpu_first.setdefault(pid, seconds if starting else 0.0)
+            self.cpu_latest[pid] = seconds
+
     def start(self):
-        self.cpu_before = postgres_cpu_seconds() if self.local else None
+        self._sample_cpu(starting=True)
         self.cpu_started = time.monotonic()
         self.thread.start()
 
@@ -106,23 +116,22 @@ class Collector:
                 self.connections.append(row[0])
                 self.lock_waiters.append(row[1])
                 self.active.append(row[2])
+                self._sample_cpu()
                 if tick % 10 == 0:
                     self._queues(db)
                 tick += 1
                 self.stop_event.wait(self.interval)
 
     def stop(self):
-        self.cpu_after = postgres_cpu_seconds() if self.local else None
+        self._sample_cpu()
         self.cpu_stopped = time.monotonic()
         self.stop_event.set()
         self.thread.join(timeout=10)
 
     def _cpu(self):
-        if not self.cpu_before or not self.cpu_after:
+        if not self.cpu_latest:
             return None, None
-        used = sum(
-            max(0.0, seconds - self.cpu_before.get(pid, 0.0)) for pid, seconds in self.cpu_after.items()
-        )
+        used = sum(max(0.0, seconds - self.cpu_first.get(pid, 0.0)) for pid, seconds in self.cpu_latest.items())
         cores = used / max(self.cpu_stopped - self.cpu_started, 0.001)
         return round(cores, 3), round(cores / (os.cpu_count() or 1) * 100, 2)
 
