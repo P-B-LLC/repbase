@@ -12,7 +12,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 import os
 from pathlib import Path
-from .environment import database
+from .environment import database, redis_cache
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -93,16 +93,7 @@ ANALYTICS_ALERT_EMAILS = os.getenv('ANALYTICS_ALERT_EMAILS', '')
 # for anyone to be on.
 REDIS_URL = os.getenv('REDIS_URL', '')
 if REDIS_URL:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-            'LOCATION': REDIS_URL,
-            'KEY_PREFIX': os.getenv('CACHE_KEY_PREFIX', 'rytivo'),
-            # Short: a cache that hangs should fail the request quickly rather
-            # than holding a worker open waiting for it.
-            'OPTIONS': {'socket_connect_timeout': 3, 'socket_timeout': 3},
-        }
-    }
+    CACHES = {'default': redis_cache(os.environ, REDIS_URL)}
 else:
     # Django's default, with room. Its stock ceiling is 300 entries, and one
     # For You ranking shares counts for several hundred posts through the
