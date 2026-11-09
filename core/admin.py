@@ -261,7 +261,15 @@ class PostAdmin(admin.ModelAdmin):
     inlines = (PostReportInline,)
     actions = ("hide_posts", "unhide_posts")
     # Set with is_hidden, never by hand: the moderation cooldown counts from it.
-    readonly_fields = ("hidden_at", "published_at")
+    # The rest is what the post was published as -- what it answers, its
+    # sound, the tags read out of its caption -- which is shown and not
+    # edited: a moderator hides a post, and does not rewrite its lineage. It
+    # also keeps two pickers listing every post there is off this page.
+    readonly_fields = (
+        "hidden_at", "published_at",
+        "is_take", "source_post", "original_post", "source_attachment_version",
+        "attachment_version", "sound", "hashtags", "topics",
+    )
 
     def get_queryset(self, request):
         return (

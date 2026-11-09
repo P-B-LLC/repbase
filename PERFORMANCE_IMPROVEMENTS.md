@@ -1,3 +1,63 @@
+# Social Milestone 2: Publication Data and the Post Contract
+
+**Status:** Done on `feature/social-m2-publication-contract` (stacked on Milestone 1), awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / post schema, API contract, feed query cost
+
+## Why
+
+The approved feed has four formats -- gym moment, workout, recipe, Your take -- and
+credits for sources and sounds. All of that has to be in the schema and the contract
+before the apps are built on it, without breaking the apps already installed.
+
+## What Was Changed
+
+- **Lineage on `Post`** (migration 0089): `is_take`, the direct `source_post`, the
+  canonical `original_post`, and the attachment version taken. A take is an ordinary
+  media, workout or meal post, not a new kind.
+- **`Sound`**, referenced by posts and stored once. **`PostHashtag`** rows beside a
+  `hashtags` list on the post, written together by `core.publication.write_hashtags`.
+  `topics`, `language` and `reuse_permission` on the post.
+- **Permissions** (`core/publication.py`): who may take a post or reuse a sound is
+  decided at creation; whether a credit may still be shown is decided per reader at
+  read time, by `visible_posts_for`.
+- **Stored card figures** on `PostWorkout` and `PostMeal` (backfilled by 0090), and
+  `?attachments=summary` on the post list, feed, For You and takes list.
+- **Indexes**: three partial indexes on `Post` and one unique index on `PostHashtag`.
+
+## Verification
+
+Measured on PostgreSQL 16 with 200,000 posts, about 10,000 takes, 8,000 sound uses
+and 140,000 hashtag rows. Buffers read to return one page of 21:
+
+| Query | With the index | Without |
+| ----- | ----- | ----- |
+| Takes of a post, newest first | 6 | 2,266 |
+| Posts using a sound, newest first | 3 | 204 |
+| Posts carrying a hashtag, newest first | 4 | (unique index, always present) |
+| Takes found when an original is deleted | 177 | 4,014 (sequential scan) |
+
+The takes list as the API runs it, visibility rules included, walks `post_takes_newest`
+with no sort. The three partial indexes total 1.3 MB beside a 31 MB table.
+
+A summary page reads no exercise or food rows: up to four fewer queries on a page that has
+workouts, recipes and reposts of them. A page with no takes and no sounds runs no
+extra query for credits; a page with any number of takes runs one.
+
+1,720 backend tests pass on SQLite and PostgreSQL 16. Responses are validated against
+the committed contract and against the contract as it stood before this milestone.
+
+## Needs To Be Changed / Improved
+
+- Two existing `Post` indexes duplicate the leading column of a composite one
+  (`author_id`, and `published_at`): 7.7 MB at this size, written on every post. Left
+  alone here; worth dropping in a migration of their own.
+- Nothing creates a `Sound` yet. Extraction and the removal workflow are Milestone 6.
+- No take count on a card yet. It belongs with the cached engagement counts.
+- Migrations 0089 and 0090 will need a merge migration with the `work/` branches.
+
+---
+
 # Social Milestone 1: A Baseline, and Metrics Out of the Request
 
 **Status:** Done on `feature/social-m1-baseline`, awaiting review; not deployed

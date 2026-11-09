@@ -1,0 +1,1348 @@
+{
+ "note": "The Post contract as it stood before Milestone 2 (repbase 51d34c6): every component reachable from the post cards, the save results and the two post request bodies. Frozen. The apps in people's hands were generated from this, so responses must keep validating against it.",
+ "components": {
+  "schemas": {
+   "ContentTypeEnum": {
+    "enum": [
+     "image/heic",
+     "image/jpeg",
+     "image/png",
+     "image/webp"
+    ],
+    "type": "string",
+    "description": "* `image/heic` - image/heic\n* `image/jpeg` - image/jpeg\n* `image/png` - image/png\n* `image/webp` - image/webp"
+   },
+   "CreatePostKindEnum": {
+    "enum": [
+     "workout",
+     "meal",
+     "planner",
+     "media"
+    ],
+    "type": "string",
+    "description": "* `workout` - Workout\n* `meal` - Meal\n* `planner` - Planner\n* `media` - Photo or video"
+   },
+   "CreatePostRequest": {
+    "type": "object",
+    "description": "What to post, and who may see it.\n\nA reference and nothing else. The server reads the source itself and builds\nthe snapshot from it, so no client can decide what a post says it did \u2014\naccepting the content here would be accepting a five-hundred-kilogram squat\nfrom anyone who could type one.\n\nA `media` post references nothing: it is a photo or a clip and a caption,\nand since it carries no snapshot it makes no claim to check.",
+    "properties": {
+     "kind": {
+      "$ref": "#/components/schemas/CreatePostKindEnum"
+     },
+     "source_id": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The workout session, meal or planner entry to post. Required for those kinds; leave it out of a media post."
+     },
+     "caption": {
+      "type": "string",
+      "default": "",
+      "maxLength": 300
+     },
+     "shows_weights": {
+      "type": "boolean",
+      "default": true
+     },
+     "visibility": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/VisibilityEnum"
+       }
+      ],
+      "default": "public"
+     },
+     "content_type": {
+      "$ref": "#/components/schemas/ContentTypeEnum"
+     },
+     "image_base64": {
+      "type": "string",
+      "description": "The image bytes, base64 encoded, without a data: prefix."
+     },
+     "cooking_instructions": {
+      "type": "string",
+      "description": "How the meal was made, for a meal post. Ignored for other kinds.",
+      "maxLength": 4000
+     },
+     "expects_video": {
+      "type": "boolean",
+      "default": false,
+      "description": "True when a clip will be uploaded to this post next. Required for a media post without a photo, which stays visible only to its author until the clip is ready to watch."
+     }
+    },
+    "required": [
+     "kind"
+    ]
+   },
+   "ForYouPage": {
+    "type": "object",
+    "description": "One page of the For You feed, in the shape every cursor page has.",
+    "properties": {
+     "next": {
+      "type": "string",
+      "readOnly": true,
+      "nullable": true
+     },
+     "previous": {
+      "type": "string",
+      "readOnly": true,
+      "nullable": true
+     },
+     "results": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/ForYouPost"
+      },
+      "readOnly": true
+     }
+    },
+    "required": [
+     "next",
+     "previous",
+     "results"
+    ]
+   },
+   "ForYouPost": {
+    "type": "object",
+    "description": "A post on the For You page: the ordinary card, plus why it is there.",
+    "properties": {
+     "id": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "author": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PublicRepbaseUser"
+       }
+      ],
+      "readOnly": true
+     },
+     "kind": {
+      "type": "string",
+      "readOnly": true
+     },
+     "image_url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "feed_image_url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "video": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostVideo"
+       }
+      ],
+      "nullable": true,
+      "readOnly": true
+     },
+     "caption": {
+      "type": "string",
+      "readOnly": true
+     },
+     "visibility": {
+      "type": "string",
+      "readOnly": true
+     },
+     "workout": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostWorkout"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "meal": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostMeal"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "planner": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostPlannerEntry"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "source_id": {
+      "type": "integer",
+      "nullable": true,
+      "readOnly": true
+     },
+     "viewer_follows_author": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "shows_weights": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "viewer_is_author": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "like_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "comment_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "repost_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "viewer_has_liked": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "viewer_has_reposted": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "viewer_saved": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "repost_of": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/RepostedPost"
+       }
+      ],
+      "nullable": true,
+      "readOnly": true
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true
+     },
+     "published_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true,
+      "nullable": true
+     },
+     "moderation_status": {
+      "type": "string",
+      "readOnly": true
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true
+     },
+     "recommendation": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/Recommendation"
+       }
+      ],
+      "readOnly": true
+     }
+    },
+    "required": [
+     "author",
+     "caption",
+     "comment_count",
+     "created_at",
+     "feed_image_url",
+     "id",
+     "image_url",
+     "kind",
+     "like_count",
+     "meal",
+     "moderation_status",
+     "planner",
+     "published_at",
+     "recommendation",
+     "repost_count",
+     "repost_of",
+     "shows_weights",
+     "source_id",
+     "updated_at",
+     "video",
+     "viewer_follows_author",
+     "viewer_has_liked",
+     "viewer_has_reposted",
+     "viewer_is_author",
+     "viewer_saved",
+     "visibility",
+     "workout"
+    ]
+   },
+   "PaginatedPostList": {
+    "type": "object",
+    "required": [
+     "results"
+    ],
+    "properties": {
+     "next": {
+      "type": "string",
+      "nullable": true,
+      "format": "uri",
+      "example": "http://api.example.org/accounts/?cursor=cD00ODY%3D\""
+     },
+     "previous": {
+      "type": "string",
+      "nullable": true,
+      "format": "uri",
+      "example": "http://api.example.org/accounts/?cursor=cj0xJnA9NDg3"
+     },
+     "results": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/Post"
+      }
+     }
+    }
+   },
+   "PatchedUpdatePostRequest": {
+    "type": "object",
+    "description": "The two things about a post that can still change.\n\nThe snapshot is not among them. It is the record of what happened, and one\nthat could be edited into a different workout after people had read it would\nbe worth nothing as a record.",
+    "properties": {
+     "caption": {
+      "type": "string",
+      "maxLength": 300
+     },
+     "visibility": {
+      "$ref": "#/components/schemas/VisibilityEnum"
+     }
+    }
+   },
+   "PlatformEnum": {
+    "enum": [
+     "instagram",
+     "snapchat",
+     "tiktok",
+     "youtube",
+     "x",
+     "website"
+    ],
+    "type": "string",
+    "description": "* `instagram` - Instagram\n* `snapchat` - Snapchat\n* `tiktok` - TikTok\n* `youtube` - YouTube\n* `x` - X\n* `website` - Website"
+   },
+   "Post": {
+    "type": "object",
+    "description": "A post as anyone allowed to see it reads it.\n\n`workout`, `meal` and `planner` are three keys side by side with exactly one\nof them filled in, rather than one field whose type is chosen by `kind`. A\nclient built before a fourth kind existed then fails to draw that one post;\nwith a discriminated union it fails to decode the whole page around it.\n\n`kind` and `visibility` go out as plain strings for the same reason: a value\nadded later should be a string the client does not recognise, not a decoding\nerror. Requests still take a closed set \u2014 see `CreatePostSerializer`.\n\nEvery field here is read-only. A post is created from a source it does not\ncarry and edited through `UpdatePostSerializer`, so there is no shape in\nwhich this serializer accepts anything.",
+    "properties": {
+     "id": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "author": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PublicRepbaseUser"
+       }
+      ],
+      "readOnly": true
+     },
+     "kind": {
+      "type": "string",
+      "readOnly": true
+     },
+     "image_url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "feed_image_url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "video": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostVideo"
+       }
+      ],
+      "nullable": true,
+      "readOnly": true
+     },
+     "caption": {
+      "type": "string",
+      "readOnly": true
+     },
+     "visibility": {
+      "type": "string",
+      "readOnly": true
+     },
+     "workout": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostWorkout"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "meal": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostMeal"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "planner": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostPlannerEntry"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "source_id": {
+      "type": "integer",
+      "nullable": true,
+      "readOnly": true
+     },
+     "viewer_follows_author": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "shows_weights": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "viewer_is_author": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "like_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "comment_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "repost_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "viewer_has_liked": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "viewer_has_reposted": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "viewer_saved": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "repost_of": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/RepostedPost"
+       }
+      ],
+      "nullable": true,
+      "readOnly": true
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true
+     },
+     "published_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true,
+      "nullable": true
+     },
+     "moderation_status": {
+      "type": "string",
+      "readOnly": true
+     },
+     "updated_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true
+     }
+    },
+    "required": [
+     "author",
+     "caption",
+     "comment_count",
+     "created_at",
+     "feed_image_url",
+     "id",
+     "image_url",
+     "kind",
+     "like_count",
+     "meal",
+     "moderation_status",
+     "planner",
+     "published_at",
+     "repost_count",
+     "repost_of",
+     "shows_weights",
+     "source_id",
+     "updated_at",
+     "video",
+     "viewer_follows_author",
+     "viewer_has_liked",
+     "viewer_has_reposted",
+     "viewer_is_author",
+     "viewer_saved",
+     "visibility",
+     "workout"
+    ]
+   },
+   "PostMeal": {
+    "type": "object",
+    "description": "A posted meal, frozen at the moment it was posted.\n\nTotals are derived from the foods nested underneath, exactly as\n`FoodMealSerializer` derives them from a live meal, and rendered through the\nsame `NUTRITION_DECIMAL` so a frozen calorie count has the same shape on the\nwire as a live one.",
+    "properties": {
+     "name": {
+      "type": "string",
+      "readOnly": true
+     },
+     "date": {
+      "type": "string",
+      "format": "date",
+      "readOnly": true
+     },
+     "entries": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/PostMealEntry"
+      },
+      "readOnly": true
+     },
+     "cooking_instructions": {
+      "type": "string",
+      "readOnly": true
+     },
+     "total_calories": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,8}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "total_protein_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,8}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "total_carbohydrate_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,8}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "total_fat_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,8}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     }
+    },
+    "required": [
+     "cooking_instructions",
+     "date",
+     "entries",
+     "name",
+     "total_calories",
+     "total_carbohydrate_grams",
+     "total_fat_grams",
+     "total_protein_grams"
+    ]
+   },
+   "PostMealEntry": {
+    "type": "object",
+    "description": "One food inside a posted meal, per serving with its servings beside it.",
+    "properties": {
+     "id": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "name": {
+      "type": "string",
+      "readOnly": true
+     },
+     "servings": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,4}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "calories": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,6}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "protein_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,6}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "carbohydrate_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,6}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "fat_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,6}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "total_calories": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,8}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "total_protein_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,8}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "total_carbohydrate_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,8}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "total_fat_grams": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,8}(?:\\.\\d{0,2})?$",
+      "readOnly": true
+     },
+     "position": {
+      "type": "integer",
+      "readOnly": true
+     }
+    },
+    "required": [
+     "calories",
+     "carbohydrate_grams",
+     "fat_grams",
+     "id",
+     "name",
+     "position",
+     "protein_grams",
+     "servings",
+     "total_calories",
+     "total_carbohydrate_grams",
+     "total_fat_grams",
+     "total_protein_grams"
+    ]
+   },
+   "PostPlannerEntry": {
+    "type": "object",
+    "description": "A posted planner item, frozen at the moment it was posted.",
+    "properties": {
+     "kind": {
+      "type": "string",
+      "readOnly": true
+     },
+     "title": {
+      "type": "string",
+      "readOnly": true
+     },
+     "category": {
+      "type": "string",
+      "readOnly": true
+     },
+     "scheduled_date": {
+      "type": "string",
+      "format": "date",
+      "readOnly": true
+     },
+     "scheduled_time": {
+      "type": "string",
+      "format": "time",
+      "readOnly": true,
+      "nullable": true
+     },
+     "is_complete": {
+      "type": "boolean",
+      "readOnly": true
+     }
+    },
+    "required": [
+     "category",
+     "is_complete",
+     "kind",
+     "scheduled_date",
+     "scheduled_time",
+     "title"
+    ]
+   },
+   "PostVideo": {
+    "type": "object",
+    "description": "A post's clip, as its reader may see it.\n\n`status` and `content_type` go out as plain strings, as `kind` does on a\npost. A choice field would add a `status` enum to the contract, and\ndrf-spectacular resolves two enums of the same field name by renaming\nboth -- so the session status enum the generated clients already use\nwould change its name because of a field on a different object.",
+    "properties": {
+     "url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "content_type": {
+      "type": "string",
+      "readOnly": true
+     },
+     "duration_ms": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "width": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "height": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "has_audio": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "status": {
+      "type": "string",
+      "readOnly": true
+     },
+     "processing_state": {
+      "type": "string",
+      "readOnly": true
+     },
+     "processing_error": {
+      "type": "string",
+      "readOnly": true
+     },
+     "thumbnail_url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "variants": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/VideoVariant"
+      },
+      "readOnly": true
+     }
+    },
+    "required": [
+     "content_type",
+     "duration_ms",
+     "has_audio",
+     "height",
+     "processing_error",
+     "processing_state",
+     "status",
+     "thumbnail_url",
+     "url",
+     "variants",
+     "width"
+    ]
+   },
+   "PostWorkout": {
+    "type": "object",
+    "description": "A posted workout, frozen at the moment it was posted.\n\nThe three totals are summed from the exercises nested underneath rather\nthan stored, the way `FoodMealSerializer` sums a meal's foods, so a figure\nprinted under a card cannot disagree with the rows printed inside it. They\nwalk `exercises` and nothing else, so a page of them costs no queries as\nlong as the feed prefetches that relation.\n\nThere is no `id` here or on the other two snapshots: each is one-to-one with\nits post, the post's id already identifies it, and an id in this position\ninvites a client into thinking it can fetch the workout it came from.",
+    "properties": {
+     "title": {
+      "type": "string",
+      "readOnly": true
+     },
+     "workout_type": {
+      "type": "string",
+      "readOnly": true,
+      "nullable": true
+     },
+     "activity": {
+      "type": "string",
+      "readOnly": true,
+      "nullable": true
+     },
+     "performed_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true
+     },
+     "duration_seconds": {
+      "type": "integer",
+      "readOnly": true,
+      "nullable": true
+     },
+     "cardio_machine": {
+      "type": "string",
+      "readOnly": true,
+      "nullable": true
+     },
+     "cardio_seconds": {
+      "type": "integer",
+      "readOnly": true,
+      "nullable": true
+     },
+     "cardio_distance_km": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,4}(?:\\.\\d{0,3})?$",
+      "readOnly": true,
+      "nullable": true
+     },
+     "route_distance_km": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,4}(?:\\.\\d{0,3})?$",
+      "readOnly": true,
+      "nullable": true
+     },
+     "pace_seconds_per_km": {
+      "type": "integer",
+      "readOnly": true,
+      "nullable": true
+     },
+     "elevation_gain_m": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,6}(?:\\.\\d{0,1})?$",
+      "readOnly": true,
+      "nullable": true
+     },
+     "exercises": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/PostWorkoutExercise"
+      },
+      "readOnly": true
+     },
+     "exercise_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "total_set_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "total_volume_kg": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,10}(?:\\.\\d{0,2})?$",
+      "nullable": true,
+      "readOnly": true
+     }
+    },
+    "required": [
+     "cardio_distance_km",
+     "cardio_machine",
+     "cardio_seconds",
+     "duration_seconds",
+     "elevation_gain_m",
+     "exercise_count",
+     "exercises",
+     "pace_seconds_per_km",
+     "performed_at",
+     "route_distance_km",
+     "title",
+     "total_set_count",
+     "total_volume_kg",
+     "workout_type"
+    ]
+   },
+   "PostWorkoutExercise": {
+    "type": "object",
+    "description": "One exercise inside a posted workout.",
+    "properties": {
+     "id": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "name": {
+      "type": "string",
+      "readOnly": true
+     },
+     "order": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "set_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "top_set_weight_kg": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,5}(?:\\.\\d{0,2})?$",
+      "readOnly": true,
+      "nullable": true
+     },
+     "top_set_reps": {
+      "type": "integer",
+      "readOnly": true,
+      "nullable": true
+     },
+     "total_reps": {
+      "type": "integer",
+      "readOnly": true,
+      "nullable": true
+     },
+     "volume_kg": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,10}(?:\\.\\d{0,2})?$",
+      "readOnly": true,
+      "nullable": true
+     },
+     "distance_km": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,4}(?:\\.\\d{0,3})?$",
+      "readOnly": true,
+      "nullable": true
+     }
+    },
+    "required": [
+     "distance_km",
+     "id",
+     "name",
+     "order",
+     "set_count",
+     "top_set_reps",
+     "top_set_weight_kg",
+     "total_reps",
+     "volume_kg"
+    ]
+   },
+   "ProfilePrompt": {
+    "type": "object",
+    "description": "One answered question, as anybody reading the profile sees it.\n\n`question` goes out as a plain string and the readable wording comes with\nit. A client draws the label, so a question added to the server after this\nbuild shipped renders correctly on it rather than failing to decode, which\na closed enum in a response would guarantee.",
+    "properties": {
+     "question": {
+      "type": "string",
+      "readOnly": true
+     },
+     "question_label": {
+      "type": "string",
+      "readOnly": true
+     },
+     "answer": {
+      "type": "string",
+      "readOnly": true
+     }
+    },
+    "required": [
+     "answer",
+     "question",
+     "question_label"
+    ]
+   },
+   "ProfileSocialLink": {
+    "type": "object",
+    "description": "One outbound account, as everybody else sees it.\n\nTwo fields only. The handle is the app own bookkeeping and the position is\nhow the list was ordered, neither of which anybody reading a profile has\nany use for -- and the fewer fields leave here, the less there is to keep\nconsistent between this and the public serialiser.",
+    "properties": {
+     "platform": {
+      "$ref": "#/components/schemas/PlatformEnum"
+     },
+     "url": {
+      "type": "string",
+      "format": "uri",
+      "maxLength": 300
+     }
+    },
+    "required": [
+     "platform",
+     "url"
+    ]
+   },
+   "PublicRepbaseUser": {
+    "type": "object",
+    "properties": {
+     "community_label": {
+      "type": "string",
+      "readOnly": true,
+      "default": ""
+     },
+     "community_badge": {
+      "type": "string",
+      "readOnly": true,
+      "default": ""
+     },
+     "community_color": {
+      "type": "string",
+      "readOnly": true,
+      "default": "#F65A18"
+     },
+     "id": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "username": {
+      "type": "string",
+      "readOnly": true
+     },
+     "first_name": {
+      "type": "string",
+      "readOnly": true
+     },
+     "last_name": {
+      "type": "string",
+      "readOnly": true
+     },
+     "bio": {
+      "type": "string",
+      "maxLength": 300
+     },
+     "profile_photo_url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "disciplines": {
+      "type": "array",
+      "items": {
+       "type": "string"
+      },
+      "readOnly": true
+     },
+     "prompts": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/ProfilePrompt"
+      },
+      "readOnly": true
+     },
+     "social_links": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/ProfileSocialLink"
+      },
+      "readOnly": true
+     },
+     "gym": {
+      "type": "integer",
+      "nullable": true
+     },
+     "gym_name": {
+      "type": "string",
+      "readOnly": true,
+      "nullable": true
+     },
+     "gym_city": {
+      "type": "string",
+      "readOnly": true,
+      "nullable": true
+     },
+     "height_cm": {
+      "type": "integer",
+      "nullable": true,
+      "readOnly": true
+     },
+     "weight_kg": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,4}(?:\\.\\d{0,2})?$",
+      "nullable": true,
+      "readOnly": true
+     },
+     "target_weight_kg": {
+      "type": "string",
+      "format": "decimal",
+      "pattern": "^-?\\d{0,4}(?:\\.\\d{0,2})?$",
+      "nullable": true,
+      "readOnly": true
+     },
+     "shows_height": {
+      "type": "boolean"
+     },
+     "shows_weight": {
+      "type": "boolean"
+     },
+     "shows_target_weight": {
+      "type": "boolean"
+     },
+     "is_profile_public": {
+      "type": "boolean"
+     },
+     "is_readable": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "viewer_follows": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "viewer_has_requested": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "follows_viewer": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true
+     }
+    },
+    "required": [
+     "community_badge",
+     "community_color",
+     "community_label",
+     "created_at",
+     "disciplines",
+     "first_name",
+     "gym_city",
+     "gym_name",
+     "height_cm",
+     "id",
+     "is_readable",
+     "last_name",
+     "profile_photo_url",
+     "prompts",
+     "social_links",
+     "target_weight_kg",
+     "username",
+     "viewer_follows",
+     "viewer_has_requested",
+     "weight_kg"
+    ]
+   },
+   "Recommendation": {
+    "type": "object",
+    "description": "Why the For You page put a post where it did.\n\n`reason` is a short code -- following, interest, similar, discovery,\nnew_creator, popular or fresh -- sent as a plain string so a reason added\nlater is a value the client does not recognise rather than a decoding\nerror. `label` is a sentence fit to show under the post as it is.",
+    "properties": {
+     "reason": {
+      "type": "string",
+      "readOnly": true
+     },
+     "label": {
+      "type": "string",
+      "readOnly": true
+     }
+    },
+    "required": [
+     "label",
+     "reason"
+    ]
+   },
+   "RepostedPost": {
+    "type": "object",
+    "description": "The original, as it appears inside a repost.\n\nDeliberately not `PostSerializer`. That one carries `repost_of`, and a\nserializer that contains itself is a schema no generator can express and a\ndepth no reader wants. A repost cannot be reposted, so one level is all\nthere is to show.",
+    "properties": {
+     "id": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "author": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PublicRepbaseUser"
+       }
+      ],
+      "readOnly": true
+     },
+     "kind": {
+      "type": "string",
+      "readOnly": true
+     },
+     "image_url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "feed_image_url": {
+      "type": "string",
+      "nullable": true,
+      "readOnly": true
+     },
+     "video": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostVideo"
+       }
+      ],
+      "nullable": true,
+      "readOnly": true
+     },
+     "caption": {
+      "type": "string",
+      "readOnly": true
+     },
+     "workout": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostWorkout"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "meal": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostMeal"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "planner": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/PostPlannerEntry"
+       }
+      ],
+      "readOnly": true,
+      "nullable": true
+     },
+     "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true
+     },
+     "published_at": {
+      "type": "string",
+      "format": "date-time",
+      "readOnly": true,
+      "nullable": true
+     }
+    },
+    "required": [
+     "author",
+     "caption",
+     "created_at",
+     "feed_image_url",
+     "id",
+     "image_url",
+     "kind",
+     "meal",
+     "planner",
+     "published_at",
+     "video",
+     "workout"
+    ]
+   },
+   "SavedMealResult": {
+    "type": "object",
+    "description": "What saving somebody else's posted meal produced.\n\nThe same shape as `SavedWorkoutResultSerializer` and for the same reason:\nsaved meal names are unique per user, so the name it landed under is not\nalways the one on the post and the app has to be able to say so.",
+    "properties": {
+     "meal": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "name": {
+      "type": "string",
+      "readOnly": true
+     },
+     "item_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "renamed": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "already_saved": {
+      "type": "boolean",
+      "readOnly": true,
+      "default": false
+     }
+    },
+    "required": [
+     "already_saved",
+     "item_count",
+     "meal",
+     "name",
+     "renamed"
+    ]
+   },
+   "SavedWorkoutResult": {
+    "type": "object",
+    "description": "What saving somebody else's posted workout produced.\n\nThe name is returned because it is not always the one on the post: a user\nwho already has a \"Push Day\" gets the copy under a name saying where it\ncame from, and the app has to be able to tell them so.",
+    "properties": {
+     "workout": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "name": {
+      "type": "string",
+      "readOnly": true
+     },
+     "exercise_count": {
+      "type": "integer",
+      "readOnly": true
+     },
+     "renamed": {
+      "type": "boolean",
+      "readOnly": true
+     },
+     "already_saved": {
+      "type": "boolean",
+      "readOnly": true,
+      "default": false
+     }
+    },
+    "required": [
+     "already_saved",
+     "exercise_count",
+     "name",
+     "renamed",
+     "workout"
+    ]
+   },
+   "VideoVariant": {
+    "type": "object",
+    "properties": {
+     "width": {
+      "type": "integer"
+     },
+     "height": {
+      "type": "integer"
+     },
+     "size_bytes": {
+      "type": "integer"
+     },
+     "url": {
+      "type": "string",
+      "nullable": true
+     }
+    },
+    "required": [
+     "height",
+     "size_bytes",
+     "url",
+     "width"
+    ]
+   },
+   "VisibilityEnum": {
+    "enum": [
+     "public",
+     "followers",
+     "private"
+    ],
+    "type": "string",
+    "description": "* `public` - Public\n* `followers` - Followers\n* `private` - Private"
+   }
+  }
+ }
+}

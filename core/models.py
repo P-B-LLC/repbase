@@ -2799,6 +2799,19 @@ class Block(models.Model):
         return f"{self.blocker} blocks {self.blocked}"
 
 
+# Every column added to a table the running server already writes carries a
+# default in the database as well as in Python.
+#
+# `deploy.sh` migrates first and restarts last, and stops without restarting
+# if a check in between fails. Until the restart, the code serving requests
+# is the previous release, which does not know these columns exist and
+# leaves them out of its INSERTs. A NOT NULL column with only a Python
+# default would refuse every one of those: nobody could post until the
+# restart, and not at all if the deploy stopped short.
+EMPTY_JSON_LIST = models.Value([], output_field=models.JSONField())
+STORED_TOTAL = dict(max_digits=10, decimal_places=2, db_default=Decimal("0"))
+
+
 def post_photo_path(instance, filename):
     """Where a photo attached to a post lives.
 
@@ -2948,6 +2961,92 @@ class Post(models.Model):
         null=True,
         blank=True,
     )
+    #: Whether this was posted as a response to somebody else's post -- a
+    #: "Your take". Not a kind: a take is a media, workout or meal post like
+    #: any other, with its own caption, clip and snapshot, so a client built
+    #: before takes existed draws it as the ordinary post it also is.
+    #:
+    #: Stored rather than read off `source_post`, which goes null when the
+    #: post answered is deleted. A take whose source is gone is still a take,
+    #: and its card says the original is no longer available rather than
+    #: passing itself off as something made from nothing.
+    is_take = models.BooleanField(default=False, db_default=False)
+    #: The post this take answers, one step back.
+    #:
+    #: The direct source is what a card credits, and it is stored so drawing
+    #: the card never walks a chain: a take of a take of a take reads one row
+    #: for its credit, not three. SET_NULL because the take is its author's
+    #: own work and outlives the thing it answered.
+    #:
+    #: Neither lineage column carries a single-column index. The partial
+    #: indexes in Meta cover the same lookups -- and the delete of a source,
+    #: which has to find its takes -- without a row for every post that is
+    #: not a take, which is nearly all of them.
+    source_post = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="takes",
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+    #: Where the chain started: the first post anybody took. The same as
+    #: `source_post` for a take of an original. Kept so a whole family of
+    #: takes can be recognised -- and stopped from filling a page -- without
+    #: following links.
+    original_post = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="take_family",
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+    #: Which version of the structured workout or recipe this post carries.
+    #: A snapshot is frozen at publication and so far never rewritten, so
+    #: this is 1 everywhere; it exists so that a take, or a saved copy, can
+    #: say which version it was made from once an author can revise one.
+    attachment_version = models.PositiveSmallIntegerField(default=1, db_default=1)
+    #: The source's `attachment_version` when this take was made. Null for a
+    #: post that is not a take, and for a take of a post with no workout or
+    #: recipe to have a version of.
+    source_attachment_version = models.PositiveSmallIntegerField(null=True, blank=True)
+    #: The sound this post's clip is set to, when it uses one. A reference:
+    #: the audio is stored once, under `Sound`, however many posts use it.
+    sound = models.ForeignKey(
+        "Sound",
+        on_delete=models.SET_NULL,
+        related_name="posts",
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+    #: The hashtags in the caption, normalised, in the order written, as
+    #: `core.publication.hashtags_in` reads them. A list on the row so a card
+    #: prints them without a query; `PostHashtag` holds the same tags as rows
+    #: for the opposite question, which posts carry a tag. Both are written
+    #: by `core.publication.write_hashtags` and by nothing else.
+    hashtags = models.JSONField(default=list, blank=True, db_default=EMPTY_JSON_LIST)
+    #: What the author says the post is about, as topic codes from the
+    #: recommendation catalogue (`core.recommendations`), checked when given.
+    #: Free text never lands here; that is what hashtags are for.
+    topics = models.JSONField(default=list, blank=True, db_default=EMPTY_JSON_LIST)
+    #: The language the caption is written in, as a BCP 47 tag ("en",
+    #: "pt-BR"), when the client said. Blank is "not known", never a guess.
+    language = models.CharField(max_length=16, blank=True, default="", db_default="")
+
+    class Reuse(models.TextChoices):
+        EVERYONE = "everyone", "Anyone who can see it"
+        FOLLOWERS = "followers", "People who follow me"
+        NOBODY = "nobody", "Nobody"
+
+    #: Who may post a take of this. Its author always may. Saving a copy of
+    #: the workout or recipe is not reuse and is not governed by this: a
+    #: saved copy is private to whoever saved it.
+    reuse_permission = models.CharField(
+        max_length=20, choices=Reuse.choices, default=Reuse.EVERYONE,
+        db_default=Reuse.EVERYONE.value,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     # Existing creation paths stay compatible until asynchronous upload wiring
@@ -2969,10 +3068,111 @@ class Post(models.Model):
         indexes = [
             models.Index(fields=("author", "-published_at", "-id")),
             models.Index(fields=("-published_at", "-id")),
+            # The takes of one post, and the posts using one sound, each
+            # newest first: an equality on the reference and then the same
+            # (published_at, id) walk as the feed, which is the order a
+            # multicolumn B-tree serves from one end. Partial, because all
+            # but a few posts have neither and a NULL entry for each of them
+            # would be most of the index.
+            models.Index(
+                fields=("source_post", "-published_at", "-id"),
+                name="post_takes_newest",
+                condition=models.Q(source_post__isnull=False),
+            ),
+            models.Index(
+                fields=("sound", "-published_at", "-id"),
+                name="post_sound_uses_newest",
+                condition=models.Q(sound__isnull=False),
+            ),
+            # Read only by the delete of an original, to null this column on
+            # its family. Without it that delete scans every post.
+            models.Index(
+                fields=("original_post",),
+                name="post_take_family",
+                condition=models.Q(original_post__isnull=False),
+            ),
         ]
 
     def __str__(self):
         return f"{self.author}: {self.get_kind_display()}"
+
+    @property
+    def is_open_to_everyone(self):
+        """Whether anybody signed in may read this, the author's profile
+        included in the question. What a take may be made of: a post some
+        people cannot see must not be answered in front of them."""
+        return self.visibility == self.Visibility.PUBLIC and self.author.is_profile_public
+
+
+class Sound(models.Model):
+    """Audio a post's clip can be set to, owned by whoever made it.
+
+    One row and one stored file per sound, referenced by every post that uses
+    it, so a sound used a thousand times is stored once and taking it down is
+    one change. Nothing here copies audio.
+
+    A sound is removed by status, not deleted: the posts using it keep their
+    reference, stop showing its credit, and get it back if the removal is
+    reversed. Deleting the owner's account deletes it, and the posts that
+    used it simply have no sound.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        REMOVED = "removed", "Removed"
+
+    owner = models.ForeignKey(
+        RepbaseUser, on_delete=models.CASCADE, related_name="sounds"
+    )
+    #: The post whose clip this audio came from. Null once that post is
+    #: deleted; the sound is its owner's and carries on.
+    origin_post = models.OneToOneField(
+        Post,
+        on_delete=models.SET_NULL,
+        related_name="original_sound",
+        null=True,
+        blank=True,
+    )
+    title = models.CharField(max_length=120)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    #: Where the prepared audio is in media storage. Blank until it has been
+    #: extracted, which happens outside any request.
+    audio_key = models.CharField(max_length=255, blank=True, default="")
+    reuse_permission = models.CharField(
+        max_length=20, choices=Post.Reuse.choices, default=Post.Reuse.EVERYONE
+    )
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.ACTIVE
+    )
+    removed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.title} ({self.owner})"
+
+
+class PostHashtag(models.Model):
+    """One hashtag on one post.
+
+    The tag is the normalised text itself rather than a reference to a row
+    of tags: there is nothing else to say about a tag, and a second table
+    would add a lookup and a race to every publication to save a few bytes.
+
+    Unique on (tag, post) in that order, which is also the index the one
+    question asked of this table needs: the posts carrying a tag, newest
+    first -- an equality on the tag, then post ids walked from the top.
+    """
+
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="hashtag_rows")
+    tag = models.CharField(max_length=50)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("tag", "post"), name="one_row_per_tag_and_post")
+        ]
+
+    def __str__(self):
+        return f"#{self.tag} on post {self.post_id}"
 
 
 class MediaScreeningJob(models.Model):
@@ -3087,9 +3287,34 @@ class PostWorkout(models.Model):
         blank=True,
         validators=[MinValueValidator(0)],
     )
+    # The three figures a card prints, added up once from the exercise rows
+    # when the snapshot is written (`summarise`), so a page of cards can be
+    # drawn without loading any of those rows. The rows cannot change after
+    # publication, so neither can these. A reader who opens the post gets the
+    # rows and figures summed from them, as before.
+    #
+    # A null `exercise_count` means "not added up", and a reader of the
+    # summary then gets the figures from the rows after all. That is the
+    # state of a snapshot written by the previous release between a
+    # migration and the restart that follows it: that code writes the rows
+    # and has never heard of these columns. Zero would be a wrong answer
+    # that looked like a right one.
+    exercise_count = models.PositiveSmallIntegerField(null=True, blank=True)
+    total_set_count = models.PositiveIntegerField(null=True, blank=True)
+    #: Null, not zero, when no exercise logged a load.
+    total_volume_kg = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
 
     def __str__(self):
         return self.title
+
+    def summarise(self, exercises):
+        """Set the stored figures from this workout's exercise rows."""
+        volumes = [row.volume_kg for row in exercises if row.volume_kg is not None]
+        self.exercise_count = len(exercises)
+        self.total_set_count = sum(row.set_count for row in exercises)
+        self.total_volume_kg = sum(volumes) if volumes else None
 
 
 class PostWorkoutExercise(models.Model):
@@ -3185,9 +3410,30 @@ class PostMeal(models.Model):
     #: Blank is the normal case. Most meals are assembled rather than cooked,
     #: and a post that says nothing about method is not incomplete.
     cooking_instructions = models.TextField(blank=True)
+    # What a card prints, added up once from the food rows when the snapshot
+    # is written (`summarise`), for the reason PostWorkout's figures are, and
+    # with the same meaning for a null `entry_count`: not added up.
+    entry_count = models.PositiveSmallIntegerField(null=True, blank=True)
+    total_calories = models.DecimalField(default=Decimal("0"), **STORED_TOTAL)
+    total_protein_grams = models.DecimalField(default=Decimal("0"), **STORED_TOTAL)
+    total_carbohydrate_grams = models.DecimalField(default=Decimal("0"), **STORED_TOTAL)
+    total_fat_grams = models.DecimalField(default=Decimal("0"), **STORED_TOTAL)
+
+    SUMMED = ("calories", "protein_grams", "carbohydrate_grams", "fat_grams")
 
     def __str__(self):
         return f"{self.date}: {self.name}"
+
+    def summarise(self, entries):
+        """Set the stored figures from this meal's food rows: per-serving
+        figure times servings, the arithmetic the rendered totals use."""
+        self.entry_count = len(entries)
+        for field in self.SUMMED:
+            total = sum(
+                ((getattr(row, field) or Decimal("0")) * (row.servings or Decimal("0")) for row in entries),
+                Decimal("0"),
+            )
+            setattr(self, f"total_{field}", total.quantize(Decimal("0.01")))
 
 
 class PostMealEntry(models.Model):

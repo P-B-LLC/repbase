@@ -4628,6 +4628,17 @@ paths:
         was put and out of the stream that exists to be shared.
       parameters:
       - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
+      - in: query
         name: cursor
         schema:
           type: string
@@ -4748,6 +4759,17 @@ paths:
         paging never repeats or skips a post. Each page is checked against the
         visibility rules again as it is served.
       parameters:
+      - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
       - in: query
         name: cursor
         schema:
@@ -4962,6 +4984,17 @@ paths:
         in the set.
       parameters:
       - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
+      - in: query
         name: author
         schema:
           type: integer
@@ -5079,8 +5112,10 @@ paths:
           description: ''
     patch:
       operationId: social_posts_partial_update
-      description: Change the caption or who can see this post. The snapshot records
-        what happened and is not editable.
+      description: Change the caption, who can see this post, who may post a take
+        of it, its language or its topics. The snapshot records what happened and
+        is not editable, and neither is what the post is a take of. Closing a post
+        to takes stops new ones; takes already posted stay.
       parameters:
       - in: header
         name: X-Moderation-Consent
@@ -5466,6 +5501,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SavedWorkoutResult'
+          description: ''
+  /api/v1/social/posts/{id}/takes/:
+    get:
+      operationId: social_posts_takes_list
+      description: 'The takes people have posted of this post, newest first: the ones
+        that answer it directly, and only those the reader may see. A repost''s id
+        stands for the post it passes on.'
+      parameters:
+      - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
+      - in: query
+        name: cursor
+        schema:
+          type: string
+        description: The position carried by the previous page's `next` link.
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: How many takes to return, at most 50.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPostList'
           description: ''
   /api/v1/social/posts/{id}/video/:
     post:
@@ -6890,8 +6971,69 @@ components:
           description: True when a clip will be uploaded to this post next. Required
             for a media post without a photo, which stays visible only to its author
             until the clip is ready to watch.
+        source_post_id:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+          description: The post this is a take of. It must be one you can see, that
+            everybody can see, and whose author allows takes. A repost's id stands
+            for the post it passes on.
+        sound_id:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+          description: A sound to set this post's clip to, if it uses one.
+        reuse_permission:
+          allOf:
+          - $ref: '#/components/schemas/ReusePermissionEnum'
+          default: everyone
+        language:
+          type: string
+          description: The language the caption is written in, as a tag such as en
+            or pt-BR.
+          maxLength: 16
+        topics:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 40
+          description: 'What the post is about: up to five codes for a type of training
+            (type:running) or a discipline (discipline:powerlifting).'
+          maxItems: 20
       required:
       - kind
+    CreditedPerson:
+      type: object
+      description: |-
+        Whoever a credit line names: enough to print "by Mia Chen" and link to
+        the profile, and nothing a credit does not need. A whole public profile
+        here would be a second author on every card.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        username:
+          type: string
+          readOnly: true
+        first_name:
+          type: string
+          readOnly: true
+        last_name:
+          type: string
+          readOnly: true
+        profile_photo_url:
+          type: string
+          nullable: true
+          readOnly: true
+      required:
+      - first_name
+      - id
+      - last_name
+      - profile_photo_url
+      - username
     CycleActivateRequest:
       type: object
       description: |-
@@ -7596,6 +7738,45 @@ components:
         updated_at:
           type: string
           format: date-time
+          readOnly: true
+        is_take:
+          type: boolean
+          readOnly: true
+        source:
+          allOf:
+          - $ref: '#/components/schemas/PostSource'
+          nullable: true
+          readOnly: true
+        sound:
+          allOf:
+          - $ref: '#/components/schemas/PostSound'
+          nullable: true
+          readOnly: true
+        hashtags:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        topics:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        language:
+          type: string
+          nullable: true
+          readOnly: true
+        attachment_version:
+          type: integer
+          readOnly: true
+        audience:
+          type: string
+          readOnly: true
+        reuse_permission:
+          type: string
+          readOnly: true
+        viewer_can_take:
+          type: boolean
           readOnly: true
         recommendation:
           allOf:
@@ -9315,17 +9496,33 @@ components:
     PatchedUpdatePostRequest:
       type: object
       description: |-
-        The two things about a post that can still change.
+        What about a post can still change: its words, and who it is for.
 
         The snapshot is not among them. It is the record of what happened, and one
         that could be edited into a different workout after people had read it would
-        be worth nothing as a record.
+        be worth nothing as a record. Nor is what it is a take of, or its sound:
+        those are what it was published as.
+
+        Closing a post to takes stops new ones. The takes already made of it are
+        their authors' own posts and stay.
       properties:
         caption:
           type: string
           maxLength: 300
         visibility:
           $ref: '#/components/schemas/VisibilityEnum'
+        reuse_permission:
+          $ref: '#/components/schemas/ReusePermissionEnum'
+        language:
+          type: string
+          maxLength: 16
+        topics:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 40
+          maxItems: 20
     PatchedWorkoutCycleRequest:
       type: object
       properties:
@@ -9950,6 +10147,45 @@ components:
           type: string
           format: date-time
           readOnly: true
+        is_take:
+          type: boolean
+          readOnly: true
+        source:
+          allOf:
+          - $ref: '#/components/schemas/PostSource'
+          nullable: true
+          readOnly: true
+        sound:
+          allOf:
+          - $ref: '#/components/schemas/PostSound'
+          nullable: true
+          readOnly: true
+        hashtags:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        topics:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        language:
+          type: string
+          nullable: true
+          readOnly: true
+        attachment_version:
+          type: integer
+          readOnly: true
+        audience:
+          type: string
+          readOnly: true
+        reuse_permission:
+          type: string
+          readOnly: true
+        viewer_can_take:
+          type: boolean
+          readOnly: true
       required:
       - author
       - caption
@@ -10091,6 +10327,12 @@ components:
           type: string
           format: decimal
           pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        entry_count:
+          type: integer
+          readOnly: true
+        details_included:
+          type: boolean
           readOnly: true
       required:
       - cooking_instructions
@@ -10270,6 +10512,80 @@ components:
       required:
       - already_reported
       - reason
+    PostSound:
+      type: object
+      description: The sound a post's clip is set to, as its credit line.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        duration_ms:
+          type: integer
+          readOnly: true
+          nullable: true
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/CreditedPerson'
+          readOnly: true
+        is_original:
+          type: boolean
+          readOnly: true
+      required:
+      - duration_ms
+      - id
+      - is_original
+      - owner
+      - title
+    PostSource:
+      type: object
+      description: |-
+        The post a take answers, as its credit line.
+
+        Present on every take and null on everything else. When the reader may
+        not see the source -- it was deleted, taken down, made private, its
+        author blocked them or was suspended -- `available` is false and every
+        other field is null: the card can say the original is unavailable, and
+        nothing here says what it was or whose.
+      properties:
+        available:
+          type: boolean
+          readOnly: true
+        post_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        original_post_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        kind:
+          type: string
+          readOnly: true
+          nullable: true
+        author:
+          allOf:
+          - $ref: '#/components/schemas/CreditedPerson'
+          readOnly: true
+          nullable: true
+        title:
+          type: string
+          readOnly: true
+          nullable: true
+        attachment_version:
+          type: integer
+          readOnly: true
+          nullable: true
+      required:
+      - attachment_version
+      - author
+      - available
+      - kind
+      - original_post_id
+      - post_id
+      - title
     PostVideo:
       type: object
       description: |-
@@ -10410,6 +10726,9 @@ components:
           format: decimal
           pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
           nullable: true
+          readOnly: true
+        details_included:
+          type: boolean
           readOnly: true
       required:
       - cardio_distance_km
@@ -11351,6 +11670,42 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        is_take:
+          type: boolean
+          readOnly: true
+        source:
+          allOf:
+          - $ref: '#/components/schemas/PostSource'
+          nullable: true
+          readOnly: true
+        sound:
+          allOf:
+          - $ref: '#/components/schemas/PostSound'
+          nullable: true
+          readOnly: true
+        hashtags:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        topics:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        language:
+          type: string
+          nullable: true
+          readOnly: true
+        attachment_version:
+          type: integer
+          readOnly: true
+        audience:
+          type: string
+          readOnly: true
+        reuse_permission:
+          type: string
+          readOnly: true
       required:
       - author
       - caption
@@ -11364,6 +11719,16 @@ components:
       - published_at
       - video
       - workout
+    ReusePermissionEnum:
+      enum:
+      - everyone
+      - followers
+      - nobody
+      type: string
+      description: |-
+        * `everyone` - Anyone who can see it
+        * `followers` - People who follow me
+        * `nobody` - Nobody
     SafetyConsent:
       type: object
       properties:

@@ -9,7 +9,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import (
     Case,
     Count,
@@ -74,6 +74,13 @@ from .throttles import (
     ThrottleByActionMixin,
 )
 from .videos import ReceivedVideo, VideoUploadParser, attach_video, remove_video
+from .publication import (
+    hashtags_in,
+    lineage_from,
+    sound_for,
+    take_source_for,
+    write_hashtags,
+)
 from .models import (
     CYCLE_MATERIALIZE_DAYS,
     BodyWeightEntry,
@@ -3499,8 +3506,64 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
     return result
 
 
-def posts_for_cards():
+#: The query parameter a list of posts takes to leave the exercise and food
+#: rows out of its cards, and the two things it may say.
+ATTACHMENTS_PARAMETER = OpenApiParameter(
+    name="attachments",
+    type=str,
+    enum=["full", "summary"],
+    location=OpenApiParameter.QUERY,
+    description=(
+        "How much of each posted workout or recipe to send. `full`, the "
+        "default, sends every exercise and food. `summary` sends the title "
+        "and totals a card prints and leaves `exercises`, `entries` and "
+        "`cooking_instructions` empty, with `details_included` false; read "
+        "the post itself for the rest."
+    ),
+)
+
+
+def wants_summaries(request):
+    """Whether a list was asked for with `?attachments=summary`."""
+    raw = request.query_params.get("attachments")
+    if raw is None or raw == "full":
+        return False
+    if raw == "summary":
+        return True
+    # Refused rather than guessed at, like every other closed parameter here.
+    raise ValidationError({"attachments": "Use full or summary."})
+
+
+class AttachmentDetailMixin:
+    """A list of post cards that can be asked for without their rows.
+
+    The queryset and the serializer are told together, from the one
+    parameter: the rows are not loaded, and the serializer does not go
+    looking for them.
+    """
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if getattr(self, "action", None) in self.summarisable_actions and wants_summaries(self.request):
+            context["attachments"] = "summary"
+        return context
+
+    #: The actions that answer with a page of cards.
+    summarisable_actions = ("list", "takes")
+
+    def cards(self):
+        if getattr(self, "action", None) in self.summarisable_actions and wants_summaries(self.request):
+            return posts_for_cards(summary=True)
+        return posts_for_cards()
+
+
+def posts_for_cards(summary=False):
     """Posts with everything a rendered card touches already loaded.
+
+    With `summary`, the exercise and food rows are left out: four of the
+    prefetches below, and the bulk of a page's bytes. Only for a serializer
+    told the same thing (`AttachmentDetailMixin`), which then never reads
+    them.
 
     A card prints the author's name, photo, gym and disciplines, then the
     snapshot and its rows. Left alone that is six queries a post, so a page of
@@ -3549,13 +3612,15 @@ def posts_for_cards():
         "author__disciplines",
         "author__prompts",
         "author__social_links",
-        "workout__exercises",
-        "meal__entries",
         "repost_of__author__disciplines",
         "repost_of__author__prompts",
         "repost_of__author__social_links",
-        "repost_of__workout__exercises",
-        "repost_of__meal__entries",
+        *(() if summary else (
+            "workout__exercises",
+            "meal__entries",
+            "repost_of__workout__exercises",
+            "repost_of__meal__entries",
+        )),
     )
 
 
@@ -3739,6 +3804,10 @@ def snapshot_workout(post, session, shows_weights=True):
             )
         )
     PostWorkoutExercise.objects.bulk_create(rows)
+    # The card's figures, added up now from the rows just written so a feed
+    # page never has to load them to print three numbers.
+    workout.summarise(rows)
+    workout.save(update_fields=["exercise_count", "total_set_count", "total_volume_kg"])
 
 
 def snapshot_meal(post, meal, cooking_instructions=""):
@@ -3755,21 +3824,24 @@ def snapshot_meal(post, meal, cooking_instructions=""):
         date=meal.date,
         cooking_instructions=cooking_instructions,
     )
-    PostMealEntry.objects.bulk_create(
-        [
-            PostMealEntry(
-                post_meal=snapshot,
-                name=entry.name,
-                servings=entry.servings,
-                calories=entry.calories,
-                protein_grams=entry.protein_grams,
-                carbohydrate_grams=entry.carbohydrate_grams,
-                fat_grams=entry.fat_grams,
-                position=entry.position,
-            )
-            for entry in meal.entries.all()
-        ]
-    )
+    rows = [
+        PostMealEntry(
+            post_meal=snapshot,
+            name=entry.name,
+            servings=entry.servings,
+            calories=entry.calories,
+            protein_grams=entry.protein_grams,
+            carbohydrate_grams=entry.carbohydrate_grams,
+            fat_grams=entry.fat_grams,
+            position=entry.position,
+        )
+        for entry in meal.entries.all()
+    ]
+    PostMealEntry.objects.bulk_create(rows)
+    snapshot.summarise(rows)
+    snapshot.save(update_fields=[
+        "entry_count", *(f"total_{field}" for field in PostMeal.SUMMED),
+    ])
 
 
 def snapshot_planner(post, entry):
@@ -3799,8 +3871,13 @@ def create_post_from_source(
     visibility,
     shows_weights=True,
     cooking_instructions="",
+    publication=None,
 ):
     """Freeze a source object into a post.
+
+    `publication` is the rest of what the post says about itself -- what it is
+    a take of, its sound, topics, language and who may reuse it -- as column
+    values already resolved and checked by `core.publication`.
 
     The client sends which object it is and nothing about its contents, so the
     numbers in a post are numbers the server read out of that person's own
@@ -3826,7 +3903,10 @@ def create_post_from_source(
         source_meal=source if kind == Post.Kind.MEAL else None,
         source_planner_entry=source if kind == Post.Kind.PLANNER else None,
         shows_weights=shows_weights,
+        hashtags=hashtags_in(caption),
+        **(publication or {}),
     )
+    write_hashtags(post, save=False)
     if kind == Post.Kind.WORKOUT:
         snapshot_workout(post, source, shows_weights=shows_weights)
     elif kind == Post.Kind.MEAL:
@@ -3923,6 +4003,7 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
 @extend_schema_view(
     list=extend_schema(
         parameters=[
+            ATTACHMENTS_PARAMETER,
             OpenApiParameter(
                 name="author",
                 type=int,
@@ -3981,8 +4062,11 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
         request=UpdatePostSerializer,
         responses={200: PostSerializer},
         description=(
-            "Change the caption or who can see this post. The snapshot records "
-            "what happened and is not editable."
+            "Change the caption, who can see this post, who may post a take "
+            "of it, its language or its topics. The snapshot records what "
+            "happened and is not editable, and neither is what the post is a "
+            "take of. Closing a post to takes stops new ones; takes already "
+            "posted stay."
         ),
     ),
     # PUT is refused at runtime by http_method_names below. Excluded here as
@@ -3995,7 +4079,7 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
     create=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
     partial_update=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
 )
-class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
+class PostViewSet(AttachmentDetailMixin, ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Posts: what someone has chosen to show other people.
 
     Reading and writing use different querysets on purpose. A reader gets
@@ -4052,11 +4136,13 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             visible = visible_posts_for(profile, base).values('pk')
             return annotate_social_counts(profile, base.filter(Q(pk__in=visible) | Q(author=profile, is_hidden=False)))
         if self.action == 'list' and id_param(self.request, 'author') == profile.pk:
-            return annotate_social_counts(profile, super().get_queryset().filter(author=profile, is_hidden=False))
+            return annotate_social_counts(profile, self.cards().filter(author=profile, is_hidden=False))
 
         queryset = annotate_social_counts(
-            profile, visible_posts_for(profile, super().get_queryset())
+            profile, visible_posts_for(profile, self.cards())
         )
+        if self.action == "takes":
+            return queryset
         if self.action != "list":
             # The author filter is the list's alone: a create reads its own new
             # post back through this queryset, and a stray query string on the
@@ -4146,6 +4232,41 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             | Q(has_matching_food=True)
             | Q(has_matching_exercise=True)
         )
+
+    @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="cursor",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="The position carried by the previous page's `next` link.",
+            ),
+            OpenApiParameter(
+                name="page_size",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="How many takes to return, at most 50.",
+            ),
+            ATTACHMENTS_PARAMETER,
+        ],
+        responses=PostSerializer(many=True),
+        description=(
+            "The takes people have posted of this post, newest first: the "
+            "ones that answer it directly, and only those the reader may "
+            "see. A repost's id stands for the post it passes on."
+        ),
+    )
+    @action(detail=True, methods=["get"], pagination_class=FeedCursorPagination)
+    def takes(self, request, pk=None):
+        # The post in the URL is found among what the reader may see, so the
+        # takes of one they may not are a 404 like the post itself.
+        post = self.get_object()
+        source = post.repost_of_id or post.pk
+        # visible_posts_for decides each take on its own merits: a private
+        # take of a public post is its author's alone here too.
+        takes = self.get_queryset().filter(source_post_id=source, is_take=True)
+        page = self.paginate_queryset(takes)
+        return self.get_paginated_response(self.get_serializer(page, many=True).data)
 
     @extend_schema(
         methods=["POST"],
@@ -4698,6 +4819,22 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             None if kind == Post.Kind.MEDIA
             else source_for(author, kind, payload.validated_data["source_id"])
         )
+        # What it is a take of and what it is set to, resolved and refused
+        # here for the reason the source above is: before anything is
+        # reviewed, stored or written.
+        publication = {
+            "reuse_permission": payload.validated_data.get(
+                "reuse_permission", Post.Reuse.EVERYONE
+            ),
+            "language": payload.validated_data.get("language", ""),
+            "topics": payload.validated_data.get("topics", []),
+        }
+        if payload.validated_data.get("source_post_id") is not None:
+            publication.update(lineage_from(
+                take_source_for(author, payload.validated_data["source_post_id"])
+            ))
+        if payload.validated_data.get("sound_id") is not None:
+            publication["sound"] = sound_for(author, payload.validated_data["sound_id"])
         decoded = payload.validated_data.get("decoded_image")
         extension = payload.validated_data.get("image_extension", ".jpg")
         if settings.MEDIA_SCREENING_ENABLED and decoded:
@@ -4720,11 +4857,20 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         )
         try:
             with publication_media(decoded, extension) as media:
-                return self._publish_post(payload, media, source)
+                return self._publish_post(payload, media, source, publication)
         except PublicationMediaError:
             raise ServiceUnavailable("Your post was not published because its photo could not be saved. Please retry.")
+        except IntegrityError:
+            # The post being answered, or the sound, was deleted between the
+            # check above and the write. Asked again, each now gives its own
+            # refusal; anything else was not about them and is not swallowed.
+            if payload.validated_data.get("source_post_id") is not None:
+                take_source_for(author, payload.validated_data["source_post_id"])
+            if payload.validated_data.get("sound_id") is not None:
+                sound_for(author, payload.validated_data["sound_id"])
+            raise
 
-    def _publish_post(self, payload, media, source):
+    def _publish_post(self, payload, media, source, publication):
         author = self.owner_profile()
         kind = payload.validated_data["kind"]
         post = create_post_from_source(
@@ -4738,6 +4884,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             cooking_instructions=payload.validated_data.get(
                 "cooking_instructions", ""
             ),
+            publication=publication,
         )
         for field, name in media.items():
             setattr(post, field, name)
@@ -4766,6 +4913,8 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             for field, value in payload.validated_data.items():
                 setattr(post, field, value)
             post.save(update_fields=[*payload.validated_data, "updated_at"])
+            if "caption" in payload.validated_data:
+                write_hashtags(post)
             if consent and (post.image or getattr(post, 'video', None)):
                 from .media_screening_jobs import enqueue
                 enqueue(post.pk, consent_version=consent, threshold=settings.MEDIA_SCREENING_THRESHOLD)
@@ -4795,10 +4944,11 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                     "it was asked for."
                 ),
             ),
+            ATTACHMENTS_PARAMETER,
         ]
     )
 )
-class FeedViewSet(OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
+class FeedViewSet(AttachmentDetailMixin, OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
     """What the people you follow have posted, newest first.
 
     Fanned out on read: a page is one indexed walk over the posts of everyone
@@ -4822,7 +4972,7 @@ class FeedViewSet(OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericView
     def get_queryset(self):
         profile = self.owner_profile()
         queryset = annotate_social_counts(
-            profile, visible_posts_for(profile, super().get_queryset())
+            profile, visible_posts_for(profile, self.cards())
         )
         # visible_posts_for has already annotated the follow test, so narrowing
         # to the people being followed reuses that subquery instead of asking

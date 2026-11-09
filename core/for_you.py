@@ -46,9 +46,11 @@ from .serializers import (
 from .suggestions import MAX_SUGGESTIONS, suggest_people
 from .throttles import CacheUnavailable
 from .views import (
+    ATTACHMENTS_PARAMETER,
     FeedCursorPagination,
     annotate_social_counts,
     posts_for_cards,
+    wants_summaries,
     profile_for,
     visible_posts_for,
     without_blocked_authors,
@@ -110,6 +112,7 @@ class ForYouView(APIView):
                     "for more is refused rather than reduced."
                 ),
             ),
+            ATTACHMENTS_PARAMETER,
         ],
         responses={200: ForYouPageSerializer},
     )
@@ -130,11 +133,12 @@ class ForYouView(APIView):
             except BadCursor:
                 raise ValidationError({"cursor": "That cursor is not one this feed issued."})
 
+        summary = wants_summaries(request)
         page = serve_page(viewer, session, offset, size)
         wanted = [item.pk for item in page.items]
         servable = annotate_social_counts(
             viewer,
-            visible_posts_for(viewer, posts_for_cards().filter(pk__in=wanted)),
+            visible_posts_for(viewer, posts_for_cards(summary=summary).filter(pk__in=wanted)),
         ).exclude(
             # A published own post can be made private after this ranking.
             # General author access must not keep it on the shared feed.
@@ -161,7 +165,8 @@ class ForYouView(APIView):
             next_link = request.build_absolute_uri(
                 request.path + "?" + _query(make_cursor(page.session, page.next_offset), request)
             )
-        data = ForYouPostSerializer(posts, many=True, context={"request": request}).data
+        context = {"request": request, **({"attachments": "summary"} if summary else {})}
+        data = ForYouPostSerializer(posts, many=True, context=context).data
         response = Response({"next": next_link, "previous": None, "results": data})
         if page.duration_ms is not None:
             # Visible in any browser's network panel, and to anything in front
@@ -172,8 +177,11 @@ class ForYouView(APIView):
 
 def _query(cursor, request):
     params = {"cursor": cursor}
-    if "page_size" in request.query_params:
-        params["page_size"] = request.query_params["page_size"]
+    # Carried forward, as a cursor link from the other feeds carries its
+    # query: the next page should be the page the client was reading.
+    for name in ("page_size", "attachments"):
+        if name in request.query_params:
+            params[name] = request.query_params[name]
     return urlencode(params)
 
 

@@ -49,6 +49,7 @@ List responses are paginated with `count`, `next`, `previous`, and `results` fie
 - `POST`/`DELETE /api/v1/social/suggested-people/{id}/dismiss/` — stop suggesting somebody for six months, or undo it
 - `POST /api/v1/social/posts/{id}/report/` — report a post to the moderators
 - `POST`/`DELETE /api/v1/social/posts/{id}/video/` — attach or remove a clip on your own post
+- `GET /api/v1/social/posts/{id}/takes/` — the takes posted of this post, newest first (cursor paging)
 
 A clip is sent as the request body itself with a video `Content-Type`, not as
 base64 or multipart. The server reads the file to decide what it is: MP4 or
@@ -57,6 +58,43 @@ QuickTime, H.264 or HEVC, at most 60 seconds and 25 MB by default. It answers
 with a sentence under `video` for anything else. Where moderation is on, a new
 clip has `status: "pending"` and is shown only to its author until approved.
 See [RECOMMENDATIONS.md](RECOMMENDATIONS.md) for how For You ranks.
+
+### Post formats, takes and credits
+
+There are four formats and one `Post`. A gym moment is `kind: media`. A workout
+or a recipe (`kind: workout`, `kind: meal`) carries its frozen snapshot and can
+carry the same short clip. A take is any of those three created with
+`source_post_id`: it has its own caption, media and snapshot, `is_take` is
+true, and `source` is its credit. A take is not a kind, so an app that has
+never heard of takes draws it as the ordinary post it also is.
+
+A take can be made only of a post its maker can see, that everybody can see
+(public, on an open profile), and whose `reuse_permission` allows it
+(`everyone`, `followers` or `nobody`; the author always may).
+`viewer_can_take` says whether the reader could post one now. A repost's id
+stands for the post it passes on.
+
+A take is its author's post and is never removed because of its source. When a
+reader may not see the source -- deleted, taken down, made private, a block, a
+suspended author -- `source` is `{"available": false}` with every other field
+null. Setting `reuse_permission` to `nobody` stops new takes; takes already
+posted stay.
+
+Other fields every post now carries, all optional in the contract so an app
+generated before them still decodes: `hashtags` (read from the caption,
+normalised, ten at most), `topics` and `language` (set on create or `PATCH`),
+`audience` (who is actually reading: `visibility` narrowed by a closed
+profile), `attachment_version`, and `sound` (the credit for the sound a clip is
+set to, null once the sound is removed).
+
+### Summaries first
+
+The post list, the feed, For You and the takes list accept
+`?attachments=summary`. A workout or recipe then arrives with its title and
+totals, an empty `exercises` or `entries` and `cooking_instructions`, and
+`details_included: false`; `exercise_count` and `entry_count` say how many
+rows there are. `GET /api/v1/social/posts/{id}/` always has the details.
+Without the parameter nothing changes.
 
 ## Session lifecycle
 
