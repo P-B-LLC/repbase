@@ -74,6 +74,11 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'config.urls'
 ANALYTICS_ENABLED = os.getenv('ANALYTICS_ENABLED', 'false').lower() == 'true'
 ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED = os.getenv('ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED', 'false').lower() == 'true'
+# Count API requests in Redis and flush them in batches (core.metric_buffer),
+# rather than updating shared SQL rows during each request. Off until the
+# repbase-metrics-flush timer is installed: without it the dashboard and
+# check_api_health would stop seeing new data.
+ANALYTICS_BUFFERED = os.getenv('ANALYTICS_BUFFERED', 'false').lower() == 'true'
 # Where API health alerts go. Empty means the approved insights accounts,
 # which are the people already trusted with this data; set it to a pager or
 # shared address when that is not the same thing.
