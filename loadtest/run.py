@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -31,7 +32,6 @@ ROOT = Path(__file__).resolve().parent.parent
 RESULTS = Path(__file__).resolve().parent / "results"
 SEED_DATABASE = "rytivo_loadtest_seed"
 RUN_DATABASE = "rytivo_loadtest_run"
-BLACKHOLE_REDIS = "redis://10.255.255.1:6379/0"
 REFUSED_REDIS = "redis://127.0.0.1:1/0"
 
 
@@ -99,6 +99,31 @@ def tokens_and_exercise(url):
     return tokens, exercise
 
 
+class SilentServer:
+    """Accepts connections and never answers: a Redis that has hung.
+
+    On loopback, so it behaves the same on any machine and needs no exception
+    to the rule about where the harness may point."""
+
+    def __init__(self):
+        self.listener = socket.create_server(("127.0.0.1", 0), backlog=256)
+        self.port = self.listener.getsockname()[1]
+        self.held = []
+        threading.Thread(target=self._accept, daemon=True).start()
+
+    def _accept(self):
+        while True:
+            try:
+                self.held.append(self.listener.accept()[0])
+            except OSError:
+                return
+
+    def close(self):
+        self.listener.close()
+        for connection in self.held:
+            connection.close()
+
+
 class Periodic:
     """Runs a management command on a fixed interval, as the systemd timer would."""
 
@@ -155,7 +180,11 @@ def prepare_database(env, args):
 
 def command_scenario(args):
     real_redis = os.environ["LOADTEST_REDIS_URL"]
-    app_redis = {"up": real_redis, "refused": REFUSED_REDIS, "blackhole": BLACKHOLE_REDIS}[args.redis]
+    silent = SilentServer() if args.redis == "blackhole" else None
+    app_redis = {
+        "up": real_redis, "refused": REFUSED_REDIS,
+        "blackhole": f"redis://127.0.0.1:{silent.port}/0" if silent else "",
+    }[args.redis]
     extra = {"ANALYTICS_BUFFERED": "true"} if args.buffered else {}
     env = base_env(RUN_DATABASE, app_redis, **extra)
     run_url = database_url(RUN_DATABASE)
@@ -232,6 +261,8 @@ def command_scenario(args):
             except ProcessLookupError:
                 pass
             server.wait(timeout=45)
+            if silent:
+                silent.close()
 
 
 def command_plans(args):
