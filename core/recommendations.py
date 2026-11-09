@@ -557,18 +557,21 @@ ADDABLE_EXERCISES = 40
 MAX_ADDED_TOPICS = 30
 
 
-def addable_topics():
+def addable_topics(must_answer=False):
     """[topic code] a reader may add as an interest, in the order to offer
     them: the topics that can also be hidden, the disciplines, then the
     exercises the most people have posted lately. A known list, so an added
-    interest is always something posts can be matched against."""
+    interest is always something posts can be matched against.
+
+    `must_answer` is for checking somebody's save: an incomplete list there
+    would refuse a valid choice just because the cache is having a bad moment."""
     disciplines = [
         f"discipline:{value}"
         for value, _ in RepbaseUser.TrainingStyle.choices
         # "Other" says nothing anybody could want more of.
         if value != RepbaseUser.TrainingStyle.OTHER
     ]
-    popularity = exercise_popularity()
+    popularity = exercise_popularity(must_answer=must_answer)
     exercises = [
         f"exercise:{key}" for key in sorted(popularity, key=lambda key: (-popularity[key], key))
     ][:ADDABLE_EXERCISES]
@@ -628,20 +631,24 @@ def _exercise_key(name):
     return (name or "").strip().lower()
 
 
-def _rebuild_once(key, compute, ttl, fallback):
+def _rebuild_once(key, compute, ttl, fallback, must_answer=False):
     """The shared value at `key`, rebuilt by one request at a time.
 
     When a shared list expires, every reader arriving before it is back would
     otherwise run the same scan. One of them does. The rest get the previous
     value, kept for longer than the live one, or else `fallback` -- less to rank
-    from on that one request, rather than the same query many times over."""
+    from on that one request, rather than the same query many times over.
+    `must_answer` computes instead of falling back, for the rare caller whose
+    result decides whether somebody's save is accepted."""
     found = cache.get(key)
     if found is not None:
         return found
     lock, previous = f"{key}:rebuilding", f"{key}:previous"
     if not cache.add(lock, 1, RECOUNT_LOCK_SECONDS):
         kept = cache.get(previous)
-        return fallback if kept is None else kept
+        if kept is not None:
+            return kept
+        return compute() if must_answer else fallback
     try:
         found = compute()
         cache.set(key, found, ttl)
@@ -667,16 +674,16 @@ def exercise_vocabulary(now=None):
     return _exercise_vocabulary(now)["names"]
 
 
-def exercise_popularity(now=None):
+def exercise_popularity(now=None, must_answer=False):
     """{lowercased exercise name: how many people posted it lately} for the
     vocabulary -- what to offer first when a reader adds an interest."""
-    return _exercise_vocabulary(now)["people"]
+    return _exercise_vocabulary(now, must_answer)["people"]
 
 
-def _exercise_vocabulary(now=None):
+def _exercise_vocabulary(now=None, must_answer=False):
     return _rebuild_once(
         "for-you:exercises2", lambda: _compute_exercise_vocabulary(now), VOCABULARY_TTL_SECONDS,
-        {"names": {}, "people": {}},
+        {"names": {}, "people": {}}, must_answer,
     )
 
 

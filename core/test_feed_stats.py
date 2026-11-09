@@ -291,6 +291,15 @@ class SharedListRebuildTests(ForYouTestCase):
         self.assertEqual(recommendations.exercise_vocabulary(), {})
         self.assertEqual(recommendations.exercise_popularity(), {})
 
+    def test_checking_a_save_gets_the_real_list_even_during_a_rebuild(self):
+        cache.clear()
+        cache.add("for-you:exercises2:rebuilding", 1, 30)
+        with mock.patch.object(
+            recommendations, "_compute_exercise_vocabulary",
+            return_value={"names": {"bench press": ["Bench Press"]}, "people": {"bench press": 5}},
+        ):
+            self.assertIn("exercise:bench press", recommendations.addable_topics(must_answer=True))
+
 
 class FeedStatsCommitTests(TransactionTestCase):
     """The job as it runs for real: each batch commits on its own, which is
