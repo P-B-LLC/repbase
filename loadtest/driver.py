@@ -59,6 +59,10 @@ class Client:
 
     def call(self, group, method, path, body=None):
         """(status, parsed JSON or None). Status 0 means no response arrived."""
+        # Every virtual user wakes at the deadline. Letting them all fire then
+        # is a burst no real traffic makes, and it overflows the accept queue.
+        if not self.run.running():
+            return 0, None
         payload = None if body is None else json.dumps(body)
         started = time.monotonic()
         status, headers, data = 0, {}, None
