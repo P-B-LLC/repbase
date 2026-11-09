@@ -1,0 +1,551 @@
+{
+ "feed-following": [
+  {
+   "captured_ms": 107.56,
+   "execution_ms": 106.061,
+   "sequential_scans": [
+    "core_accountaccess",
+    "core_block",
+    "core_gym",
+    "core_postvideo",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibility\", \"core_post\".\"is_hidden\", \"core_pos"
+  },
+  {
+   "captured_ms": 2.62,
+   "execution_ms": 0.765,
+   "sequential_scans": [
+    "core_block",
+    "core_postvideo",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_post\".\"id\" AS \"pk\" FROM \"core_post\" INNER JOIN \"core_repbaseuser\" ON (\"core_post\".\"author_id\" = \"core_repbaseuser\".\"id\") INNER JOIN \"auth_user\" ON (\"core_repbaseuser\".\"user_id\" = \"auth_us"
+  },
+  {
+   "captured_ms": 0.97,
+   "execution_ms": 0.058,
+   "sequential_scans": [
+    "core_userdiscipline"
+   ],
+   "statement": "SELECT \"core_userdiscipline\".\"id\", \"core_userdiscipline\".\"profile_id\", \"core_userdiscipline\".\"discipline\", \"core_userdiscipline\".\"created_at\" FROM \"core_userdiscipline\" WHERE \"core_userdiscipline\".\"pr"
+  },
+  {
+   "captured_ms": 0.63,
+   "execution_ms": 0.004,
+   "sequential_scans": [
+    "core_profileprompt"
+   ],
+   "statement": "SELECT \"core_profileprompt\".\"id\", \"core_profileprompt\".\"owner_id\", \"core_profileprompt\".\"question\", \"core_profileprompt\".\"answer\", \"core_profileprompt\".\"position\", \"core_profileprompt\".\"created_at\", \""
+  },
+  {
+   "captured_ms": 0.59,
+   "execution_ms": 0.036,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_postworkoutexercise\".\"id\", \"core_postworkoutexercise\".\"post_workout_id\", \"core_postworkoutexercise\".\"name\", \"core_postworkoutexercise\".\"order\", \"core_postworkoutexercise\".\"set_count\", \"co"
+  },
+  {
+   "captured_ms": 0.54,
+   "execution_ms": 0.028,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_postmealentry\".\"id\", \"core_postmealentry\".\"post_meal_id\", \"core_postmealentry\".\"name\", \"core_postmealentry\".\"servings\", \"core_postmealentry\".\"calories\", \"core_postmealentry\".\"protein_gram"
+  }
+ ],
+ "feed-for-you-first-page": [
+  {
+   "captured_ms": 24.93,
+   "execution_ms": 20.046,
+   "sequential_scans": [
+    "auth_user",
+    "core_block",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", COUNT(\"core_postlike\".\"id\") AS \"shared\" FROM \"core_postlike\" INNER JOIN \"core_repbaseuser\" ON (\"core_postlike\".\"user_id\" = \"core_repbaseuser\".\"id\") INNER"
+  },
+  {
+   "captured_ms": 20.63,
+   "execution_ms": 21.583,
+   "sequential_scans": [
+    "core_block",
+    "core_postreport",
+    "core_postvideo",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", \"core_post\".\"published_at\" AS \"published"
+  },
+  {
+   "captured_ms": 10.11,
+   "execution_ms": 1.549,
+   "sequential_scans": [
+    "core_accountaccess",
+    "core_block",
+    "core_gym",
+    "core_postvideo",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibility\", \"core_post\".\"is_hidden\", \"core_pos"
+  },
+  {
+   "captured_ms": 7.98,
+   "execution_ms": 4.247,
+   "sequential_scans": [
+    "core_postplannerentry",
+    "core_postvideo",
+    "core_postworkout"
+   ],
+   "statement": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_post\".\"kind\" AS \"kind\", \"core_postworkout\".\"workout_type\" AS \"workout__workout_type\", \"core_postplannerentry\".\"category\" "
+  },
+  {
+   "captured_ms": 5.42,
+   "execution_ms": 2.278,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_postengagementstats\".\"post_id\" AS \"post_id\", \"core_postengagementstats\".\"likes\" AS \"likes\", \"core_postengagementstats\".\"comments\" AS \"comments\", \"core_postengagementstats\".\"shares\" AS \"sh"
+  },
+  {
+   "captured_ms": 5.21,
+   "execution_ms": 4.746,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", \"core_postlike\".\"post_id\" AS \"post_id\" FROM \"core_postlike\" INNER JOIN \"core_post\" ON (\"core_postlike\".\"post_id\" = \"core_post\".\"id\") WHERE (\"core_postlik"
+  }
+ ],
+ "feed-for-you-later-page": [
+  {
+   "captured_ms": 20.13,
+   "execution_ms": 21.868,
+   "sequential_scans": [
+    "core_block",
+    "core_postreport",
+    "core_postvideo",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", \"core_post\".\"published_at\" AS \"published"
+  },
+  {
+   "captured_ms": 17.31,
+   "execution_ms": 19.968,
+   "sequential_scans": [
+    "auth_user",
+    "core_block",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", COUNT(\"core_postlike\".\"id\") AS \"shared\" FROM \"core_postlike\" INNER JOIN \"core_repbaseuser\" ON (\"core_postlike\".\"user_id\" = \"core_repbaseuser\".\"id\") INNER"
+  },
+  {
+   "captured_ms": 6.81,
+   "execution_ms": 1.632,
+   "sequential_scans": [
+    "core_accountaccess",
+    "core_block",
+    "core_gym",
+    "core_postvideo",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibility\", \"core_post\".\"is_hidden\", \"core_pos"
+  },
+  {
+   "captured_ms": 4.74,
+   "execution_ms": 4.705,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", \"core_postlike\".\"post_id\" AS \"post_id\" FROM \"core_postlike\" INNER JOIN \"core_post\" ON (\"core_postlike\".\"post_id\" = \"core_post\".\"id\") WHERE (\"core_postlik"
+  },
+  {
+   "captured_ms": 4.71,
+   "execution_ms": 4.346,
+   "sequential_scans": [
+    "core_postplannerentry",
+    "core_postvideo",
+    "core_postworkout"
+   ],
+   "statement": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_post\".\"kind\" AS \"kind\", \"core_postworkout\".\"workout_type\" AS \"workout__workout_type\", \"core_postplannerentry\".\"category\" "
+  },
+  {
+   "captured_ms": 4.47,
+   "execution_ms": 2.323,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_postengagementstats\".\"post_id\" AS \"post_id\", \"core_postengagementstats\".\"likes\" AS \"likes\", \"core_postengagementstats\".\"comments\" AS \"comments\", \"core_postengagementstats\".\"shares\" AS \"sh"
+  }
+ ],
+ "feed-impressions": [
+  {
+   "captured_ms": 2.67,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_postview\" (\"viewer_id\", \"post_id\", \"view_count\", \"total_dwell_ms\", \"max_watch_ms\", \"completed\", \"skipped\", \"surface\", \"reason\", \"features\", \"first_seen_at\", \"last_seen_at\") VALUES (%"
+  },
+  {
+   "captured_ms": 2.66,
+   "execution_ms": 1.344,
+   "sequential_scans": [
+    "core_block",
+    "core_postvideo",
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_postvideo\".\"status\" AS \"video__status\", \"core_postvideo\".\"duration_ms\" AS \"video__duration_ms\" FROM \"core_post\" INNER JOIN \"core_repbaseuser\" ON (\"core_post\".\"au"
+  },
+  {
+   "captured_ms": 0.29,
+   "execution_ms": 0.009,
+   "sequential_scans": [],
+   "statement": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"auth_user\".\"is_superuser\", \"auth_user\".\"u"
+  },
+  {
+   "captured_ms": 0.17,
+   "execution_ms": 0.005,
+   "sequential_scans": [
+    "core_dailyapimetric"
+   ],
+   "statement": "SELECT \"core_dailyapimetric\".\"id\", \"core_dailyapimetric\".\"day\", \"core_dailyapimetric\".\"endpoint\", \"core_dailyapimetric\".\"method\", \"core_dailyapimetric\".\"requests\", \"core_dailyapimetric\".\"client_errors"
+  },
+  {
+   "captured_ms": 0.16,
+   "execution_ms": 0.006,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_repbaseuser\".\"id\", \"core_repbaseuser\".\"user_id\", \"core_repbaseuser\".\"birthdate\", \"core_repbaseuser\".\"height_cm\", \"core_repbaseuser\".\"weight_kg\", \"core_repbaseuser\".\"target_weight_kg\", \"co"
+  },
+  {
+   "captured_ms": 0.15,
+   "execution_ms": 0.004,
+   "sequential_scans": [
+    "core_recentapimetric"
+   ],
+   "statement": "SELECT \"core_recentapimetric\".\"id\", \"core_recentapimetric\".\"bucket\", \"core_recentapimetric\".\"endpoint\", \"core_recentapimetric\".\"method\", \"core_recentapimetric\".\"requests\", \"core_recentapimetric\".\"clie"
+  }
+ ],
+ "feed-stats-recount-500-posts": [
+  {
+   "captured_ms": 44.12,
+   "execution_ms": 19.09,
+   "sequential_scans": [
+    "core_repbaseuser"
+   ],
+   "statement": "SELECT \"core_postview\".\"post_id\" AS \"post_id\", COUNT(\"core_postview\".\"id\") AS \"impressions\", COUNT(\"core_postview\".\"id\") FILTER (WHERE \"core_postview\".\"total_dwell_ms\" >= %s) AS \"long_views\", COUNT(\"c"
+  },
+  {
+   "captured_ms": 11.67,
+   "execution_ms": 10.09,
+   "sequential_scans": [
+    "core_post"
+   ],
+   "statement": "SELECT \"core_postlike\".\"post_id\" AS \"post_id\", COUNT(\"core_postlike\".\"id\") AS \"rows\", COUNT(DISTINCT \"core_postlike\".\"user_id\") FILTER (WHERE (NOT (\"core_postlike\".\"user_id\" = (\"core_post\".\"author_id\""
+  },
+  {
+   "captured_ms": 9.82,
+   "execution_ms": 8.721,
+   "sequential_scans": [
+    "core_post",
+    "core_workouttemplate"
+   ],
+   "statement": "SELECT \"core_workouttemplate\".\"source_post_id\" AS \"source_post_id\", COUNT(\"core_workouttemplate\".\"id\") AS \"rows\", COUNT(DISTINCT \"core_workouttemplate\".\"owner_id\") FILTER (WHERE (NOT (\"core_workouttem"
+  },
+  {
+   "captured_ms": 8.0,
+   "execution_ms": 7.296,
+   "sequential_scans": [
+    "core_post",
+    "core_savedfoodmeal"
+   ],
+   "statement": "SELECT \"core_savedfoodmeal\".\"source_post_id\" AS \"source_post_id\", COUNT(\"core_savedfoodmeal\".\"id\") AS \"rows\", COUNT(DISTINCT \"core_savedfoodmeal\".\"owner_id\") FILTER (WHERE (NOT (\"core_savedfoodmeal\".\""
+  },
+  {
+   "captured_ms": 7.56,
+   "execution_ms": 6.867,
+   "sequential_scans": [
+    "core_block",
+    "core_post"
+   ],
+   "statement": "SELECT \"core_postcomment\".\"post_id\" AS \"post_id\", COUNT(\"core_postcomment\".\"id\") AS \"rows\", COUNT(DISTINCT \"core_postcomment\".\"author_id\") FILTER (WHERE (NOT (\"core_postcomment\".\"author_id\" = (\"core_p"
+  },
+  {
+   "captured_ms": 6.28,
+   "execution_ms": 6.325,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_post\".\"repost_of_id\" AS \"repost_of_id\", COUNT(\"core_post\".\"id\") AS \"rows\", COUNT(DISTINCT \"core_post\".\"author_id\") FILTER (WHERE (NOT (\"core_post\".\"author_id\" = (\"T2\".\"author_id\")) AND NO"
+  }
+ ],
+ "food-day": [
+  {
+   "captured_ms": 0.82,
+   "execution_ms": 0.084,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_foodentry\".\"id\", \"core_foodentry\".\"meal_id\", \"core_foodentry\".\"name\", \"core_foodentry\".\"servings\", \"core_foodentry\".\"calories\", \"core_foodentry\".\"protein_grams\", \"core_foodentry\".\"carbohy"
+  },
+  {
+   "captured_ms": 0.78,
+   "execution_ms": 0.022,
+   "sequential_scans": [],
+   "statement": "SELECT COUNT(*) AS \"__count\" FROM \"core_foodmeal\" WHERE \"core_foodmeal\".\"owner_id\" = %s"
+  },
+  {
+   "captured_ms": 0.45,
+   "execution_ms": 0.143,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_foodmeal\".\"id\", \"core_foodmeal\".\"owner_id\", \"core_foodmeal\".\"date\", \"core_foodmeal\".\"name\", \"core_foodmeal\".\"position\", \"core_foodmeal\".\"created_at\", \"core_foodmeal\".\"updated_at\", \"core_r"
+  },
+  {
+   "captured_ms": 0.21,
+   "execution_ms": 0.008,
+   "sequential_scans": [],
+   "statement": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"auth_user\".\"is_superuser\", \"auth_user\".\"u"
+  },
+  {
+   "captured_ms": 0.13,
+   "execution_ms": 0.004,
+   "sequential_scans": [
+    "core_dailyapimetric"
+   ],
+   "statement": "SELECT \"core_dailyapimetric\".\"id\", \"core_dailyapimetric\".\"day\", \"core_dailyapimetric\".\"endpoint\", \"core_dailyapimetric\".\"method\", \"core_dailyapimetric\".\"requests\", \"core_dailyapimetric\".\"client_errors"
+  },
+  {
+   "captured_ms": 0.13,
+   "execution_ms": 0.004,
+   "sequential_scans": [
+    "core_recentapimetric"
+   ],
+   "statement": "SELECT \"core_recentapimetric\".\"id\", \"core_recentapimetric\".\"bucket\", \"core_recentapimetric\".\"endpoint\", \"core_recentapimetric\".\"method\", \"core_recentapimetric\".\"requests\", \"core_recentapimetric\".\"clie"
+  }
+ ],
+ "food-log-meal": [
+  {
+   "captured_ms": 0.58,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_foodentry\" (\"meal_id\", \"name\", \"servings\", \"calories\", \"protein_grams\", \"carbohydrate_grams\", \"fat_grams\", \"position\", \"created_at\", \"updated_at\") VALUES (%s, %s, %s, %s, %s, %s, %s,"
+  },
+  {
+   "captured_ms": 0.51,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_foodmeal\" (\"owner_id\", \"date\", \"name\", \"position\", \"created_at\", \"updated_at\") VALUES (%s, %s, %s, %s, %s, %s) RETURNING \"core_foodmeal\".\"id\""
+  },
+  {
+   "captured_ms": 0.31,
+   "execution_ms": 0.007,
+   "sequential_scans": [],
+   "statement": "SELECT COUNT(*) AS \"__count\" FROM \"core_foodmeal\" WHERE (\"core_foodmeal\".\"date\" = %s AND \"core_foodmeal\".\"owner_id\" = %s)"
+  },
+  {
+   "captured_ms": 0.28,
+   "execution_ms": 0.005,
+   "sequential_scans": [],
+   "statement": "SELECT COUNT(*) AS \"__count\" FROM \"core_foodentry\" WHERE \"core_foodentry\".\"meal_id\" = %s"
+  },
+  {
+   "captured_ms": 0.27,
+   "execution_ms": 0.005,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_foodmeal\".\"id\", \"core_foodmeal\".\"owner_id\", \"core_foodmeal\".\"date\", \"core_foodmeal\".\"name\", \"core_foodmeal\".\"position\", \"core_foodmeal\".\"created_at\", \"core_foodmeal\".\"updated_at\" FROM \"co"
+  },
+  {
+   "captured_ms": 0.21,
+   "execution_ms": 0.006,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_foodentry\".\"id\", \"core_foodentry\".\"meal_id\", \"core_foodentry\".\"name\", \"core_foodentry\".\"servings\", \"core_foodentry\".\"calories\", \"core_foodentry\".\"protein_grams\", \"core_foodentry\".\"carbohy"
+  }
+ ],
+ "food-search": [
+  {
+   "captured_ms": 0.99,
+   "execution_ms": 0.007,
+   "sequential_scans": [
+    "core_foodsearchcache"
+   ],
+   "statement": "SELECT \"core_foodsearchcache\".\"id\", \"core_foodsearchcache\".\"term\", \"core_foodsearchcache\".\"payload\", \"core_foodsearchcache\".\"fetched_at\" FROM \"core_foodsearchcache\" WHERE \"core_foodsearchcache\".\"term\""
+  },
+  {
+   "captured_ms": 0.21,
+   "execution_ms": 0.009,
+   "sequential_scans": [],
+   "statement": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"auth_user\".\"is_superuser\", \"auth_user\".\"u"
+  },
+  {
+   "captured_ms": 0.14,
+   "execution_ms": 0.004,
+   "sequential_scans": [
+    "core_recentapimetric"
+   ],
+   "statement": "SELECT \"core_recentapimetric\".\"id\", \"core_recentapimetric\".\"bucket\", \"core_recentapimetric\".\"endpoint\", \"core_recentapimetric\".\"method\", \"core_recentapimetric\".\"requests\", \"core_recentapimetric\".\"clie"
+  },
+  {
+   "captured_ms": 0.13,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_recentapimetric\" (\"bucket\", \"endpoint\", \"method\", \"requests\", \"client_errors\", \"server_errors\", \"total_ms\", \"max_ms\") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING \"core_recentap"
+  },
+  {
+   "captured_ms": 0.12,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_dailyapimetric\" (\"day\", \"endpoint\", \"method\", \"requests\", \"client_errors\", \"server_errors\", \"total_ms\", \"max_ms\") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING \"core_dailyapimetr"
+  },
+  {
+   "captured_ms": 0.12,
+   "execution_ms": null,
+   "sequential_scans": [
+    "core_dailyapimetric"
+   ],
+   "statement": "UPDATE \"core_dailyapimetric\" SET \"requests\" = (\"core_dailyapimetric\".\"requests\" + %s), \"client_errors\" = (\"core_dailyapimetric\".\"client_errors\" + %s), \"server_errors\" = (\"core_dailyapimetric\".\"server_"
+  }
+ ],
+ "planner-complete": [
+  {
+   "captured_ms": 0.68,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_plannerentry\" (\"owner_id\", \"kind\", \"title\", \"category\", \"priority\", \"scheduled_date\", \"scheduled_time\", \"duration_minutes\", \"completed_at\", \"workout_id\", \"source_schedule_id\", \"notes"
+  },
+  {
+   "captured_ms": 0.45,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "UPDATE \"core_plannerentry\" SET \"owner_id\" = %s, \"kind\" = %s, \"title\" = %s, \"category\" = %s, \"priority\" = %s, \"scheduled_date\" = %s, \"scheduled_time\" = %s, \"duration_minutes\" = %s, \"completed_at\" = %s,"
+  },
+  {
+   "captured_ms": 0.44,
+   "execution_ms": 0.02,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_plannerentry\".\"id\", \"core_plannerentry\".\"owner_id\", \"core_plannerentry\".\"kind\", \"core_plannerentry\".\"title\", \"core_plannerentry\".\"category\", \"core_plannerentry\".\"priority\", \"core_plannere"
+  },
+  {
+   "captured_ms": 0.27,
+   "execution_ms": 0.004,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_plannerentry\".\"id\", \"core_plannerentry\".\"source_schedule_id\" FROM \"core_plannerentry\" WHERE \"core_plannerentry\".\"id\" = %s LIMIT ?"
+  },
+  {
+   "captured_ms": 0.21,
+   "execution_ms": 0.008,
+   "sequential_scans": [],
+   "statement": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"auth_user\".\"is_superuser\", \"auth_user\".\"u"
+  },
+  {
+   "captured_ms": 0.13,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_dailyapimetric\" (\"day\", \"endpoint\", \"method\", \"requests\", \"client_errors\", \"server_errors\", \"total_ms\", \"max_ms\") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING \"core_dailyapimetr"
+  }
+ ],
+ "planner-week": [
+  {
+   "captured_ms": 1.23,
+   "execution_ms": 0.021,
+   "sequential_scans": [],
+   "statement": "SELECT COUNT(*) AS \"__count\" FROM \"core_plannerentry\" WHERE (\"core_plannerentry\".\"owner_id\" = %s AND \"core_plannerentry\".\"parent_id\" IS NULL AND \"core_plannerentry\".\"scheduled_date\" >= %s AND \"core_pl"
+  },
+  {
+   "captured_ms": 1.07,
+   "execution_ms": 0.005,
+   "sequential_scans": [
+    "core_plannerrecurrence"
+   ],
+   "statement": "SELECT \"core_plannerrecurrence\".\"id\", \"core_plannerrecurrence\".\"owner_id\", \"core_plannerrecurrence\".\"interval_days\", \"core_plannerrecurrence\".\"weekdays\", \"core_plannerrecurrence\".\"starts_on\", \"core_pl"
+  },
+  {
+   "captured_ms": 0.67,
+   "execution_ms": 0.014,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_plannerentry\".\"id\", \"core_plannerentry\".\"owner_id\", \"core_plannerentry\".\"kind\", \"core_plannerentry\".\"title\", \"core_plannerentry\".\"category\", \"core_plannerentry\".\"priority\", \"core_plannere"
+  },
+  {
+   "captured_ms": 0.21,
+   "execution_ms": 0.011,
+   "sequential_scans": [],
+   "statement": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"auth_user\".\"is_superuser\", \"auth_user\".\"u"
+  },
+  {
+   "captured_ms": 0.16,
+   "execution_ms": 0.004,
+   "sequential_scans": [
+    "core_dailyapimetric"
+   ],
+   "statement": "SELECT \"core_dailyapimetric\".\"id\", \"core_dailyapimetric\".\"day\", \"core_dailyapimetric\".\"endpoint\", \"core_dailyapimetric\".\"method\", \"core_dailyapimetric\".\"requests\", \"core_dailyapimetric\".\"client_errors"
+  },
+  {
+   "captured_ms": 0.16,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_dailyapimetric\" (\"day\", \"endpoint\", \"method\", \"requests\", \"client_errors\", \"server_errors\", \"total_ms\", \"max_ms\") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING \"core_dailyapimetr"
+  }
+ ],
+ "workout-history": [
+  {
+   "captured_ms": 2.75,
+   "execution_ms": 2.108,
+   "sequential_scans": [],
+   "statement": "SELECT \"core_workoutsession\".\"id\", \"core_workoutsession\".\"repbase_user_id\", \"core_workoutsession\".\"workout_id\", \"core_workoutsession\".\"status\", \"core_workoutsession\".\"started_at\", \"core_workoutsession"
+  },
+  {
+   "captured_ms": 0.91,
+   "execution_ms": 0.542,
+   "sequential_scans": [],
+   "statement": "SELECT COUNT(*) FROM (SELECT \"core_workoutsession\".\"id\" AS \"col1\" FROM \"core_workoutsession\" LEFT OUTER JOIN \"core_sessionexercise\" ON (\"core_workoutsession\".\"id\" = \"core_sessionexercise\".\"session_id\""
+  },
+  {
+   "captured_ms": 0.23,
+   "execution_ms": 0.008,
+   "sequential_scans": [],
+   "statement": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"auth_user\".\"is_superuser\", \"auth_user\".\"u"
+  },
+  {
+   "captured_ms": 0.14,
+   "execution_ms": 0.004,
+   "sequential_scans": [
+    "core_dailyapimetric"
+   ],
+   "statement": "SELECT \"core_dailyapimetric\".\"id\", \"core_dailyapimetric\".\"day\", \"core_dailyapimetric\".\"endpoint\", \"core_dailyapimetric\".\"method\", \"core_dailyapimetric\".\"requests\", \"core_dailyapimetric\".\"client_errors"
+  },
+  {
+   "captured_ms": 0.14,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_dailyapimetric\" (\"day\", \"endpoint\", \"method\", \"requests\", \"client_errors\", \"server_errors\", \"total_ms\", \"max_ms\") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING \"core_dailyapimetr"
+  },
+  {
+   "captured_ms": 0.14,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_recentapimetric\" (\"bucket\", \"endpoint\", \"method\", \"requests\", \"client_errors\", \"server_errors\", \"total_ms\", \"max_ms\") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING \"core_recentap"
+  }
+ ],
+ "workout-set-save": [
+  {
+   "captured_ms": 2.04,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_workoutsession\" (\"repbase_user_id\", \"workout_id\", \"status\", \"started_at\", \"ended_at\", \"cardio_machine\", \"cardio_seconds\", \"cardio_distance_km\", \"health_external_id\", \"health_distance"
+  },
+  {
+   "captured_ms": 1.91,
+   "execution_ms": null,
+   "sequential_scans": [
+    "core_recentapimetric"
+   ],
+   "statement": "UPDATE \"core_recentapimetric\" SET \"requests\" = (\"core_recentapimetric\".\"requests\" + %s), \"client_errors\" = (\"core_recentapimetric\".\"client_errors\" + %s), \"server_errors\" = (\"core_recentapimetric\".\"ser"
+  },
+  {
+   "captured_ms": 1.82,
+   "execution_ms": 0.01,
+   "sequential_scans": [],
+   "statement": "SELECT COUNT(*) AS \"__count\" FROM \"core_setentry\" INNER JOIN \"core_sessionexercise\" ON (\"core_setentry\".\"session_exercise_id\" = \"core_sessionexercise\".\"id\") WHERE (\"core_sessionexercise\".\"session_id\" "
+  },
+  {
+   "captured_ms": 0.93,
+   "execution_ms": 0.004,
+   "sequential_scans": [
+    "core_sessionroutepoint"
+   ],
+   "statement": "SELECT \"core_sessionroutepoint\".\"id\", \"core_sessionroutepoint\".\"session_id\", \"core_sessionroutepoint\".\"latitude\", \"core_sessionroutepoint\".\"longitude\", \"core_sessionroutepoint\".\"recorded_at\", \"core_se"
+  },
+  {
+   "captured_ms": 0.56,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_setentry\" (\"session_exercise_id\", \"set_number\", \"weight_kg\", \"reps\", \"distance_km\", \"completed_at\", \"set_type\", \"created_at\", \"updated_at\") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s"
+  },
+  {
+   "captured_ms": 0.49,
+   "execution_ms": null,
+   "sequential_scans": [],
+   "statement": "INSERT INTO \"core_sessionexercise\" (\"session_id\", \"exercise_id\", \"order\", \"notes\") VALUES (%s, %s, %s, %s) RETURNING \"core_sessionexercise\".\"id\""
+  }
+ ]
+}

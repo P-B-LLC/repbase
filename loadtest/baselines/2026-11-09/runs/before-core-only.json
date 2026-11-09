@@ -1,0 +1,229 @@
+{
+ "cache": {
+  "commands": 5084,
+  "hit_rate_pct": 69.67,
+  "hits": 2228,
+  "misses": 970
+ },
+ "database": {
+  "active_queries_mean": 0.03,
+  "blocks_per_request": 173.4,
+  "connection_reserve_pct": 84.0,
+  "connections_peak": 8,
+  "cpu_cores_mean": 0.008,
+  "cpu_pct_of_host": 0.07,
+  "deadlocks": 0,
+  "lock_waiters_mean": 0.0,
+  "lock_waiters_peak": 0,
+  "max_connections": 50,
+  "rows_examined_per_request": 2874.5,
+  "rows_returned_per_request": 49.9,
+  "statement_calls": 33322,
+  "statement_calls_per_request": 17.42,
+  "statement_time_ms": 1084.2
+ },
+ "groups": {
+  "first_page": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "following": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "food": {
+   "count": 865,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 11.4,
+   "p95_ms": 37.6,
+   "p99_ms": 113.5,
+   "sql_count_mean": 10.3,
+   "sql_ms_mean": 3.52
+  },
+  "impressions": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "later_page": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "like": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "planner": {
+   "count": 546,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 15.2,
+   "p95_ms": 27.3,
+   "p99_ms": 107.1,
+   "sql_count_mean": 12.69,
+   "sql_ms_mean": 4.36
+  },
+  "workout": {
+   "count": 502,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 11.0,
+   "p95_ms": 32.0,
+   "p99_ms": 134.0,
+   "sql_count_mean": 13.23,
+   "sql_ms_mean": 4.39
+  }
+ },
+ "overall": {
+  "count": 1913,
+  "error_rate_pct": 0.0,
+  "errors_5xx": 0,
+  "failures": 0,
+  "metric_sql_per_request": 5.0,
+  "p50_ms": 12.4,
+  "p95_ms": 36.5,
+  "p99_ms": 131.4,
+  "requests_per_second": 12.75,
+  "sql_count_mean": 11.75,
+  "sql_ms_mean": 3.99
+ },
+ "scenario": {
+  "buffered": false,
+  "cache": "warm",
+  "core_users": 50,
+  "duration_s": 150,
+  "feed_users": 0,
+  "git_commit": "11a3544",
+  "label": "before-core-only",
+  "mode": "core-only",
+  "redis": "up",
+  "scale": 1.0,
+  "seed": 20261109,
+  "stats": "fresh",
+  "web_threads": 4,
+  "web_workers": 2
+ },
+ "top_statements": [
+  {
+   "calls": 1,
+   "mean_ms": 108.71,
+   "query": "SELECT \"core_postview\".\"post_id\" AS \"post_id\", COUNT(\"core_postview\".\"id\") AS \"impressions\", COUNT(\"core_postview\".\"id\") FILTER (WHERE \"core_postview\".\"total_dw",
+   "rows": 500,
+   "total_ms": 108.7
+  },
+  {
+   "calls": 2066,
+   "mean_ms": 0.05,
+   "query": "UPDATE \"core_dailyapimetric\" SET \"requests\" = (\"core_dailyapimetric\".\"requests\" + $1), \"client_errors\" = (\"core_dailyapimetric\".\"client_errors\" + $2), \"server_e",
+   "rows": 2066,
+   "total_ms": 108.2
+  },
+  {
+   "calls": 1,
+   "mean_ms": 90.86,
+   "query": "SELECT DISTINCT \"core_postview\".\"post_id\" AS \"post_id\" FROM \"core_postview\" INNER JOIN \"core_post\" ON (\"core_postview\".\"post_id\" = \"core_post\".\"id\") WHERE (\"cor",
+   "rows": 515,
+   "total_ms": 90.9
+  },
+  {
+   "calls": 229,
+   "mean_ms": 0.28,
+   "query": "SELECT \"core_foodentry\".\"id\", \"core_foodentry\".\"meal_id\", \"core_foodentry\".\"name\", \"core_foodentry\".\"servings\", \"core_foodentry\".\"calories\", \"core_foodentry\".\"p",
+   "rows": 34350,
+   "total_ms": 63.8
+  },
+  {
+   "calls": 229,
+   "mean_ms": 0.27,
+   "query": "SELECT \"core_foodmeal\".\"id\", \"core_foodmeal\".\"owner_id\", \"core_foodmeal\".\"date\", \"core_foodmeal\".\"name\", \"core_foodmeal\".\"position\", \"core_foodmeal\".\"created_at",
+   "rows": 11450,
+   "total_ms": 62.0
+  },
+  {
+   "calls": 1,
+   "mean_ms": 48.68,
+   "query": "SELECT \"core_postview\".\"post_id\" AS \"post_id\", COUNT(\"core_postview\".\"id\") AS \"impressions\", COUNT(\"core_postview\".\"id\") FILTER (WHERE \"core_postview\".\"total_dw",
+   "rows": 251,
+   "total_ms": 48.7
+  },
+  {
+   "calls": 2066,
+   "mean_ms": 0.02,
+   "query": "UPDATE \"core_recentapimetric\" SET \"requests\" = (\"core_recentapimetric\".\"requests\" + $1), \"client_errors\" = (\"core_recentapimetric\".\"client_errors\" + $2), \"serve",
+   "rows": 2066,
+   "total_ms": 34.4
+  },
+  {
+   "calls": 2066,
+   "mean_ms": 0.02,
+   "query": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"a",
+   "rows": 2066,
+   "total_ms": 32.9
+  },
+  {
+   "calls": 196,
+   "mean_ms": 0.15,
+   "query": "INSERT INTO \"core_plannerentry\" (\"owner_id\", \"kind\", \"title\", \"category\", \"priority\", \"scheduled_date\", \"scheduled_time\", \"duration_minutes\", \"completed_at\", \"w",
+   "rows": 196,
+   "total_ms": 29.3
+  },
+  {
+   "calls": 196,
+   "mean_ms": 0.14,
+   "query": "SELECT \"core_plannerentry\".\"id\", \"core_plannerentry\".\"owner_id\", \"core_plannerentry\".\"kind\", \"core_plannerentry\".\"title\", \"core_plannerentry\".\"category\", \"core_",
+   "rows": 4011,
+   "total_ms": 27.2
+  },
+  {
+   "calls": 2229,
+   "mean_ms": 0.01,
+   "query": "SELECT \"core_repbaseuser\".\"id\", \"core_repbaseuser\".\"user_id\", \"core_repbaseuser\".\"birthdate\", \"core_repbaseuser\".\"height_cm\", \"core_repbaseuser\".\"weight_kg\", \"c",
+   "rows": 2229,
+   "total_ms": 24.0
+  },
+  {
+   "calls": 1,
+   "mean_ms": 20.13,
+   "query": "SELECT \"core_postlike\".\"post_id\" AS \"post_id\", COUNT(\"core_postlike\".\"id\") AS \"rows\", COUNT(DISTINCT \"core_postlike\".\"user_id\") FILTER (WHERE (NOT (\"core_postli",
+   "rows": 500,
+   "total_ms": 20.1
+  }
+ ],
+ "workers": {
+  "feed_stats_age_s": 126.9,
+  "metric_flush_lag_s": null,
+  "push_queue_age_s": null,
+  "screening_queue_age_s": null,
+  "video_queue_age_s": null
+ }
+}

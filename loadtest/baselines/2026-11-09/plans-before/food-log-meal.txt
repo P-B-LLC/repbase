@@ -1,0 +1,53 @@
+-- 0.6 ms when captured
+-- INSERT INTO "core_foodentry" ("meal_id", "name", "servings", "calories", "protein_grams", "carbohydrate_grams", "fat_grams", "position", "created_at", "updated_at") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_foodentry"."id"
+Insert on core_foodentry  (cost=0.00..0.01 rows=1 width=422)
+  ->  Result  (cost=0.00..0.01 rows=1 width=422)
+
+-- 0.5 ms when captured
+-- INSERT INTO "core_foodmeal" ("owner_id", "date", "name", "position", "created_at", "updated_at") VALUES (%s, %s, %s, %s, %s, %s) RETURNING "core_foodmeal"."id"
+Insert on core_foodmeal  (cost=0.00..0.01 rows=1 width=256)
+  ->  Result  (cost=0.00..0.01 rows=1 width=256)
+
+-- 0.3 ms when captured
+-- SELECT COUNT(*) AS "__count" FROM "core_foodmeal" WHERE ("core_foodmeal"."date" = %s AND "core_foodmeal"."owner_id" = %s)
+Aggregate  (cost=8.44..8.45 rows=1 width=8) (actual time=0.003..0.003 rows=1 loops=1)
+  Buffers: shared hit=5
+  ->  Index Only Scan using core_foodme_owner_i_253461_idx on core_foodmeal  (cost=0.42..8.44 rows=1 width=0) (actual time=0.002..0.003 rows=1 loops=1)
+        Index Cond: ((owner_id = 101) AND (date = '2026-11-09'::date))
+        Heap Fetches: 1
+        Buffers: shared hit=5
+Planning Time: 0.015 ms
+Execution Time: 0.007 ms
+
+-- 0.3 ms when captured
+-- SELECT COUNT(*) AS "__count" FROM "core_foodentry" WHERE "core_foodentry"."meal_id" = %s
+Aggregate  (cost=8.48..8.49 rows=1 width=8) (actual time=0.002..0.002 rows=1 loops=1)
+  Buffers: shared hit=5
+  ->  Index Only Scan using core_foodentry_meal_id_924d0d61 on core_foodentry  (cost=0.42..8.47 rows=3 width=0) (actual time=0.002..0.002 rows=1 loops=1)
+        Index Cond: (meal_id = 512001)
+        Heap Fetches: 1
+        Buffers: shared hit=5
+Planning Time: 0.011 ms
+Execution Time: 0.005 ms
+
+-- 0.3 ms when captured
+-- SELECT "core_foodmeal"."id", "core_foodmeal"."owner_id", "core_foodmeal"."date", "core_foodmeal"."name", "core_foodmeal"."position", "core_foodmeal"."created_at", "core_foodmeal"."updated_at" FROM "core_foodmeal" WHERE "core_foodmeal"."id" = %s LIMIT 21
+Limit  (cost=0.42..8.44 rows=1 width=45) (actual time=0.002..0.002 rows=1 loops=1)
+  Buffers: shared hit=4
+  ->  Index Scan using core_foodmeal_pkey on core_foodmeal  (cost=0.42..8.44 rows=1 width=45) (actual time=0.002..0.002 rows=1 loops=1)
+        Index Cond: (id = 512001)
+        Buffers: shared hit=4
+Planning Time: 0.010 ms
+Execution Time: 0.005 ms
+
+-- 0.2 ms when captured
+-- SELECT "core_foodentry"."id", "core_foodentry"."meal_id", "core_foodentry"."name", "core_foodentry"."servings", "core_foodentry"."calories", "core_foodentry"."protein_grams", "core_foodentry"."carbohydrate_grams", "core_foodentry"."fat_grams", "core_foodentry"."position", "core_foodentry"."created_at", "core_foodentry"."updated_at" FROM "core_foodentry" WHERE "core_foodentry"."meal_id" = %s ORDER BY "core_foodentry"."position" ASC, "core_foodentry"."id" ASC
+Sort  (cost=8.50..8.51 rows=3 width=64) (actual time=0.003..0.003 rows=1 loops=1)
+  Sort Key: "position", id
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=4
+  ->  Index Scan using core_foodentry_meal_id_924d0d61 on core_foodentry  (cost=0.42..8.47 rows=3 width=64) (actual time=0.002..0.002 rows=1 loops=1)
+        Index Cond: (meal_id = 512001)
+        Buffers: shared hit=4
+Planning Time: 0.011 ms
+Execution Time: 0.006 ms

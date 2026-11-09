@@ -1,0 +1,229 @@
+{
+ "cache": {
+  "commands": null,
+  "hit_rate_pct": null,
+  "hits": null,
+  "misses": null
+ },
+ "database": {
+  "active_queries_mean": 0.07,
+  "blocks_per_request": 1921.6,
+  "connection_reserve_pct": 86.0,
+  "connections_peak": 7,
+  "cpu_cores_mean": 0.039,
+  "cpu_pct_of_host": 0.33,
+  "deadlocks": 0,
+  "lock_waiters_mean": 0.0,
+  "lock_waiters_peak": 0,
+  "max_connections": 50,
+  "rows_examined_per_request": 5915.7,
+  "rows_returned_per_request": 35.7,
+  "statement_calls": 9258,
+  "statement_calls_per_request": 10.04,
+  "statement_time_ms": 1607.3
+ },
+ "groups": {
+  "first_page": {
+   "count": 106,
+   "errors_5xx": 106,
+   "failures": 0,
+   "p50_ms": 3.3,
+   "p95_ms": 9.5,
+   "p99_ms": 255.2,
+   "sql_count_mean": 1.0,
+   "sql_ms_mean": 0.44
+  },
+  "following": {
+   "count": 11,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 168.5,
+   "p95_ms": 182.9,
+   "p99_ms": 185.9,
+   "sql_count_mean": 17.27,
+   "sql_ms_mean": 133.99
+  },
+  "food": {
+   "count": 374,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 9.4,
+   "p95_ms": 91.5,
+   "p99_ms": 262.3,
+   "sql_count_mean": 5.37,
+   "sql_ms_mean": 2.75
+  },
+  "impressions": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "later_page": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "like": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "planner": {
+   "count": 228,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 13.6,
+   "p95_ms": 132.7,
+   "p99_ms": 275.1,
+   "sql_count_mean": 7.72,
+   "sql_ms_mean": 4.05
+  },
+  "workout": {
+   "count": 203,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 10.3,
+   "p95_ms": 124.8,
+   "p99_ms": 262.9,
+   "sql_count_mean": 7.92,
+   "sql_ms_mean": 4.06
+  }
+ },
+ "overall": {
+  "count": 922,
+  "error_rate_pct": 11.497,
+  "errors_5xx": 106,
+  "failures": 0,
+  "metric_sql_per_request": 0.0,
+  "p50_ms": 10.0,
+  "p95_ms": 138.0,
+  "p99_ms": 264.5,
+  "requests_per_second": 15.37,
+  "sql_count_mean": 6.15,
+  "sql_ms_mean": 4.66
+ },
+ "scenario": {
+  "buffered": true,
+  "cache": "warm",
+  "core_users": 50,
+  "duration_s": 60,
+  "feed_users": 100,
+  "git_commit": "dada1f7",
+  "label": "after-redis-blackhole",
+  "mode": "mixed",
+  "redis": "blackhole",
+  "scale": 1.0,
+  "seed": 20261109,
+  "stats": "fresh",
+  "web_threads": 4,
+  "web_workers": 2
+ },
+ "top_statements": [
+  {
+   "calls": 11,
+   "mean_ms": 110.67,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 231,
+   "total_ms": 1217.4
+  },
+  {
+   "calls": 1,
+   "mean_ms": 79.64,
+   "query": "SELECT DISTINCT \"core_postview\".\"post_id\" AS \"post_id\" FROM \"core_postview\" INNER JOIN \"core_post\" ON (\"core_postview\".\"post_id\" = \"core_post\".\"id\") WHERE (\"cor",
+   "rows": 0,
+   "total_ms": 79.6
+  },
+  {
+   "calls": 106,
+   "mean_ms": 0.32,
+   "query": "SELECT \"core_foodmeal\".\"id\", \"core_foodmeal\".\"owner_id\", \"core_foodmeal\".\"date\", \"core_foodmeal\".\"name\", \"core_foodmeal\".\"position\", \"core_foodmeal\".\"created_at",
+   "rows": 5300,
+   "total_ms": 33.5
+  },
+  {
+   "calls": 106,
+   "mean_ms": 0.31,
+   "query": "SELECT \"core_foodentry\".\"id\", \"core_foodentry\".\"meal_id\", \"core_foodentry\".\"name\", \"core_foodentry\".\"servings\", \"core_foodentry\".\"calories\", \"core_foodentry\".\"p",
+   "rows": 15900,
+   "total_ms": 32.5
+  },
+  {
+   "calls": 1174,
+   "mean_ms": 0.02,
+   "query": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"a",
+   "rows": 1174,
+   "total_ms": 23.7
+  },
+  {
+   "calls": 1,
+   "mean_ms": 20.17,
+   "query": "SELECT DISTINCT \"core_postlike\".\"post_id\" AS \"post_id\" FROM \"core_postlike\" INNER JOIN \"core_post\" ON (\"core_postlike\".\"post_id\" = \"core_post\".\"id\") WHERE (\"cor",
+   "rows": 0,
+   "total_ms": 20.2
+  },
+  {
+   "calls": 90,
+   "mean_ms": 0.16,
+   "query": "INSERT INTO \"core_plannerentry\" (\"owner_id\", \"kind\", \"title\", \"category\", \"priority\", \"scheduled_date\", \"scheduled_time\", \"duration_minutes\", \"completed_at\", \"w",
+   "rows": 90,
+   "total_ms": 14.1
+  },
+  {
+   "calls": 90,
+   "mean_ms": 0.15,
+   "query": "SELECT \"core_plannerentry\".\"id\", \"core_plannerentry\".\"owner_id\", \"core_plannerentry\".\"kind\", \"core_plannerentry\".\"title\", \"core_plannerentry\".\"category\", \"core_",
+   "rows": 1636,
+   "total_ms": 13.4
+  },
+  {
+   "calls": 1053,
+   "mean_ms": 0.01,
+   "query": "SELECT \"core_repbaseuser\".\"id\", \"core_repbaseuser\".\"user_id\", \"core_repbaseuser\".\"birthdate\", \"core_repbaseuser\".\"height_cm\", \"core_repbaseuser\".\"weight_kg\", \"c",
+   "rows": 1053,
+   "total_ms": 12.4
+  },
+  {
+   "calls": 76,
+   "mean_ms": 0.15,
+   "query": "SELECT count(*), count(*) FILTER (WHERE wait_event_type = $1), count(*) FILTER (WHERE state = $2) FROM pg_stat_activity WHERE datname = current_database() AND p",
+   "rows": 76,
+   "total_ms": 11.8
+  },
+  {
+   "calls": 106,
+   "mean_ms": 0.08,
+   "query": "INSERT INTO \"core_foodmeal\" (\"owner_id\", \"date\", \"name\", \"position\", \"created_at\", \"updated_at\") VALUES ($1, $2::date, $3, $4, $5::timestamptz, $6::timestamptz)",
+   "rows": 106,
+   "total_ms": 8.8
+  },
+  {
+   "calls": 90,
+   "mean_ms": 0.1,
+   "query": "SELECT COUNT(*) AS \"__count\" FROM \"core_plannerentry\" WHERE (\"core_plannerentry\".\"owner_id\" = $1 AND \"core_plannerentry\".\"parent_id\" IS NULL AND \"core_planneren",
+   "rows": 90,
+   "total_ms": 8.6
+  }
+ ],
+ "workers": {
+  "feed_stats_age_s": 88.7,
+  "metric_flush_lag_s": null,
+  "push_queue_age_s": null,
+  "screening_queue_age_s": null,
+  "video_queue_age_s": null
+ }
+}
