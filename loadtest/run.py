@@ -189,7 +189,9 @@ def command_scenario(args):
     env = base_env(RUN_DATABASE, app_redis, **extra)
     run_url = database_url(RUN_DATABASE)
     print(f"[{args.label}] preparing database", flush=True)
-    prepare_database(env, args)
+    # Only the application under test loses Redis. Preparing the data is not
+    # part of the scenario, and the statistics job needs it on older code.
+    prepare_database(base_env(RUN_DATABASE, real_redis, **extra), args)
 
     import redis
 
@@ -244,8 +246,9 @@ def command_scenario(args):
                 "buffered": bool(args.buffered), "scale": args.scale, "feed_users": feed, "core_users": core,
                 "duration_s": args.duration, "seed": args.seed,
                 "web_workers": int(env["WEB_CONCURRENCY"]), "web_threads": int(env["WEB_THREADS"]),
-                "git_commit": subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True,
-                                             text=True).stdout.strip(),
+                "git_commit": os.environ.get("LOADTEST_GIT_COMMIT") or subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True,
+                ).stdout.strip(),
             }
             output = RESULTS / f"{args.label}.json"
             output.write_text(json.dumps(summary, indent=1, sort_keys=True))
