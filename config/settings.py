@@ -285,7 +285,7 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
-        'rest_framework.throttling.ScopedRateThrottle',
+        'core.throttles.ResilientScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         # Generous for a signed-in person: the app fans out a dozen or so

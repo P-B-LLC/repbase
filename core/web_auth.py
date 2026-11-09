@@ -11,10 +11,10 @@ from rest_framework.authentication import SessionAuthentication
 from rest_framework.exceptions import AuthenticationFailed
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from .serializers import LoginSerializer, RegisterSerializer, RepbaseUserSerializer
 from .access import capabilities
+from .throttles import ResilientScopedRateThrottle
 
 
 class BrowserSessionSerializer(serializers.Serializer):
@@ -45,7 +45,7 @@ class BrowserSessionView(APIView):
 
 class BrowserLoginView(BrowserSessionView):
     http_method_names = ['post', 'options']
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
     throttle_scope = 'login'
 
     @extend_schema(request=LoginSerializer, responses=BrowserSessionSerializer)
@@ -63,7 +63,7 @@ class BrowserLoginView(BrowserSessionView):
 
 class BrowserRegisterView(BrowserSessionView):
     http_method_names = ['post', 'options']
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
     throttle_scope = 'register'
 
     @extend_schema(request=RegisterSerializer, responses={201: BrowserSessionSerializer})

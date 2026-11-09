@@ -170,3 +170,44 @@ class SavesDuringAnOutageTests(DownMixin, APITestCase):
         for _ in range(10):
             self.assertEqual(self.client.post("/api/v1/sessions/", {}, format="json").status_code, 201)
         self.assertEqual(UnreachableClient.attempts, resilient_cache.BREAKER_FAILURES)
+
+    def test_the_following_feed_keeps_working(self):
+        self.assertEqual(self.client.get("/api/v1/social/feed/").status_code, 200)
+
+    def test_for_you_sheds_itself_rather_than_rebuilding_shared_lists(self):
+        with mock.patch("core.for_you.serve_page") as serve:
+            response = self.client.get("/api/v1/social/for-you/")
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response["Retry-After"], "30")
+        serve.assert_not_called()
+
+
+@override_settings(CACHES=DOWN, ANALYTICS_ENABLED=False)
+class AccountProtectionDuringAnOutageTests(DownMixin, APITestCase):
+    """Nothing can count attempts, so nothing may be attempted."""
+
+    def assert_refused(self, path, body):
+        response = self.client.post(path, body, format="json")
+        self.assertEqual(response.status_code, 503, response.content)
+        self.assertEqual(response["Retry-After"], "30")
+
+    def test_sign_in_is_refused(self):
+        User.objects.create_user("member", "member@example.com", "StrongPass!234")
+        self.assert_refused("/api/v1/auth/login/", {"username": "member", "password": "StrongPass!234"})
+
+    def test_registration_is_refused(self):
+        self.assert_refused("/api/v1/auth/register/", {"username": "newcomer"})
+
+    def test_password_reset_is_refused(self):
+        self.assert_refused("/api/v1/auth/password-reset/", {"email": "member@example.com"})
+
+    def test_password_reset_confirmation_is_refused(self):
+        self.assert_refused("/api/v1/auth/password-reset/confirm/", {
+            "email": "member@example.com", "code": "123456", "new_password": "AnotherPass!234",
+        })
+
+    def test_a_username_limit_refuses_when_it_cannot_count(self):
+        from .throttles import CacheUnavailable, FailedSignInLimit
+
+        with self.assertRaises(CacheUnavailable):
+            FailedSignInLimit("member").exceeded()

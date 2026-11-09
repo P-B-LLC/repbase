@@ -1,6 +1,6 @@
 """Rate limits that DRF's stock throttles cannot express on their own.
 
-Two shapes are missing from what DRF ships.
+Three shapes are missing from what DRF ships.
 
 The first is a limit on *failed* sign-ins per username. `login` already caps
 attempts per address, which does nothing against a password-guessing run that
@@ -12,6 +12,12 @@ failures are counted, and a password reset clears the count.
 The second is choosing a scope by what a request does rather than by which
 viewset answers it. A viewset carries one `throttle_scope`, so PostViewSet's
 "post" was being spent by reads and likes as well as by publishing.
+
+The third is what to do when the cache that does the counting is unreachable.
+Most limits exist to stop one account using more than its share, and letting
+requests through for a few minutes is far better than refusing somebody's
+workout. The limits on signing in, registering and resetting a password stand
+between an attacker and other people's accounts, so those refuse instead.
 """
 
 import functools
@@ -21,9 +27,34 @@ from django.conf import settings
 from django.core.cache import cache
 from django.http import HttpResponse
 from django.utils.crypto import salted_hmac
-from rest_framework.exceptions import Throttled
+from rest_framework import status
+from rest_framework.exceptions import APIException, Throttled
 from rest_framework.settings import api_settings
-from rest_framework.throttling import SimpleRateThrottle
+from rest_framework.throttling import ScopedRateThrottle, SimpleRateThrottle
+
+from .resilient_cache import cache_is_available
+
+#: Refused rather than waved through while the cache cannot count them.
+FAIL_CLOSED_SCOPES = frozenset({"login", "register", "password_reset", "password_reset_confirm"})
+
+
+class CacheUnavailable(APIException):
+    """The shared cache is unreachable and this request cannot safely go on
+    without it. 503 with a Retry-After, so a client knows to try again."""
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_detail = "This is temporarily unavailable. Please try again shortly."
+    default_code = "temporarily_unavailable"
+    wait = 30
+
+
+class ResilientScopedRateThrottle(ScopedRateThrottle):
+    """ScopedRateThrottle, refusing account-protecting scopes during an outage."""
+
+    def allow_request(self, request, view):
+        if getattr(view, self.scope_attr, None) in FAIL_CLOSED_SCOPES and not cache_is_available():
+            raise CacheUnavailable()
+        return super().allow_request(request, view)
 
 
 class ThrottleByActionMixin:
@@ -73,6 +104,9 @@ class IdentityLimit(SimpleRateThrottle):
         return self.cache_format % {"scope": self.scope, "ident": digest}
 
     def _load(self):
+        # Without a count this could not tell a guessing run from anyone else.
+        if not cache_is_available():
+            raise CacheUnavailable()
         self.key = self.get_cache_key()
         self.now = self.timer()
         history = self.cache.get(self.key, [])
