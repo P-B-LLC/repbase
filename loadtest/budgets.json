@@ -1,0 +1,9 @@
+{
+  "_comment": "Starting targets from Milestone 1, read by loadtest.report. They are configuration, not measured capacity: tune them against the hosting plan.",
+  "first_page_p95_ms": 500,
+  "later_page_p95_ms": 250,
+  "core_p95_regression_pct": 10,
+  "error_rate_pct": 0.5,
+  "db_cpu_pct": 60,
+  "connection_reserve_pct": 20
+}
