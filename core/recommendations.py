@@ -2117,13 +2117,32 @@ class FeedSession:
         )
 
 
+#: Raise when a ranking change should not share per-reader cached results with
+#: the version before it. Sessions from the old version then simply expire: a
+#: cursor finds nothing and ranks afresh, as it does after 30 minutes.
+RANKING_VERSION = 1
+#: Nothing is ranked by language yet. It has a place in the key so that
+#: publication languages (Milestone 2) can scope these without changing the shape.
+_LANGUAGE_SCOPE = "all"
+
+
+def _reader_key(kind, viewer_id, *rest):
+    """A per-reader cache key: ranking version, kind, account and language.
+
+    Reading preferences are deliberately not part of it. What these keys hold is
+    re-checked against current preferences and visibility on every page, and a
+    preference in the session key would throw the reader back to the top of the
+    page for changing a setting."""
+    return ":".join(("for-you", f"r{RANKING_VERSION}", kind, str(viewer_id), _LANGUAGE_SCOPE, *map(str, rest)))
+
+
 def _session_key(viewer_id, session):
     # "v3": a session saved by this version holds a five-part rank state an
     # older version cannot read, and the other way round. Different keys mean
     # that during a rolling deploy, or after a rollback, a cursor from the
     # other version finds no session and ranks afresh from the top -- what an
     # expired session does -- rather than failing.
-    return f"for-you:v3:{viewer_id}:{session}"
+    return _reader_key("v3", viewer_id, session)
 
 
 def _save_session(viewer, session_id, session):
@@ -2255,7 +2274,7 @@ def _log_ranking(kind, started, viewer, items, candidate_count, profile, variant
 # it wrong, and an old client that knows nothing of it is still measured.
 
 def _served_key(viewer_id):
-    return f"for-you:served:{viewer_id}"
+    return _reader_key("served", viewer_id)
 
 
 def remember_reasons(viewer, items):
@@ -2275,7 +2294,7 @@ def served_reasons(viewer):
 
 
 def _features_key(viewer_id):
-    return f"for-you:features:{viewer_id}"
+    return _reader_key("features", viewer_id)
 
 
 def remember_features(viewer, rows):
