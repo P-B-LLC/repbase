@@ -21,6 +21,10 @@ or certify beta readiness. The current SQLite file and media are unchanged.
 - Redis is shared across workers for throttles and cache, with authenticated
   TLS, finite socket timeouts and a per-environment key prefix. DRF throttles
   still are not a strict atomic security perimeter: add ingress abuse controls.
+- Redis is not required for saving. While it is unreachable, workouts, meals and
+  the planner carry on with general rate limits open. Sign-in, registration and
+  password reset answer 503, because nothing can count attempts, and For You
+  answers 503 rather than rebuild shared lists from the database.
 - Set `REPBASE_NUM_PROXIES` to the number of proxies in front of gunicorn
   (default 1, for nginx on the same machine). The rate limits identify a client
   by the address the nearest proxy wrote into X-Forwarded-For; with the wrong

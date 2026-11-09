@@ -60,7 +60,7 @@ class ProductionConfigurationTests(SimpleTestCase):
 
     def test_shared_tls_cache_and_explicit_storage(self):
         config = production_values(self.valid())
-        self.assertEqual(config['CACHES']['default']['BACKEND'], 'django.core.cache.backends.redis.RedisCache')
+        self.assertEqual(config['CACHES']['default']['BACKEND'], 'core.resilient_cache.ResilientRedisCache')
         self.assertEqual(config['MEDIA_ROOT'], Path(self.valid()['DJANGO_MEDIA_ROOT']))
 
     def test_production_rejects_development_and_insecure_settings(self):

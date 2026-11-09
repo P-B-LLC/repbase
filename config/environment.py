@@ -70,6 +70,22 @@ def database(env, base_dir, *, production=False):
     }
 
 
+def redis_cache(env, url):
+    """The cache every deployment with a REDIS_URL uses.
+
+    Short timeouts on purpose. Redis normally answers in about a millisecond, so
+    a call still waiting at this point is not going to be answered usefully, and
+    the request behind it may be somebody's workout save.
+    """
+    timeout = integer(env, 'REDIS_SOCKET_TIMEOUT_MS', 250, 20, 3000) / 1000
+    return {
+        'BACKEND': 'core.resilient_cache.ResilientRedisCache',
+        'LOCATION': url,
+        'KEY_PREFIX': env.get('CACHE_KEY_PREFIX', 'rytivo'),
+        'OPTIONS': {'socket_connect_timeout': timeout, 'socket_timeout': timeout},
+    }
+
+
 def production_values(env):
     if boolean(env, 'DJANGO_DEBUG'):
         raise ImproperlyConfigured('DJANGO_DEBUG must be false in production.')
@@ -92,8 +108,4 @@ def production_values(env):
     except ValueError:
         raise ImproperlyConfigured('REDIS_URL must use authenticated TLS (rediss://), without query options.') from None
     return {'SECRET_KEY': secret, 'ALLOWED_HOSTS': hosts, 'MEDIA_ROOT': Path(media),
-            'CACHES': {'default': {
-                'BACKEND': 'django.core.cache.backends.redis.RedisCache', 'LOCATION': cache_url,
-                'KEY_PREFIX': env.get('CACHE_KEY_PREFIX', 'rytivo'),
-                'OPTIONS': {'socket_connect_timeout': 3, 'socket_timeout': 3},
-            }}}
+            'CACHES': {'default': redis_cache(env, cache_url)}}

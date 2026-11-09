@@ -1,0 +1,229 @@
+{
+ "cache": {
+  "commands": 36320,
+  "hit_rate_pct": 97.94,
+  "hits": 519121,
+  "misses": 10902
+ },
+ "database": {
+  "active_queries_mean": 0.39,
+  "blocks_per_request": 12372.6,
+  "connection_reserve_pct": 84.0,
+  "connections_peak": 8,
+  "cpu_cores_mean": 0.386,
+  "cpu_pct_of_host": 3.22,
+  "deadlocks": 0,
+  "lock_waiters_mean": 0.012,
+  "lock_waiters_peak": 2,
+  "max_connections": 50,
+  "rows_examined_per_request": 30089.0,
+  "rows_returned_per_request": 500.6,
+  "statement_calls": 85789,
+  "statement_calls_per_request": 21.89,
+  "statement_time_ms": 50862.6
+ },
+ "groups": {
+  "first_page": {
+   "count": 72,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 216.8,
+   "p95_ms": 259.2,
+   "p99_ms": 269.6,
+   "sql_count_mean": 45.58,
+   "sql_ms_mean": 135.43
+  },
+  "following": {
+   "count": 32,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 146.5,
+   "p95_ms": 172.9,
+   "p99_ms": 183.0,
+   "sql_count_mean": 21.25,
+   "sql_ms_mean": 118.67
+  },
+  "food": {
+   "count": 865,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 9.4,
+   "p95_ms": 36.5,
+   "p99_ms": 579.4,
+   "sql_count_mean": 10.3,
+   "sql_ms_mean": 3.41
+  },
+  "impressions": {
+   "count": 1586,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 14.8,
+   "p95_ms": 154.6,
+   "p99_ms": 533.0,
+   "sql_count_mean": 9.0,
+   "sql_ms_mean": 5.55
+  },
+  "later_page": {
+   "count": 237,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 87.3,
+   "p95_ms": 133.4,
+   "p99_ms": 152.8,
+   "sql_count_mean": 32.99,
+   "sql_ms_mean": 35.87
+  },
+  "like": {
+   "count": 80,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 285.3,
+   "p95_ms": 1852.7,
+   "p99_ms": 1993.3,
+   "sql_count_mean": 28.76,
+   "sql_ms_mean": 367.66
+  },
+  "planner": {
+   "count": 546,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 12.2,
+   "p95_ms": 26.0,
+   "p99_ms": 448.7,
+   "sql_count_mean": 12.69,
+   "sql_ms_mean": 4.25
+  },
+  "workout": {
+   "count": 501,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 10.1,
+   "p95_ms": 154.4,
+   "p99_ms": 603.3,
+   "sql_count_mean": 13.23,
+   "sql_ms_mean": 4.47
+  }
+ },
+ "overall": {
+  "count": 3919,
+  "error_rate_pct": 0.0,
+  "errors_5xx": 0,
+  "failures": 0,
+  "metric_sql_per_request": 5.0,
+  "p50_ms": 13.9,
+  "p95_ms": 266.5,
+  "p99_ms": 578.9,
+  "requests_per_second": 26.13,
+  "sql_count_mean": 12.97,
+  "sql_ms_mean": 17.29
+ },
+ "scenario": {
+  "buffered": false,
+  "cache": "warm",
+  "core_users": 50,
+  "duration_s": 150,
+  "feed_users": 100,
+  "git_commit": "11a3544",
+  "label": "before-stats-missing",
+  "mode": "mixed",
+  "redis": "up",
+  "scale": 1.0,
+  "seed": 20261109,
+  "stats": "missing",
+  "web_threads": 4,
+  "web_workers": 2
+ },
+ "top_statements": [
+  {
+   "calls": 83,
+   "mean_ms": 328.3,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 83,
+   "total_ms": 27248.6
+  },
+  {
+   "calls": 32,
+   "mean_ms": 104.86,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 672,
+   "total_ms": 3355.6
+  },
+  {
+   "calls": 172,
+   "mean_ms": 19.36,
+   "query": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", COUNT(\"core_postlike\".\"id\") AS \"shared\" FROM \"core_postlike\" INNER JOIN \"core_repbaseuser\" ON (\"core_postlike\".\"u",
+   "rows": 17200,
+   "total_ms": 3330.7
+  },
+  {
+   "calls": 172,
+   "mean_ms": 9.14,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 25800,
+   "total_ms": 1572.1
+  },
+  {
+   "calls": 83,
+   "mean_ms": 17.88,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 83,
+   "total_ms": 1483.9
+  },
+  {
+   "calls": 172,
+   "mean_ms": 8.49,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 86000,
+   "total_ms": 1459.4
+  },
+  {
+   "calls": 172,
+   "mean_ms": 4.66,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 25800,
+   "total_ms": 801.3
+  },
+  {
+   "calls": 172,
+   "mean_ms": 4.57,
+   "query": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", \"core_postlike\".\"post_id\" AS \"post_id\" FROM \"core_postlike\" INNER JOIN \"core_post\" ON (\"core_postlike\".\"post_id\" ",
+   "rows": 453983,
+   "total_ms": 785.5
+  },
+  {
+   "calls": 4227,
+   "mean_ms": 0.16,
+   "query": "UPDATE \"core_dailyapimetric\" SET \"requests\" = (\"core_dailyapimetric\".\"requests\" + $1), \"client_errors\" = (\"core_dailyapimetric\".\"client_errors\" + $2), \"server_e",
+   "rows": 4227,
+   "total_ms": 672.7
+  },
+  {
+   "calls": 409,
+   "mean_ms": 1.59,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 8180,
+   "total_ms": 648.8
+  },
+  {
+   "calls": 115,
+   "mean_ms": 5.58,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 46000,
+   "total_ms": 641.7
+  },
+  {
+   "calls": 172,
+   "mean_ms": 3.24,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 21778,
+   "total_ms": 556.5
+  }
+ ],
+ "workers": {
+  "feed_stats_age_s": null,
+  "metric_flush_lag_s": null,
+  "push_queue_age_s": null,
+  "screening_queue_age_s": null,
+  "video_queue_age_s": null
+ }
+}

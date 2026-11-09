@@ -1,0 +1,229 @@
+{
+ "cache": {
+  "commands": null,
+  "hit_rate_pct": null,
+  "hits": null,
+  "misses": null
+ },
+ "database": {
+  "active_queries_mean": 0.0,
+  "blocks_per_request": 31.8,
+  "connection_reserve_pct": 82.0,
+  "connections_peak": 9,
+  "cpu_cores_mean": 0.005,
+  "cpu_pct_of_host": 0.04,
+  "deadlocks": 0,
+  "lock_waiters_mean": 0.0,
+  "lock_waiters_peak": 0,
+  "max_connections": 50,
+  "rows_examined_per_request": 342.7,
+  "rows_returned_per_request": 10.7,
+  "statement_calls": 2506,
+  "statement_calls_per_request": 14.32,
+  "statement_time_ms": 104.6
+ },
+ "groups": {
+  "first_page": {
+   "count": 60,
+   "errors_5xx": 21,
+   "failures": 39,
+   "p50_ms": 30002.8,
+   "p95_ms": 30003.6,
+   "p99_ms": 30004.1,
+   "sql_count_mean": 1.8,
+   "sql_ms_mean": 1.12
+  },
+  "following": {
+   "count": 6,
+   "errors_5xx": 1,
+   "failures": 5,
+   "p50_ms": 30002.9,
+   "p95_ms": 30003.4,
+   "p99_ms": 30003.5,
+   "sql_count_mean": 1.83,
+   "sql_ms_mean": 0.81
+  },
+  "food": {
+   "count": 46,
+   "errors_5xx": 12,
+   "failures": 34,
+   "p50_ms": 30002.8,
+   "p95_ms": 30003.9,
+   "p99_ms": 30007.2,
+   "sql_count_mean": 1.63,
+   "sql_ms_mean": 1.37
+  },
+  "impressions": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "later_page": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "like": {
+   "count": 0,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": null,
+   "p95_ms": null,
+   "p99_ms": null,
+   "sql_count_mean": null,
+   "sql_ms_mean": null
+  },
+  "planner": {
+   "count": 31,
+   "errors_5xx": 4,
+   "failures": 27,
+   "p50_ms": 30002.8,
+   "p95_ms": 30003.7,
+   "p99_ms": 30005.4,
+   "sql_count_mean": 0.74,
+   "sql_ms_mean": 0.39
+  },
+  "workout": {
+   "count": 32,
+   "errors_5xx": 7,
+   "failures": 25,
+   "p50_ms": 30002.8,
+   "p95_ms": 30003.7,
+   "p99_ms": 30003.9,
+   "sql_count_mean": 1.19,
+   "sql_ms_mean": 0.5
+  }
+ },
+ "overall": {
+  "count": 175,
+  "error_rate_pct": 100.0,
+  "errors_5xx": 45,
+  "failures": 130,
+  "metric_sql_per_request": 1.086,
+  "p50_ms": 30002.8,
+  "p95_ms": 30003.7,
+  "p99_ms": 30004.7,
+  "requests_per_second": 2.92,
+  "sql_count_mean": 1.46,
+  "sql_ms_mean": 0.93
+ },
+ "scenario": {
+  "buffered": false,
+  "cache": "warm",
+  "core_users": 50,
+  "duration_s": 60,
+  "feed_users": 100,
+  "git_commit": "11a3544",
+  "label": "before-redis-blackhole",
+  "mode": "mixed",
+  "redis": "blackhole",
+  "scale": 1.0,
+  "seed": 20261109,
+  "stats": "fresh",
+  "web_threads": 4,
+  "web_workers": 2
+ },
+ "top_statements": [
+  {
+   "calls": 135,
+   "mean_ms": 0.24,
+   "query": "SELECT count(*), count(*) FILTER (WHERE wait_event_type = $1), count(*) FILTER (WHERE state = $2) FROM pg_stat_activity WHERE datname = current_database() AND p",
+   "rows": 135,
+   "total_ms": 32.8
+  },
+  {
+   "calls": 279,
+   "mean_ms": 0.1,
+   "query": "UPDATE \"core_dailyapimetric\" SET \"requests\" = (\"core_dailyapimetric\".\"requests\" + $1), \"client_errors\" = (\"core_dailyapimetric\".\"client_errors\" + $2), \"server_e",
+   "rows": 279,
+   "total_ms": 27.6
+  },
+  {
+   "calls": 22,
+   "mean_ms": 0.38,
+   "query": "SELECT set_config($1, $2, $3)",
+   "rows": 22,
+   "total_ms": 8.3
+  },
+  {
+   "calls": 14,
+   "mean_ms": 0.53,
+   "query": "SELECT EXTRACT($1 FROM now() - min(created_at)) FROM core_postvideo WHERE processing_state NOT IN ($2, $3)",
+   "rows": 14,
+   "total_ms": 7.4
+  },
+  {
+   "calls": 279,
+   "mean_ms": 0.03,
+   "query": "UPDATE \"core_recentapimetric\" SET \"requests\" = (\"core_recentapimetric\".\"requests\" + $1), \"client_errors\" = (\"core_recentapimetric\".\"client_errors\" + $2), \"serve",
+   "rows": 279,
+   "total_ms": 7.3
+  },
+  {
+   "calls": 283,
+   "mean_ms": 0.02,
+   "query": "SELECT \"authtoken_token\".\"key\", \"authtoken_token\".\"user_id\", \"authtoken_token\".\"created\", \"auth_user\".\"id\", \"auth_user\".\"password\", \"auth_user\".\"last_login\", \"a",
+   "rows": 283,
+   "total_ms": 6.4
+  },
+  {
+   "calls": 279,
+   "mean_ms": 0.02,
+   "query": "SELECT \"core_dailyapimetric\".\"id\", \"core_dailyapimetric\".\"day\", \"core_dailyapimetric\".\"endpoint\", \"core_dailyapimetric\".\"method\", \"core_dailyapimetric\".\"request",
+   "rows": 271,
+   "total_ms": 6.1
+  },
+  {
+   "calls": 279,
+   "mean_ms": 0.01,
+   "query": "SELECT \"core_recentapimetric\".\"id\", \"core_recentapimetric\".\"bucket\", \"core_recentapimetric\".\"endpoint\", \"core_recentapimetric\".\"method\", \"core_recentapimetric\".",
+   "rows": 263,
+   "total_ms": 3.7
+  },
+  {
+   "calls": 16,
+   "mean_ms": 0.09,
+   "query": "INSERT INTO \"core_recentapimetric\" (\"bucket\", \"endpoint\", \"method\", \"requests\", \"client_errors\", \"server_errors\", \"total_ms\", \"max_ms\") VALUES ($1::timestamptz,",
+   "rows": 16,
+   "total_ms": 1.4
+  },
+  {
+   "calls": 8,
+   "mean_ms": 0.17,
+   "query": "INSERT INTO \"core_dailyapimetric\" (\"day\", \"endpoint\", \"method\", \"requests\", \"client_errors\", \"server_errors\", \"total_ms\", \"max_ms\") VALUES ($1::date, $2, $3, $4",
+   "rows": 8,
+   "total_ms": 1.4
+  },
+  {
+   "calls": 262,
+   "mean_ms": 0.0,
+   "query": "SELECT $1",
+   "rows": 262,
+   "total_ms": 0.7
+  },
+  {
+   "calls": 1,
+   "mean_ms": 0.66,
+   "query": "SELECT pg_stat_statements_reset()",
+   "rows": 1,
+   "total_ms": 0.7
+  }
+ ],
+ "workers": {
+  "feed_stats_age_s": 150.8,
+  "metric_flush_lag_s": null,
+  "push_queue_age_s": null,
+  "screening_queue_age_s": null,
+  "video_queue_age_s": null
+ }
+}

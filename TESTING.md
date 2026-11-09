@@ -29,6 +29,10 @@ About three and a half minutes for ~960 tests (under a minute and a half with `-
 .venv/bin/python manage.py test core --parallel 4               # faster, same result
 ```
 
+The buffered-metrics tests run against an in-memory stand-in everywhere and
+against a real server when `TEST_REDIS_URL` points at a disposable one, as the
+PostgreSQL job does. Load testing has its own harness: see `loadtest/README.md`.
+
 Seven tests skip on SQLite because they test PostgreSQL behaviour -- row
 locks (`test_save_concurrency`) and the query planner (`test_identity_indexes`)
 -- and run in the PostgreSQL job. One video test plays the cleaned files

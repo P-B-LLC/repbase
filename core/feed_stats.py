@@ -24,10 +24,14 @@ the next run looks for activity from then, so a run that was stopped half
 way leaves nothing behind. Without that record (a cache that was emptied)
 it looks back further, at the cost of counting a little more.
 
-The ranking reads a row only while it is younger than FRESH_SECONDS and was
-written by the current way of counting (STATS_VERSION); anything else it
-works out itself, as before. A stopped job makes For You slower, never wrong,
-and the deploy check `core.W009` says when it has stopped.
+The ranking uses a row while it is younger than FRESH_SECONDS and was written
+by the current way of counting (STATS_VERSION). When the job is late, requests
+do not make up for it: a row up to STALE_SECONDS old stands in, a post with no
+usable row counts as one with no record yet, and the next run is asked to see to
+those posts. A request may still count a capped number of posts that have no row
+at all, one request at a time, which is what lets a small deployment run without
+the job. A stopped job makes For You a little less current, never slower, and
+the deploy check `core.W009` says when it has stopped.
 """
 
 import logging
@@ -35,6 +39,7 @@ import math
 import time
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.cache import cache
 from django.db import IntegrityError, transaction
 from django.db.models import Max
@@ -57,8 +62,11 @@ logger = logging.getLogger(__name__)
 #: `_count_engagement` means by a count changes, so old rows are recomputed
 #: rather than read.
 STATS_VERSION = 2
-#: A row older than this is not read: the ranking works the figures out itself.
+#: A row younger than this is simply the answer.
 FRESH_SECONDS = 30 * 60
+#: A row older than FRESH_SECONDS and younger than this stands in while the job
+#: is late. Older than this and a post's standing says too little about now.
+STALE_SECONDS = 6 * 60 * 60
 #: Every row in the window is rewritten at least this often.
 REFRESH_SECONDS = 15 * 60
 #: How often the job runs (deploy/repbase-feed-stats.timer). Each run
@@ -75,6 +83,15 @@ VIEWS_DAYS = 2
 WRITE_ATTEMPTS = 3
 #: When the last run that finished started.
 _FINISHED_KEY = "feed-stats:finished-run"
+#: Posts readers found without a fresh row, for the next run to see to first.
+_REPAIR_KEY = "feed-stats:repair"
+_REPAIR_GUARD_KEY = "feed-stats:repair-guard"
+#: At most this many posts in one request for repair...
+REPAIR_LIMIT = 1000
+#: ...at most this often, however many readers arrive.
+REPAIR_GUARD_SECONDS = 60
+#: Long enough to reach a run that is several cycles late.
+REPAIR_TTL_SECONDS = 60 * 60
 #: Posts counted per batch.
 BATCH = 500
 #: Rows of posts this far past the recommendation window are deleted: they
@@ -87,20 +104,44 @@ _FIELDS = (
 )
 
 
-def read_fresh(post_ids, now=None):
-    """{post id: Engagement} for the posts that have a fresh row. One query."""
+def stale_seconds():
+    return getattr(settings, "FEED_STATS_STALE_SECONDS", STALE_SECONDS)
+
+
+def read_usable(post_ids, now=None):
+    """({post id: Engagement} fresh, {post id: Engagement} stale but usable).
+
+    One query. A row written by an older way of counting is in neither, however
+    recent: its figures mean something else."""
     from .recommendations import Engagement
 
     if not post_ids:
-        return {}
+        return {}, {}
     now = now or timezone.now()
-    return {
-        row["post_id"]: Engagement(**{name: row[name] for name in _FIELDS})
-        for row in PostEngagementStats.objects.filter(
-            post_id__in=list(post_ids), version=STATS_VERSION,
-            computed_at__gte=now - timedelta(seconds=FRESH_SECONDS),
-        ).values("post_id", *_FIELDS)
-    }
+    fresh_after = now - timedelta(seconds=FRESH_SECONDS)
+    fresh, stale = {}, {}
+    for row in PostEngagementStats.objects.filter(
+        post_id__in=list(post_ids), version=STATS_VERSION,
+        computed_at__gte=now - timedelta(seconds=stale_seconds()),
+    ).values("post_id", "computed_at", *_FIELDS):
+        counts = Engagement(**{name: row[name] for name in _FIELDS})
+        (fresh if row["computed_at"] >= fresh_after else stale)[row["post_id"]] = counts
+    return fresh, stale
+
+
+def request_repair(post_ids, stale, neutral):
+    """Ask the next run to see to these posts, and say the job is behind.
+
+    A request cannot start the job, so this is how it schedules the repair. The
+    guard keeps it to one small write and one log line a minute, however many
+    readers notice the same thing at once."""
+    if not cache.add(_REPAIR_GUARD_KEY, 1, REPAIR_GUARD_SECONDS):
+        return
+    cache.set(_REPAIR_KEY, sorted(post_ids, reverse=True)[:REPAIR_LIMIT], REPAIR_TTL_SECONDS)
+    # A stale row means the job is late. A post with no figures may only be new,
+    # which is ordinary between runs.
+    log = logger.warning if stale else logger.info
+    log("feed_stats behind: served stale=%d neutral=%d; asked the next run to repair them.", stale, neutral)
 
 
 def _ids(queryset, field="post_id"):
@@ -144,6 +185,7 @@ def refresh(now=None, full=False, limit=REFRESH_LIMIT, batch=BATCH):
 
     last_run = PostEngagementStats.objects.filter(version=STATS_VERSION).aggregate(at=Max("computed_at"))["at"]
     full = bool(full or last_run is None)
+    repair = cache.get(_REPAIR_KEY) or []
     if full:
         due = set(window.values_list("pk", flat=True))
         active = len(due)
@@ -169,7 +211,8 @@ def refresh(now=None, full=False, limit=REFRESH_LIMIT, batch=BATCH):
                 engagement_stats__computed_at__lt=now - timedelta(seconds=REFRESH_SECONDS),
             ).order_by("engagement_stats__computed_at").values_list("pk", flat=True)[:limit]
         )
-        due = active_posts | missing | old
+        requested = set(window.filter(pk__in=repair).values_list("pk", flat=True)) if repair else set()
+        due = active_posts | missing | old | requested
 
     ordered = sorted(due)
     written = gone = 0
@@ -182,6 +225,8 @@ def refresh(now=None, full=False, limit=REFRESH_LIMIT, batch=BATCH):
         post__published_at__lt=window_start - timedelta(days=PRUNE_GRACE_DAYS)
     ).delete()
     cache.set(_FINISHED_KEY, now, None)
+    if repair:
+        cache.delete(_REPAIR_KEY)
     summary = {
         "written": written,
         "active": active,

@@ -44,7 +44,6 @@ from rest_framework.exceptions import (
 from rest_framework.authtoken.models import Token
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
@@ -69,6 +68,7 @@ from .serializers import SessionFinishSerializer
 from .params import date_param, id_param
 from .throttles import (
     FailedSignInLimit,
+    ResilientScopedRateThrottle,
     PasswordResetFailureLimit,
     PasswordResetIssueLimit,
     ThrottleByActionMixin,
@@ -292,7 +292,7 @@ class RegisterView(APIView):
     # Per address rather than per account, which is how throwaway accounts
     # get made in bulk.
     throttle_scope = "register"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
     authentication_classes = []
     permission_classes = [AllowAny]
 
@@ -314,7 +314,7 @@ class LoginView(APIView):
     # attack, and somebody who has genuinely forgotten theirs does not try
     # twenty times inside an hour.
     throttle_scope = "login"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
 
     @extend_schema(request=LoginSerializer, responses={200: AuthResponseSerializer})
     @transaction.atomic
@@ -426,7 +426,7 @@ class FoodSearchView(APIView):
 
     permission_classes = [IsAuthenticated]
     throttle_scope = "food_search"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
 
     @extend_schema(
         parameters=[
@@ -521,7 +521,7 @@ class PasswordResetRequestView(APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
     throttle_scope = "password_reset"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
 
     @extend_schema(
         request=PasswordResetRequestSerializer,
@@ -621,7 +621,7 @@ class PasswordResetConfirmView(APIView):
     # request endpoint capped the pair at six calls an hour between them, so
     # the five wrong guesses the model allows could never actually be made.
     throttle_scope = "password_reset_confirm"
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
 
     @extend_schema(
         request=PasswordResetConfirmSerializer,

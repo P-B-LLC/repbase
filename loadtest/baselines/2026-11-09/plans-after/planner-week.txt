@@ -1,0 +1,83 @@
+-- 1.2 ms when captured
+-- SELECT COUNT(*) AS "__count" FROM "core_plannerentry" WHERE ("core_plannerentry"."owner_id" = %s AND "core_plannerentry"."parent_id" IS NULL AND "core_plannerentry"."scheduled_date" >= %s AND "core_plannerentry"."scheduled_date" <= %s)
+Aggregate  (cost=8.45..8.46 rows=1 width=8) (actual time=0.007..0.007 rows=1 loops=1)
+  Buffers: shared hit=19
+  ->  Index Scan using core_planne_owner_i_0363dc_idx on core_plannerentry  (cost=0.42..8.45 rows=1 width=0) (actual time=0.003..0.006 rows=16 loops=1)
+        Index Cond: ((owner_id = 101) AND (scheduled_date >= '2026-11-09'::date) AND (scheduled_date <= '2026-11-15'::date))
+        Filter: (parent_id IS NULL)
+        Buffers: shared hit=19
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.027 ms
+Execution Time: 0.011 ms
+
+-- 1.0 ms when captured
+-- SELECT "core_plannerrecurrence"."id", "core_plannerrecurrence"."owner_id", "core_plannerrecurrence"."interval_days", "core_plannerrecurrence"."weekdays", "core_plannerrecurrence"."starts_on", "core_plannerrecurrence"."ends_on", "core_plannerrecurrence"."materialized_through", "core_plannerrecurrence"."title", "core_plannerrecurrence"."category", "core_plannerrecurrence"."priority", "core_plannerrecurrence"."scheduled_time", "core_plannerrecurrence"."duration_minutes", "core_plannerrecurrence"."notes", "core_plannerrecurrence"."created_at", "core_plannerrecurrence"."updated_at" FROM "core_plann
+Sort  (cost=0.01..0.02 rows=1 width=1018) (actual time=0.001..0.001 rows=0 loops=1)
+  Sort Key: starts_on, id
+  Sort Method: quicksort  Memory: 25kB
+  ->  Seq Scan on core_plannerrecurrence  (cost=0.00..0.00 rows=1 width=1018) (actual time=0.001..0.001 rows=0 loops=1)
+        Filter: (owner_id = 101)
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.021 ms
+Execution Time: 0.005 ms
+
+-- 0.5 ms when captured
+-- SELECT "core_plannerentry"."id", "core_plannerentry"."owner_id", "core_plannerentry"."kind", "core_plannerentry"."title", "core_plannerentry"."category", "core_plannerentry"."priority", "core_plannerentry"."scheduled_date", "core_plannerentry"."scheduled_time", "core_plannerentry"."duration_minutes", "core_plannerentry"."completed_at", "core_plannerentry"."workout_id", "core_plannerentry"."source_schedule_id", "core_plannerentry"."notes", "core_plannerentry"."parent_id", "core_plannerentry"."recurrence_id", "core_plannerentry"."is_subtask", "core_plannerentry"."created_at", "core_plannerentry"
+Limit  (cost=33.10..33.15 rows=2 width=549) (actual time=0.034..0.035 rows=16 loops=1)
+  Buffers: shared hit=67
+  ->  Incremental Sort  (cost=33.10..33.15 rows=2 width=549) (actual time=0.033..0.034 rows=16 loops=1)
+        Sort Key: core_plannerentry.scheduled_date, (CASE WHEN ((core_plannerentry.priority)::text = 'high'::text) THEN 0 WHEN ((core_plannerentry.priority)::text = 'normal'::text) THEN 1 ELSE 2 END), core_plannerentry.scheduled_time, core_plannerentry.id
+        Presorted Key: core_plannerentry.scheduled_date
+        Full-sort Groups: 1  Sort Method: quicksort  Average Memory: 29kB  Peak Memory: 29kB
+        Buffers: shared hit=67
+        ->  Nested Loop Left Join  (cost=1.00..33.09 rows=1 width=549) (actual time=0.006..0.024 rows=16 loops=1)
+              Buffers: shared hit=67
+              ->  Nested Loop  (cost=0.71..16.76 rows=1 width=415) (actual time=0.005..0.019 rows=16 loops=1)
+                    Buffers: shared hit=67
+                    ->  Index Scan using core_planne_owner_i_0363dc_idx on core_plannerentry  (cost=0.42..8.45 rows=1 width=114) (actual time=0.003..0.006 rows=16 loops=1)
+                          Index Cond: ((owner_id = 101) AND (scheduled_date >= '2026-11-09'::date) AND (scheduled_date <= '2026-11-15'::date))
+                          Filter: (parent_id IS NULL)
+                          Buffers: shared hit=19
+                    ->  Index Scan using core_repbaseuser_pkey on core_repbaseuser  (cost=0.29..8.30 rows=1 width=301) (actual time=0.001..0.001 rows=1 loops=16)
+                          Index Cond: (id = 101)
+                          Buffers: shared hit=48
+              ->  Index Scan using core_workouttemplate_pkey on core_workouttemplate  (cost=0.29..8.31 rows=1 width=130) (actual time=0.000..0.000 rows=0 loops=16)
+                    Index Cond: (id = core_plannerentry.workout_id)
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.100 ms
+Execution Time: 0.056 ms
+
+-- 0.2 ms when captured
+-- SELECT "authtoken_token"."key", "authtoken_token"."user_id", "authtoken_token"."created", "auth_user"."id", "auth_user"."password", "auth_user"."last_login", "auth_user"."is_superuser", "auth_user"."username", "auth_user"."first_name", "auth_user"."last_name", "auth_user"."email", "auth_user"."is_staff", "auth_user"."is_active", "auth_user"."date_joined" FROM "authtoken_token" INNER JOIN "auth_user" ON ("authtoken_token"."user_id" = "auth_user"."id") WHERE "authtoken_token"."key" = %s LIMIT 21
+Limit  (cost=0.56..16.60 rows=1 width=129) (actual time=0.003..0.003 rows=1 loops=1)
+  Buffers: shared hit=6
+  ->  Nested Loop  (cost=0.56..16.60 rows=1 width=129) (actual time=0.003..0.003 rows=1 loops=1)
+        Buffers: shared hit=6
+        ->  Index Scan using authtoken_token_key_10f0b77e_like on authtoken_token  (cost=0.27..8.29 rows=1 width=53) (actual time=0.001..0.001 rows=1 loops=1)
+              Index Cond: ((key)::text = '46b78a5123a04e0399750a14e4bca98a17e12333'::text)
+              Buffers: shared hit=3
+        ->  Index Scan using auth_user_pkey on auth_user  (cost=0.29..8.30 rows=1 width=76) (actual time=0.001..0.001 rows=1 loops=1)
+              Index Cond: (id = authtoken_token.user_id)
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=7
+Planning Time: 0.049 ms
+Execution Time: 0.008 ms
+
+-- 0.1 ms when captured
+-- INSERT INTO "core_dailyapimetric" ("day", "endpoint", "method", "requests", "client_errors", "server_errors", "total_ms", "max_ms") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_dailyapimetric"."id"
+Insert on core_dailyapimetric  (cost=0.00..0.01 rows=1 width=424)
+  ->  Result  (cost=0.00..0.01 rows=1 width=424)
+
+-- 0.1 ms when captured
+-- SELECT "core_repbaseuser"."id", "core_repbaseuser"."user_id", "core_repbaseuser"."birthdate", "core_repbaseuser"."height_cm", "core_repbaseuser"."weight_kg", "core_repbaseuser"."target_weight_kg", "core_repbaseuser"."daily_step_goal", "core_repbaseuser"."unit_preference", "core_repbaseuser"."profile_photo", "core_repbaseuser"."bio", "core_repbaseuser"."gym_id", "core_repbaseuser"."time_zone", "core_repbaseuser"."shows_height", "core_repbaseuser"."shows_weight", "core_repbaseuser"."shows_target_weight", "core_repbaseuser"."is_profile_public", "core_repbaseuser"."created_at", "core_repbaseuser".
+Limit  (cost=0.29..8.30 rows=1 width=301) (actual time=0.002..0.002 rows=1 loops=1)
+  Buffers: shared hit=3
+  ->  Index Scan using core_repbaseuser_user_id_key on core_repbaseuser  (cost=0.29..8.30 rows=1 width=301) (actual time=0.002..0.002 rows=1 loops=1)
+        Index Cond: (user_id = 101)
+        Buffers: shared hit=3
+Planning Time: 0.010 ms
+Execution Time: 0.005 ms

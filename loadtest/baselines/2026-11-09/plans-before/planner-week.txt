@@ -1,0 +1,70 @@
+-- 1.2 ms when captured
+-- SELECT COUNT(*) AS "__count" FROM "core_plannerentry" WHERE ("core_plannerentry"."owner_id" = %s AND "core_plannerentry"."parent_id" IS NULL AND "core_plannerentry"."scheduled_date" >= %s AND "core_plannerentry"."scheduled_date" <= %s)
+Aggregate  (cost=8.45..8.46 rows=1 width=8) (actual time=0.016..0.016 rows=1 loops=1)
+  Buffers: shared hit=19
+  ->  Index Scan using core_planne_owner_i_0363dc_idx on core_plannerentry  (cost=0.42..8.45 rows=1 width=0) (actual time=0.006..0.014 rows=16 loops=1)
+        Index Cond: ((owner_id = 101) AND (scheduled_date >= '2026-11-09'::date) AND (scheduled_date <= '2026-11-15'::date))
+        Filter: (parent_id IS NULL)
+        Buffers: shared hit=19
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.039 ms
+Execution Time: 0.021 ms
+
+-- 1.1 ms when captured
+-- SELECT "core_plannerrecurrence"."id", "core_plannerrecurrence"."owner_id", "core_plannerrecurrence"."interval_days", "core_plannerrecurrence"."weekdays", "core_plannerrecurrence"."starts_on", "core_plannerrecurrence"."ends_on", "core_plannerrecurrence"."materialized_through", "core_plannerrecurrence"."title", "core_plannerrecurrence"."category", "core_plannerrecurrence"."priority", "core_plannerrecurrence"."scheduled_time", "core_plannerrecurrence"."duration_minutes", "core_plannerrecurrence"."notes", "core_plannerrecurrence"."created_at", "core_plannerrecurrence"."updated_at" FROM "core_plann
+Sort  (cost=0.01..0.02 rows=1 width=1018) (actual time=0.002..0.002 rows=0 loops=1)
+  Sort Key: starts_on, id
+  Sort Method: quicksort  Memory: 25kB
+  ->  Seq Scan on core_plannerrecurrence  (cost=0.00..0.00 rows=1 width=1018) (actual time=0.001..0.001 rows=0 loops=1)
+        Filter: (owner_id = 101)
+Planning:
+  Buffers: shared hit=4
+Planning Time: 0.029 ms
+Execution Time: 0.005 ms
+
+-- 0.7 ms when captured
+-- SELECT "core_plannerentry"."id", "core_plannerentry"."owner_id", "core_plannerentry"."kind", "core_plannerentry"."title", "core_plannerentry"."category", "core_plannerentry"."priority", "core_plannerentry"."scheduled_date", "core_plannerentry"."scheduled_time", "core_plannerentry"."duration_minutes", "core_plannerentry"."completed_at", "core_plannerentry"."workout_id", "core_plannerentry"."source_schedule_id", "core_plannerentry"."notes", "core_plannerentry"."parent_id", "core_plannerentry"."recurrence_id", "core_plannerentry"."is_subtask", "core_plannerentry"."created_at", "core_plannerentry"
+Sort  (cost=74.95..74.95 rows=1 width=118) (actual time=0.008..0.008 rows=0 loops=1)
+  Sort Key: scheduled_date, (CASE WHEN ((priority)::text = 'high'::text) THEN 0 WHEN ((priority)::text = 'normal'::text) THEN 1 ELSE 2 END), scheduled_time, id
+  Sort Method: quicksort  Memory: 25kB
+  Buffers: shared hit=48
+  ->  Index Scan using core_plannerentry_parent_id_652e5d77 on core_plannerentry  (cost=0.42..74.94 rows=1 width=118) (actual time=0.007..0.007 rows=0 loops=1)
+        Index Cond: (parent_id = ANY ('{3293,3075,3305,3054,3083,3144,3279,3456,3361,3107,3194,3350,3267,3444,3017,3441}'::bigint[]))
+        Buffers: shared hit=48
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.044 ms
+Execution Time: 0.014 ms
+
+-- 0.2 ms when captured
+-- SELECT "authtoken_token"."key", "authtoken_token"."user_id", "authtoken_token"."created", "auth_user"."id", "auth_user"."password", "auth_user"."last_login", "auth_user"."is_superuser", "auth_user"."username", "auth_user"."first_name", "auth_user"."last_name", "auth_user"."email", "auth_user"."is_staff", "auth_user"."is_active", "auth_user"."date_joined" FROM "authtoken_token" INNER JOIN "auth_user" ON ("authtoken_token"."user_id" = "auth_user"."id") WHERE "authtoken_token"."key" = %s LIMIT 21
+Limit  (cost=0.56..16.60 rows=1 width=129) (actual time=0.006..0.006 rows=1 loops=1)
+  Buffers: shared hit=6
+  ->  Nested Loop  (cost=0.56..16.60 rows=1 width=129) (actual time=0.006..0.006 rows=1 loops=1)
+        Buffers: shared hit=6
+        ->  Index Scan using authtoken_token_key_10f0b77e_like on authtoken_token  (cost=0.27..8.29 rows=1 width=53) (actual time=0.003..0.003 rows=1 loops=1)
+              Index Cond: ((key)::text = '46b78a5123a04e0399750a14e4bca98a17e12333'::text)
+              Buffers: shared hit=3
+        ->  Index Scan using auth_user_pkey on auth_user  (cost=0.29..8.30 rows=1 width=76) (actual time=0.002..0.002 rows=1 loops=1)
+              Index Cond: (id = authtoken_token.user_id)
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=7
+Planning Time: 0.075 ms
+Execution Time: 0.011 ms
+
+-- 0.2 ms when captured
+-- SELECT "core_dailyapimetric"."id", "core_dailyapimetric"."day", "core_dailyapimetric"."endpoint", "core_dailyapimetric"."method", "core_dailyapimetric"."requests", "core_dailyapimetric"."client_errors", "core_dailyapimetric"."server_errors", "core_dailyapimetric"."total_ms", "core_dailyapimetric"."max_ms" FROM "core_dailyapimetric" WHERE ("core_dailyapimetric"."day" = %s AND "core_dailyapimetric"."endpoint" = %s AND "core_dailyapimetric"."method" = %s) LIMIT 21
+Limit  (cost=0.00..1.31 rows=1 width=424) (actual time=0.002..0.002 rows=1 loops=1)
+  Buffers: shared hit=1
+  ->  Seq Scan on core_dailyapimetric  (cost=0.00..1.31 rows=1 width=424) (actual time=0.002..0.002 rows=1 loops=1)
+        Filter: ((day = '2026-11-09'::date) AND ((endpoint)::text = 'plannerentry-list'::text) AND ((method)::text = 'GET'::text))
+        Buffers: shared hit=1
+Planning Time: 0.013 ms
+Execution Time: 0.004 ms
+
+-- 0.2 ms when captured
+-- INSERT INTO "core_dailyapimetric" ("day", "endpoint", "method", "requests", "client_errors", "server_errors", "total_ms", "max_ms") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_dailyapimetric"."id"
+Insert on core_dailyapimetric  (cost=0.00..0.01 rows=1 width=424)
+  ->  Result  (cost=0.00..0.01 rows=1 width=424)
