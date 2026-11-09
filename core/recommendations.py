@@ -392,6 +392,14 @@ QUALITY_PRIOR_VIEWS = 20
 #: own likes and views are always read live, so nothing they just did waits
 #: on this.
 STATS_TTL_SECONDS = 10 * 60
+#: How many posts with no counts at all one request may count for itself.
+INLINE_RECOUNT_LIMIT = 200
+_RECOUNT_LOCK = "for-you:stats-recount"
+#: Generous for a rebuild, and short enough that a request that died holding
+#: the lock does not leave the page without its lists for long.
+RECOUNT_LOCK_SECONDS = 30
+#: How many lifetimes of a shared list its previous value is kept.
+PREVIOUS_VALUE_LIFETIMES = 4
 #: Trending: the posts with the most likes over this many days, worked out
 #: once for everybody every few minutes.
 TRENDING_DAYS = 7
@@ -620,6 +628,29 @@ def _exercise_key(name):
     return (name or "").strip().lower()
 
 
+def _rebuild_once(key, compute, ttl, fallback):
+    """The shared value at `key`, rebuilt by one request at a time.
+
+    When a shared list expires, every reader arriving before it is back would
+    otherwise run the same scan. One of them does. The rest get the previous
+    value, kept for longer than the live one, or else `fallback` -- less to rank
+    from on that one request, rather than the same query many times over."""
+    found = cache.get(key)
+    if found is not None:
+        return found
+    lock, previous = f"{key}:rebuilding", f"{key}:previous"
+    if not cache.add(lock, 1, RECOUNT_LOCK_SECONDS):
+        kept = cache.get(previous)
+        return fallback if kept is None else kept
+    try:
+        found = compute()
+        cache.set(key, found, ttl)
+        cache.set(previous, found, ttl * PREVIOUS_VALUE_LIFETIMES)
+        return found
+    finally:
+        cache.delete(lock)
+
+
 def exercise_vocabulary(now=None):
     """{lowercased exercise name: [the names as written]} for every exercise
     that can be a topic: the shared catalogue, and any name at least
@@ -643,33 +674,36 @@ def exercise_popularity(now=None):
 
 
 def _exercise_vocabulary(now=None):
-    found = cache.get("for-you:exercises2")
-    if found is None:
-        now = now or timezone.now()
-        spellings, people = {}, {}
-        # A row per spelling and author, so that one person writing a name
-        # three ways is still one person.
-        for name, author in (
-            PostWorkoutExercise.objects.filter(
-                post_workout__post__published_at__gte=now - timedelta(days=WINDOW_DAYS)
-            )
-            .order_by().values_list("name", "post_workout__post__author_id").distinct()
-        ):
-            key = _exercise_key(name)
-            if key:
-                spellings.setdefault(key, set()).add(name)
-                people.setdefault(key, set()).add(author)
-        found = {
-            key: sorted(names) for key, names in spellings.items()
-            if len(people[key]) >= VOCABULARY_AUTHORS
-        }
-        for name in Exercise.objects.filter(created_by__isnull=True).values_list("name", flat=True):
-            key = _exercise_key(name)
-            if key:
-                found[key] = sorted(set(found.get(key, ())) | set(spellings.get(key, ())) | {name})
-        found = {"names": found, "people": {key: len(people.get(key, ())) for key in found}}
-        cache.set("for-you:exercises2", found, VOCABULARY_TTL_SECONDS)
-    return found
+    return _rebuild_once(
+        "for-you:exercises2", lambda: _compute_exercise_vocabulary(now), VOCABULARY_TTL_SECONDS,
+        {"names": {}, "people": {}},
+    )
+
+
+def _compute_exercise_vocabulary(now=None):
+    now = now or timezone.now()
+    spellings, people = {}, {}
+    # A row per spelling and author, so that one person writing a name
+    # three ways is still one person.
+    for name, author in (
+        PostWorkoutExercise.objects.filter(
+            post_workout__post__published_at__gte=now - timedelta(days=WINDOW_DAYS)
+        )
+        .order_by().values_list("name", "post_workout__post__author_id").distinct()
+    ):
+        key = _exercise_key(name)
+        if key:
+            spellings.setdefault(key, set()).add(name)
+            people.setdefault(key, set()).add(author)
+    found = {
+        key: sorted(names) for key, names in spellings.items()
+        if len(people[key]) >= VOCABULARY_AUTHORS
+    }
+    for name in Exercise.objects.filter(created_by__isnull=True).values_list("name", flat=True):
+        key = _exercise_key(name)
+        if key:
+            found[key] = sorted(set(found.get(key, ())) | set(spellings.get(key, ())) | {name})
+    return {"names": found, "people": {key: len(people.get(key, ())) for key in found}}
 
 
 def exercise_topic(name):
@@ -1315,23 +1349,54 @@ def _count_engagement(post_ids, now=None):
     }
 
 
+def _recount_missing(post_ids, now):
+    """Count posts nobody has counted yet: a capped number, the newest first,
+    one request at a time.
+
+    This is what stops a late statistics job or a cold cache from turning into
+    every feed request running the same expensive aggregates at once. Whoever
+    does not get the lock carries on without those posts' figures."""
+    if not post_ids or not cache.add(_RECOUNT_LOCK, 1, RECOUNT_LOCK_SECONDS):
+        return {}
+    try:
+        chosen = sorted(post_ids, reverse=True)[:INLINE_RECOUNT_LIMIT]
+        counted = _count_engagement(chosen, now)
+        cache.set_many({f"for-you:stats6:{pk}": value for pk, value in counted.items()}, STATS_TTL_SECONDS)
+        return counted
+    finally:
+        cache.delete(_RECOUNT_LOCK)
+
+
 def engagement_for(post_ids, now=None):
-    """{post id: Engagement}.
+    """{post id: Engagement}, for every post asked about.
 
-    From the table `refresh_feed_stats` keeps (`core.feed_stats`) where a
-    post has a fresh row; otherwise worked out here and shared across readers
-    for STATS_TTL_SECONDS, as it always was. The cache key carries a
-    version, so counts cached by an earlier shape of Engagement are never
-    read back as this one."""
-    from .feed_stats import read_fresh
+    In order: a fresh row from the table `refresh_feed_stats` keeps
+    (`core.feed_stats`); figures counted lately and shared through the cache; a
+    stale row, within a limit; then, for a post with no row at all, a bounded
+    count (`_recount_missing`). What is left counts as a post with no record yet,
+    which the ranking already knows how to treat fairly. Anything short of fresh
+    asks the next run of the job to repair it.
 
-    found = read_fresh(post_ids, now)
+    The cache key carries a version, so counts cached by an earlier shape of
+    Engagement are never read back as this one."""
+    from .feed_stats import read_usable, request_repair
+
+    fresh, stale = read_usable(post_ids, now)
+    found = dict(fresh)
     missing = [pk for pk in post_ids if pk not in found]
     if missing:
-        found.update(_cached_many(
-            "stats6", missing, lambda ids: _count_engagement(ids, now), STATS_TTL_SECONDS
-        ))
-    return found
+        keys = {pk: f"for-you:stats6:{pk}" for pk in missing}
+        hits = cache.get_many(list(keys.values()))
+        found.update({pk: hits[key] for pk, key in keys.items() if key in hits})
+        behind = [pk for pk in missing if pk not in found]
+        if behind:
+            served_stale = [pk for pk in behind if pk in stale]
+            found.update({pk: stale[pk] for pk in served_stale})
+            found.update(_recount_missing([pk for pk in behind if pk not in stale], now))
+            unknown = [pk for pk in behind if pk not in found]
+            if served_stale or unknown:
+                request_repair(served_stale + unknown, len(served_stale), len(unknown))
+    return {pk: found.get(pk) or Engagement() for pk in post_ids}
 
 
 def _count_followers(author_ids):
@@ -1349,25 +1414,25 @@ def follower_counts(author_ids):
 def trending_post_ids(now=None):
     """The most liked recent posts this week, for everybody. Eligibility is
     applied per reader afterwards; this is only where to look."""
-    found = cache.get("for-you:trending")
-    if found is None:
-        now = now or timezone.now()
-        # Counted only from active accounts older than a couple of days,
-        # and never the author's own: a ring of fresh accounts liking one
-        # post is the cheapest way there is to manufacture a trend.
-        found = list(
-            PostLike.objects.filter(
-                created_at__gte=now - timedelta(days=TRENDING_DAYS),
-                post__published_at__gte=now - timedelta(days=WINDOW_DAYS),
-            )
-            .filter(user__created_at__lte=new_since(now))
-            .exclude(user_id__in=inactive_accounts())
-            .exclude(user_id=F("post__author_id"))
-            .order_by().values("post_id").annotate(n=Count("pk"))
-            .order_by("-n", "-post_id").values_list("post_id", flat=True)[:TRENDING_LIMIT]
+    return _rebuild_once("for-you:trending", lambda: _compute_trending(now), TRENDING_TTL_SECONDS, [])
+
+
+def _compute_trending(now=None):
+    now = now or timezone.now()
+    # Counted only from active accounts older than a couple of days,
+    # and never the author's own: a ring of fresh accounts liking one
+    # post is the cheapest way there is to manufacture a trend.
+    return list(
+        PostLike.objects.filter(
+            created_at__gte=now - timedelta(days=TRENDING_DAYS),
+            post__published_at__gte=now - timedelta(days=WINDOW_DAYS),
         )
-        cache.set("for-you:trending", found, TRENDING_TTL_SECONDS)
-    return found
+        .filter(user__created_at__lte=new_since(now))
+        .exclude(user_id__in=inactive_accounts())
+        .exclude(user_id=F("post__author_id"))
+        .order_by().values("post_id").annotate(n=Count("pk"))
+        .order_by("-n", "-post_id").values_list("post_id", flat=True)[:TRENDING_LIMIT]
+    )
 
 
 # ------------------------------------------------------------ similar taste

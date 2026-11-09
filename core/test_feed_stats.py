@@ -7,7 +7,9 @@ and never the only way to a ranking.
   even after a run that stopped half way;
 - a post deleted while the job counts it is left out, not a failed run;
 - every row comes round in time, however big the window;
-- a stale row, or one written by an older way of counting, is not read;
+- a row written by an older way of counting is not read, and a stale one
+  only stands in for a limited time;
+- a late job never turns into every request counting at once;
 - with no job at all, the page is the same;
 - the deploy check notices a job that has stopped.
 """
@@ -132,16 +134,103 @@ class FeedStatsTests(ForYouTestCase):
         row = PostEngagementStats.objects.get(post=self.post)
         self.assertGreater(row.computed_at, timezone.now() - timedelta(minutes=1))
 
-    def test_stale_or_old_shaped_rows_are_never_read(self):
+    def age(self, post, seconds):
+        PostEngagementStats.objects.filter(post=post).update(computed_at=timezone.now() - timedelta(seconds=seconds))
+
+    def test_a_row_from_an_older_way_of_counting_is_not_read(self):
         feed_stats.refresh()
-        PostLike.objects.create(post=self.post, user=self.runners[0])
-        PostEngagementStats.objects.filter(post=self.post).update(
-            computed_at=timezone.now() - timedelta(seconds=feed_stats.FRESH_SECONDS + 60)
-        )
+        PostLike.objects.create(post=self.meals[1], user=self.runners[0])
         PostEngagementStats.objects.filter(post=self.meals[1]).update(version=feed_stats.STATS_VERSION - 1)
         cache.clear()
+        found = recommendations.engagement_for([self.meals[1].pk])
+        self.assertEqual(found[self.meals[1].pk].likes, 1, "worked out afresh")
+
+    def test_a_late_job_serves_stale_counts_without_counting(self):
+        feed_stats.refresh()
+        PostLike.objects.create(post=self.post, user=self.runners[0])
+        self.age(self.post, feed_stats.FRESH_SECONDS + 60)
+        cache.clear()
+        with mock.patch.object(recommendations, "_count_engagement") as count:
+            found = recommendations.engagement_for([self.post.pk])
+        count.assert_not_called()
+        self.assertEqual(found[self.post.pk].likes, 0, "the row as it stood")
+
+    def test_a_row_past_the_limit_is_not_served(self):
+        feed_stats.refresh()
+        PostLike.objects.create(post=self.post, user=self.runners[0])
+        self.age(self.post, feed_stats.STALE_SECONDS + 60)
+        cache.clear()
+        self.assertEqual(recommendations.engagement_for([self.post.pk])[self.post.pk].likes, 1, "counted afresh")
+
+    def test_counts_already_shared_beat_a_stale_row(self):
+        feed_stats.refresh()
+        self.age(self.post, feed_stats.FRESH_SECONDS + 60)
+        cache.clear()
+        shared = recommendations.Engagement(likes=7)
+        cache.set(f"for-you:stats6:{self.post.pk}", shared, 60)
+        self.assertEqual(recommendations.engagement_for([self.post.pk])[self.post.pk].likes, 7)
+
+    def test_every_post_asked_about_gets_an_answer(self):
+        cache.add(recommendations._RECOUNT_LOCK, 1, 30)
         found = recommendations.engagement_for([self.post.pk, self.meals[1].pk])
-        self.assertEqual(found[self.post.pk].likes, 1, "worked out afresh, not read from the stale row")
+        self.assertEqual(found[self.post.pk], recommendations.Engagement())
+        self.assertEqual(found[self.meals[1].pk], recommendations.Engagement())
+
+    def test_only_a_capped_number_of_posts_is_counted_per_request(self):
+        posts = [post.pk for post in self.meals[:4]]
+        with mock.patch.object(recommendations, "INLINE_RECOUNT_LIMIT", 2):
+            real = recommendations._count_engagement
+            with mock.patch.object(recommendations, "_count_engagement", side_effect=real) as count:
+                found = recommendations.engagement_for(posts)
+        self.assertEqual(sorted(count.call_args.args[0]), sorted(posts, reverse=True)[:2][::-1])
+        self.assertEqual(set(found), set(posts))
+
+    def test_only_one_request_counts_at_a_time(self):
+        """While one request holds the count, another arriving meanwhile must
+        not start its own: it goes on with no figures for those posts."""
+        posts = [self.post.pk]
+        real = recommendations._count_engagement
+        calls = []
+
+        def nested(ids, now=None):
+            calls.append(ids)
+            if len(calls) == 1:
+                self.assertEqual(recommendations.engagement_for(posts)[self.post.pk], recommendations.Engagement())
+            return real(ids, now)
+
+        cache.clear()
+        with mock.patch.object(recommendations, "_count_engagement", side_effect=nested):
+            recommendations.engagement_for(posts)
+        self.assertEqual(len(calls), 1)
+
+    def test_the_lock_is_given_back_when_counting_fails(self):
+        with mock.patch.object(recommendations, "_count_engagement", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                recommendations.engagement_for([self.post.pk])
+        self.assertTrue(cache.add(recommendations._RECOUNT_LOCK, 1, 1))
+
+    def test_readers_ask_the_next_run_to_repair_what_they_found(self):
+        feed_stats.refresh()
+        self.age(self.post, feed_stats.FRESH_SECONDS + 60)
+        cache.clear()
+        with self.assertLogs("core.feed_stats", level="WARNING") as logs:
+            recommendations.engagement_for([self.post.pk])
+        self.assertIn("stale=1 neutral=0", logs.output[0])
+        self.assertEqual(cache.get(feed_stats._REPAIR_KEY), [self.post.pk])
+
+    def test_a_repair_request_is_written_at_most_once_a_minute(self):
+        feed_stats.request_repair([self.post.pk], 1, 0)
+        feed_stats.request_repair([self.meals[1].pk], 1, 0)
+        self.assertEqual(cache.get(feed_stats._REPAIR_KEY), [self.post.pk])
+
+    def test_the_next_run_sees_to_what_was_requested_and_clears_it(self):
+        feed_stats.refresh()
+        self.age(self.post, feed_stats.REFRESH_SECONDS - 60)
+        before = PostEngagementStats.objects.get(post=self.post).computed_at
+        cache.set(feed_stats._REPAIR_KEY, [self.post.pk], 60)
+        feed_stats.refresh()
+        self.assertGreater(PostEngagementStats.objects.get(post=self.post).computed_at, before)
+        self.assertIsNone(cache.get(feed_stats._REPAIR_KEY))
 
     def test_without_the_job_the_page_is_the_same(self):
         _, token = self.reader("same_either_way")
@@ -160,6 +249,47 @@ class FeedStatsTests(ForYouTestCase):
         self.assertEqual(warnings(), [])
         PostEngagementStats.objects.update(computed_at=timezone.now() - timedelta(hours=2))
         self.assertEqual(warnings(), ["core.W009"])
+
+
+class SharedListRebuildTests(ForYouTestCase):
+    """A shared list expiring must not send every reader to the database."""
+
+    def test_only_one_request_rebuilds_trending(self):
+        calls = []
+        real = recommendations._compute_trending
+
+        def nested(now=None):
+            calls.append(1)
+            if len(calls) == 1:
+                self.assertEqual(recommendations.trending_post_ids(), [], "nothing to fall back on yet")
+            return real(now)
+
+        cache.clear()
+        with mock.patch.object(recommendations, "_compute_trending", side_effect=nested):
+            recommendations.trending_post_ids()
+        self.assertEqual(len(calls), 1)
+
+    def test_a_reader_arriving_during_a_rebuild_gets_the_previous_value(self):
+        cache.clear()
+        cache.set("for-you:trending:previous", [42], 60)
+        cache.add("for-you:trending:rebuilding", 1, 30)
+        with mock.patch.object(recommendations, "_compute_trending") as compute:
+            self.assertEqual(recommendations.trending_post_ids(), [42])
+        compute.assert_not_called()
+
+    def test_the_lock_is_given_back_after_a_failed_rebuild(self):
+        cache.clear()
+        with mock.patch.object(recommendations, "_compute_trending", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                recommendations.trending_post_ids()
+        with mock.patch.object(recommendations, "_compute_trending", return_value=[7]):
+            self.assertEqual(recommendations.trending_post_ids(), [7])
+
+    def test_the_vocabulary_has_a_safe_empty_answer(self):
+        cache.clear()
+        cache.add("for-you:exercises2:rebuilding", 1, 30)
+        self.assertEqual(recommendations.exercise_vocabulary(), {})
+        self.assertEqual(recommendations.exercise_popularity(), {})
 
 
 class FeedStatsCommitTests(TransactionTestCase):
