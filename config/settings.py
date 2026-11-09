@@ -79,6 +79,9 @@ ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED = os.getenv('ANALYTICS_LOGIN_SHARED_LIMIT
 # repbase-metrics-flush timer is installed: without it the dashboard and
 # check_api_health would stop seeing new data.
 ANALYTICS_BUFFERED = os.getenv('ANALYTICS_BUFFERED', 'false').lower() == 'true'
+# How old a For You statistics row may be and still stand in while the job that
+# writes them is late. See core.feed_stats.
+FEED_STATS_STALE_SECONDS = int(os.getenv('FEED_STATS_STALE_SECONDS', str(6 * 60 * 60)))
 # Where API health alerts go. Empty means the approved insights accounts,
 # which are the people already trusted with this data; set it to a pager or
 # shared address when that is not the same thing.
