@@ -18,6 +18,8 @@
   <nav class="range" aria-label="Reporting period"><a href="?days=7" {% if days == 7 %}class="selected" aria-current="page"{% endif %}>7 days</a><a href="?days=30" {% if days == 30 %}class="selected" aria-current="page"{% endif %}>30 days</a></nav>
 </section>
 
+<p><a href="{% url 'insights-social' %}">Social: usefulness, playback and cost →</a></p>
+
 {% if not enabled %}<div class="notice">API collection is off. Usage and latency counters will populate only after collection is enabled. Product totals below come from existing records.</div>{% else %}<p><span class="pill">API collection enabled</span> <span class="note">Only observed requests are counted; no historical traffic is reconstructed.</span></p>{% endif %}
 
 {# What to do, before what happened. A dashboard that opens with totals asks #}

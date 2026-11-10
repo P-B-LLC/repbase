@@ -231,12 +231,14 @@ def scheduled_cleanup_is_running(app_configs, **kwargs):
     from django.utils import timezone
 
     from .models import (
-        RECOMMENDATION_HISTORY_DAYS,
         FoodSearchCache,
         PendingMediaDeletion,
         PostView,
         SaveReceipt,
+        recommendation_history_days,
     )
+
+    RECOMMENDATION_HISTORY_DAYS = recommendation_history_days()
 
     now = timezone.now()
     overdue = []

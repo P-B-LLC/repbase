@@ -15,7 +15,9 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.db.models.functions import Coalesce
 from .video_jobs_models import VideoJob, VideoStoredObject, VideoMetric, VideoDailyUpload  # noqa: F401
-from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
+from .analytics_models import (  # noqa: F401
+    AnalyticsAccess, DailyActiveAccount, DailyApiMetric, SocialDailyCounter, SocialInsightSnapshot,
+)
 from .access_models import AccountAccess, AccessPolicyLock, AccessAudit, CommunitySpotlight  # noqa: F401
 from .schedule_sync import remove_unfinished_generated_tasks
 from .activities import (
@@ -3984,6 +3986,36 @@ class PostLike(models.Model):
         return f"like on post {self.post_id}"
 
 
+class PostTried(models.Model):
+    """Somebody saying "I tried this" about a post.
+
+    A statement the person chooses to make, by pressing a button. It is never
+    written from anything they tracked: finishing a workout saved from a post,
+    or logging a meal made from one, does not create a row here, and nothing
+    that reads private training or nutrition records may. The ranking counts
+    it as the reader's own word and nothing else stands in for it.
+
+    A row per person and post, like a like, so it can be taken back and
+    cannot be said twice.
+    """
+
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="tried")
+    user = models.ForeignKey(RepbaseUser, on_delete=models.CASCADE, related_name="posts_tried")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["post", "user"], name="unique_post_tried")
+        ]
+        indexes = [
+            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"tried post {self.post_id}"
+
+
 class PostComment(models.Model):
     """A reply on a post, or on another reply.
 
@@ -4154,6 +4186,8 @@ class PostView(models.Model):
         indexes = [
             models.Index(fields=("viewer", "-last_seen_at")),
             models.Index(fields=("surface", "first_seen_at")),
+            # What the retention sweep walks: oldest first, whoever it was.
+            models.Index(fields=("last_seen_at",), name="postview_last_seen"),
         ]
 
     def __str__(self):
@@ -4228,7 +4262,10 @@ class PostFeedback(models.Model):
         constraints = [
             models.UniqueConstraint(fields=("viewer", "post"), name="one_feedback_per_pair")
         ]
-        indexes = [models.Index(fields=("viewer", "-created_at"))]
+        indexes = [
+            models.Index(fields=("viewer", "-created_at")),
+            models.Index(fields=("created_at",), name="postfeedback_created"),
+        ]
 
     def __str__(self):
         return f"{self.viewer_id}: {self.kind} on post {self.post_id}"
@@ -4238,6 +4275,26 @@ class PostFeedback(models.Model):
 #: back this far and no further, so nothing older does anything but sit there
 #: describing what somebody once looked at. `prune_expired_rows` deletes it.
 RECOMMENDATION_HISTORY_DAYS = 90
+
+
+def recommendation_history_days():
+    """The retention in force: RECOMMENDATION_HISTORY_DAYS, or a shorter
+    policy chosen with the setting of the same name. Never longer -- the
+    ranking reads back no further than the constant, and a larger number
+    would only keep what nothing uses."""
+    from django.conf import settings
+
+    chosen = getattr(settings, "RECOMMENDATION_HISTORY_DAYS", None)
+    if not chosen:
+        return RECOMMENDATION_HISTORY_DAYS
+    return max(1, min(int(chosen), RECOMMENDATION_HISTORY_DAYS))
+
+
+#: How long what the ranking knew about a served post -- the per-exposure
+#: training sample, `PostView.features` -- is kept. Shorter than the viewing
+#: history it sits on: the history is needed to avoid repeating a post, the
+#: sample only to train on, and two weeks of it is what training reads.
+TRAINING_SAMPLE_DAYS = 14
 
 #: How long a dismissed suggestion stays dismissed. Long enough that the same
 #: face does not come back next week; not so long that someone you had no

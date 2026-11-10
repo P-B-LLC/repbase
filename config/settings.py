@@ -86,6 +86,12 @@ FEED_STATS_STALE_SECONDS = int(os.getenv('FEED_STATS_STALE_SECONDS', str(6 * 60 
 # which are the people already trusted with this data; set it to a pager or
 # shared address when that is not the same thing.
 ANALYTICS_ALERT_EMAILS = os.getenv('ANALYTICS_ALERT_EMAILS', '')
+# A shorter retention for viewing history and "not interested" than the 90
+# days the ranking reads back. Empty keeps 90; a larger number is ignored.
+RECOMMENDATION_HISTORY_DAYS = int(os.getenv('RECOMMENDATION_HISTORY_DAYS') or 0) or None
+# The share of For You exposures whose ranking features are kept, for 14 days,
+# to train the learned model on. 1 keeps all of them, 0 none.
+FOR_YOU_TRAINING_SAMPLE_RATE = float(os.getenv('FOR_YOU_TRAINING_SAMPLE_RATE', '1'))
 
 # The cache is where the insights login's rate limit is counted, so what backs
 # it decides whether that limit means anything.

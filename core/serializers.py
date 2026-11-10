@@ -4126,11 +4126,15 @@ class PostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
     #: public, by an account in good standing. The same number for every
     #: reader, so it is a count of responses and not of who the reader knows.
     take_count = serializers.SerializerMethodField()
+    #: How many people have said "I tried this", and whether this reader has.
+    tried_count = serializers.SerializerMethodField()
+    viewer_has_tried = serializers.SerializerMethodField()
 
     #: Added to a response the app already decodes; see core.schema.
-    optional_response_fields = frozenset(
-        [*PublicationFieldsMixin.PUBLICATION_FIELDS, "viewer_can_take", "take_count"]
-    )
+    optional_response_fields = frozenset([
+        *PublicationFieldsMixin.PUBLICATION_FIELDS, "viewer_can_take", "take_count",
+        "tried_count", "viewer_has_tried",
+    ])
 
     class Meta:
         model = Post
@@ -4164,6 +4168,8 @@ class PostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
             *PublicationFieldsMixin.PUBLICATION_FIELDS,
             "viewer_can_take",
             "take_count",
+            "tried_count",
+            "viewer_has_tried",
         ]
         read_only_fields = [
             "id",
@@ -4368,6 +4374,14 @@ class PostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
         # Off the annotation. Zero where a post is serialized without it: a
         # post just created, which nobody can have answered yet.
         return int(getattr(post, "take_total", 0) or 0)
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_tried_count(self, post):
+        return int(getattr(post, "tried_total", 0) or 0)
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_has_tried(self, post):
+        return bool(getattr(post, "viewer_tried", False))
 
     @extend_schema_field(serializers.BooleanField())
     def get_viewer_can_take(self, post):

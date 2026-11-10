@@ -133,6 +133,25 @@ Revocation intentionally does not remove staff status or unrelated permissions.
    as "could not be buffered", and recorded per batch in
    `MetricFlushReceipt.lost_observations`.
 
+## Social insights (`/insights/social/`)
+
+Same sign-in and the same role. Shows whether the social pages are useful
+(qualified exposure to save, save to "I tried this", takes, creator coverage,
+reader-reported satisfaction, day-1 and day-7 return, returns that did
+something), playback beside its failures, and cost (ranking p50/p95, feed
+routes, statistics age, queue lag, telemetry duplicates and drops, cache hit
+rate, clip storage, and on PostgreSQL table growth, dead rows and vacuum).
+
+It reads `SocialInsightSnapshot`, written once a day by
+`roll_up_social_insights`, which `python -m config.deploy maintenance` now
+runs last. Until the first run the page says there are no figures. A figure
+with fewer than five people behind it is withheld before it is stored. Return
+rates need `ANALYTICS_ENABLED=true`. `SOCIAL_PRIVACY.md` lists what is used,
+kept and never read.
+
+Not measured from inside the application, and said so on the page: database
+CPU, per-request SQL time, media bandwidth, and batches a device gave up on.
+
 ## Metric definitions
 
 - API-active accounts: distinct non-staff accounts with a successful API request

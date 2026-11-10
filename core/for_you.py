@@ -18,6 +18,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import social_insights
 from .attention import MAX_BODY_BYTES, record_summaries
 from .models import Post, PostFeedback, PostVideo, PostView, RecommendationPreferences, RepbaseUser, SuggestionDismissal
 from .recommendations import (
@@ -219,6 +220,7 @@ class ImpressionsView(APIView):
         except ValueError:
             declared = 0
         if declared > MAX_BODY_BYTES or (not declared and len(request.body) > MAX_BODY_BYTES):
+            social_insights.count("attention_oversize")
             return Response(
                 {"detail": "That batch is too large. Send at most 50 events."},
                 status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -232,6 +234,9 @@ class ImpressionsView(APIView):
             recorded, duplicate = record_summaries(
                 viewer, batch["batch_id"], batch["session_id"], batch["events"]
             )
+            social_insights.count("attention_batches")
+            if duplicate:
+                social_insights.count("attention_duplicate_batches")
         else:
             recorded = record_impressions(viewer, batch["events"])
         return Response(

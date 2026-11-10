@@ -79,6 +79,8 @@ def record_summaries(viewer, batch_id, session_id, events, now=None):
 
     One transaction: the receipt and the rows change together or not at all.
     """
+    from . import social_insights
+    from .ranking_model import sampled
     from .recommendations import served_features, served_reasons
     from .views import visible_posts_for
 
@@ -103,10 +105,16 @@ def record_summaries(viewer, batch_id, session_id, events, now=None):
             ).exclude(author=viewer).values_list("pk", "video__status", "video__duration_ms", "kind")
         }
         merged = {}
+        folded = 0
         for event in timely:
             post_id = event["post"]
             if post_id in facts:
                 _fold(merged, post_id, _bounded(event, *facts[post_id]), str(session_id))
+                folded += 1
+        # How much arrived and how much of it was set aside, as two numbers
+        # for the day: nothing about which reader or which post.
+        social_insights.count("attention_events", len(events))
+        social_insights.count("attention_events_ignored", len(events) - folded)
 
         # In post order, so two batches for the same reader take their row
         # locks in the same order and cannot wait on each other.
@@ -119,7 +127,7 @@ def record_summaries(viewer, batch_id, session_id, events, now=None):
                 entry = merged[pk]
                 for_you = entry["surface"] == PostView.Surface.FOR_YOU
                 entry["reason"] = reasons.get(pk, "") if for_you else ""
-                entry["features"] = features.get(pk) if for_you else None
+                entry["features"] = sampled(viewer.pk, pk, features.get(pk)) if for_you else None
                 entry["rewatch_cap"] = REWATCH_CAP_TIMES * facts[pk][1] if facts[pk][0] else None
             _upsert(viewer, [(pk, merged[pk]) for pk in visible], now)
         receipt.recorded = len(visible)

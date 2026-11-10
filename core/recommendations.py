@@ -109,7 +109,7 @@ from .feed_integrity import (
     recently_moderated_authors,
     trust_by_id,
 )
-from .ranking_model import active_model, feature_row
+from .ranking_model import active_model, feature_row, sampled
 from .ranking_model import value as ranking_value
 from .models import (
     Block,
@@ -122,6 +122,7 @@ from .models import (
     PostFeedback,
     PostLike,
     PostReport,
+    PostTried,
     PostVideo,
     PostEngagementStats,
     PostHashtag,
@@ -291,6 +292,9 @@ class FeedWeights:
     attachment_read: float = 0.75
     #: Posted a take of it: the strongest thing a reader can do with a post.
     take: float = 4.0
+    #: Said "I tried this" about it: their own statement, made on purpose.
+    #: Once per post, and never inferred from anything they tracked.
+    tried: float = 4.0
     #: Match between a post's hashtags and declared topics and the ones on
     #: posts the reader engaged with. Capped (`TAG_LIMIT`, `TAG_CEILING`) so
     #: a caption stuffed with popular tags cannot manufacture relevance.
@@ -1107,6 +1111,13 @@ def build_profile(viewer, weights=None, now=None, preferences=None):
         .exclude(source_post__author=viewer).order_by("-published_at")
         .values_list("source_post_id", "published_at")[:HISTORY_LIMIT],
         weights.take, True,
+    )
+
+    take(
+        PostTried.objects.filter(user=viewer, created_at__gte=since)
+        .exclude(post__author=viewer).order_by("-created_at")
+        .values_list("post_id", "created_at")[:HISTORY_LIMIT],
+        weights.tried, True,
     )
 
     watched = []
@@ -2754,7 +2765,7 @@ def record_impressions(viewer, events, now=None):
             entry = merged[post_id]
             for_you = entry["surface"] == PostView.Surface.FOR_YOU
             entry["reason"] = reasons.get(post_id, "") if for_you else ""
-            entry["features"] = features.get(post_id) if for_you else None
+            entry["features"] = sampled(viewer.pk, post_id, features.get(post_id)) if for_you else None
         _upsert_views(viewer, [(post_id, merged[post_id]) for post_id in visible], now)
     return len(visible)
 

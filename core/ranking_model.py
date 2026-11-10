@@ -39,8 +39,12 @@ read what it does:
   serving, so the model's view of a post is not just a record of where the
   rules put it.
 
-Privacy: features live on the viewing-history row they belong to, so they are
-pruned with it at 90 days and deleted at once by "start fresh". A model is
+Privacy: features live on the viewing-history row they belong to and are
+cleared from it after TRAINING_SAMPLE_DAYS (14) by `prune_expired_rows`, well
+before the row itself goes at 90 days; "start fresh" deletes both at once.
+`FOR_YOU_TRAINING_SAMPLE_RATE` keeps a fixed share of exposures instead of
+all of them. Only what the ranking itself computed about a post is in a
+sample -- no caption, no private training or nutrition record. A model is
 aggregate numbers only. Nothing is shown to anybody.
 """
 
@@ -64,6 +68,7 @@ from .models import (
     PostView,
     RankingModel,
     SavedFoodMeal,
+    TRAINING_SAMPLE_DAYS,
     WorkoutTemplate,
 )
 
@@ -88,9 +93,9 @@ RULES = len(FEATURES)
 REJECT_COST = 0.5
 
 #: Training: at most MAX_SAMPLES of the newest labelled impressions from the
-#: last TRAIN_DAYS, none younger than LABEL_DELAY (people need a moment to
+#: last TRAIN_DAYS -- as long as a sample is kept, and no longer -- none younger than LABEL_DELAY (people need a moment to
 #: act on what they saw).
-TRAIN_DAYS = 30
+TRAIN_DAYS = TRAINING_SAMPLE_DAYS
 MAX_SAMPLES = 200_000
 LABEL_DELAY = timedelta(hours=1)
 #: A fifth of readers held out to test on.
@@ -204,6 +209,32 @@ def feature_row(raw, discovery=False, position=0):
     return [round(float(raw.get(name, 0.0)), 6) for name in SCORE_FEATURES] + [
         1.0 if discovery else 0.0, float(math.log1p(position)),
     ] + [round(float(raw.get("rules", 0.0)), 6)]
+
+
+def sample_rate():
+    """The share of served posts whose features are kept to train on:
+    `FOR_YOU_TRAINING_SAMPLE_RATE`, 1 when not set, 0 to keep none."""
+    from django.conf import settings
+
+    return min(max(float(getattr(settings, "FOR_YOU_TRAINING_SAMPLE_RATE", 1.0)), 0.0), 1.0)
+
+
+def sampled(viewer_id, post_id, row):
+    """`row` if this exposure is one of the sample, else None.
+
+    Decided by a hash of the pair, not a dice roll, so the same exposure is
+    always in or always out: a retried batch cannot add a sample the first
+    delivery left out, and the sample is not tilted toward whoever retries.
+    """
+    if row is None:
+        return None
+    rate = sample_rate()
+    if rate >= 1.0:
+        return row
+    if rate <= 0.0:
+        return None
+    digest = hashlib.sha256(f"training-sample:{viewer_id}:{post_id}".encode()).digest()
+    return row if int.from_bytes(digest[:8], "big") / 2 ** 64 < rate else None
 
 
 def _held_out(viewer_id):

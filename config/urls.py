@@ -23,7 +23,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerSplitVie
 from core.media import serve_media
 from core.media_review_portal import preview as media_review_preview
 from core.throttles import limit_sign_in_attempts
-from core.analytics import dashboard, InsightsLoginView, InsightsLogoutView
+from core.analytics import dashboard, social_dashboard, InsightsLoginView, InsightsLogoutView
 from core.access_portal import workspace, edit_access, reports, account_control, AccessLoginView, AccessLogoutView
 from core.community_portal import community_studio
 from config.health import live, ready
@@ -40,6 +40,7 @@ urlpatterns = [
     path('access/users/<int:profile_id>/', edit_access, name='access-edit'),
     path('access/users/<int:profile_id>/status/', account_control, name='access-account-control'),
     path('insights/', dashboard, name='insights'),
+    path('insights/social/', social_dashboard, name='insights-social'),
     path('insights/login/', InsightsLoginView.as_view(), name='insights-login'),
     path('insights/logout/', InsightsLogoutView.as_view(), name='insights-logout'),
     path('health/live/', live, name='health-live'),

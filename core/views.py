@@ -125,6 +125,7 @@ from .models import (
     CommentReport,
     PostFeedback,
     PostLike,
+    PostTried,
     PostMeal,
     PostMealEntry,
     PostPlannerEntry,
@@ -3402,6 +3403,8 @@ def annotate_social_counts(viewer, queryset):
         viewer_reposted=Exists(
             Post.objects.filter(repost_of=OuterRef("pk"), author=viewer)
         ),
+        tried_total=total(PostTried, "post"),
+        viewer_tried=Exists(PostTried.objects.filter(post=OuterRef("pk"), user=viewer)),
         # Whether this reader already took a copy. Annotated rather than
         # asked per row: the button that reads it is on every card in the
         # feed, and a query each would be a page of them.
@@ -4132,6 +4135,7 @@ class PostViewSet(AttachmentDetailMixin, ThrottleByActionMixin, OwnedViewSetMixi
         # A repost publishes to the reposter's followers, so it is publishing.
         "repost": "post",
         "like": "social",
+        "tried": "social",
         "save_workout": "social",
         "save_meal": "social",
         "not_interested": "social",
@@ -4329,6 +4333,35 @@ class PostViewSet(AttachmentDetailMixin, ThrottleByActionMixin, OwnedViewSetMixi
                 notify(post.author, profile, Notification.Kind.LIKE, post=post)
         else:
             PostLike.objects.filter(post=post, user=profile).delete()
+        return Response(self._card(post.pk))
+
+    @extend_schema(
+        methods=["POST"],
+        request=None,
+        responses=PostSerializer,
+        description=(
+            "Say \"I tried this\" about somebody else's post. It is the "
+            "reader's own statement and is only ever made by this request: "
+            "nothing they track -- a finished workout, a logged meal -- makes "
+            "it for them. Saying it twice is not an error."
+        ),
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        request=None,
+        responses={200: PostSerializer},
+        description="Take back \"I tried this\". Answers with the post, not 204.",
+    )
+    @action(detail=True, methods=["post", "delete"])
+    def tried(self, request, pk=None):
+        post = self.get_object()
+        profile = self.owner_profile()
+        if request.method == "POST":
+            if post.author_id == profile.pk:
+                raise ValidationError({"detail": "That is your own post."})
+            PostTried.objects.get_or_create(post=post, user=profile)
+        else:
+            PostTried.objects.filter(post=post, user=profile).delete()
         return Response(self._card(post.pk))
 
     @extend_schema(
