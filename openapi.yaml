@@ -4610,6 +4610,26 @@ paths:
               schema:
                 $ref: '#/components/schemas/PostReportResult'
           description: ''
+  /api/v1/social/features/:
+    get:
+      operationId: social_features_retrieve
+      description: Which parts of the new Social this account has been given. The
+        app asks at launch and when it returns to the foreground, and treats a part
+        it is not told about, or a failed request, as off. The server enforces the
+        ones that are its to enforce -- takes, sounds, measurement and ranking --
+        whatever the app does.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialFeatures'
+          description: ''
   /api/v1/social/feed/:
     get:
       operationId: social_feed_list
@@ -12599,6 +12619,33 @@ components:
         * `warmup` - Warm-up
         * `drop` - Drop set
         * `failure` - Failure
+    SocialFeatures:
+      type: object
+      description: |-
+        Which parts of the new Social are on for the account (`core.rollout`).
+        Every one may be missing from an older server, and missing means off.
+      properties:
+        new_feed:
+          type: boolean
+          readOnly: true
+        autoplay:
+          type: boolean
+          readOnly: true
+        measurement_v2:
+          type: boolean
+          readOnly: true
+        measured_ranking:
+          type: boolean
+          readOnly: true
+        sounds:
+          type: boolean
+          readOnly: true
+        takes:
+          type: boolean
+          readOnly: true
+        ranked_for_you:
+          type: boolean
+          readOnly: true
     Sound:
       type: object
       description: A sound, as anybody who may use or hear it reads it.

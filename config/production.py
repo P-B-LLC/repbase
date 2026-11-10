@@ -7,6 +7,8 @@ from .environment import boolean, database, integer, production_values
 # settings.py chooses its mail backend at import time. Require DEBUG=false
 # before importing this module via the deployment entry points.
 DEBUG = False
+# Decided before DEBUG was known; in production nothing new is on by default.
+SOCIAL_ROLLOUT_DEFAULT = os.environ.get('SOCIAL_ROLLOUT_DEFAULT', 'off')
 MODERATION_ENABLED = True
 # The classifier reads text and photos, not video, so a clip is seen by a
 # person before anybody else sees it. Not configurable here for the same

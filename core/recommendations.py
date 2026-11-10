@@ -326,6 +326,14 @@ class FeedWeights:
         """The weights this reader is ranked with, and the experiment
         variant that chose them (None when no experiment is running)."""
         variant, overrides = experiment_variant(viewer_id)
+        if variant is None:
+            # No experiment running: the measured signals go to whoever they
+            # have been released to (`core.rollout`), and the control --
+            # these weights as they stand -- to everybody else.
+            from . import rollout
+
+            if rollout.enabled_for_id("measured_ranking", viewer_id):
+                return cls.from_settings(MEASURED_VARIANT), "measured"
         return cls.from_settings(overrides), variant
 
 

@@ -12,11 +12,12 @@ from django.db.models.functions import Coalesce
 from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import rollout
 from .models import Post, Sound
 from .publication import PROMPTS, sounds_shown_to
 from .serializers import (
@@ -84,6 +85,8 @@ class SoundsView(APIView):
         body = CreateSoundSerializer(data=request.data, context={"request": request})
         body.is_valid(raise_exception=True)
         viewer = profile_for(request.user)
+        if not rollout.enabled("sounds", viewer):
+            raise PermissionDenied("Sounds are not available on this account yet.")
         # Among the author's own, so somebody else's post id is refused in
         # the words used for one that does not exist.
         post = Post.objects.filter(pk=body.validated_data["post"], author=viewer).first()

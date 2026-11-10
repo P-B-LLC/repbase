@@ -4016,6 +4016,52 @@ class PostTried(models.Model):
         return f"tried post {self.post_id}"
 
 
+class SocialFlag(models.Model):
+    """The stage one part of the new Social has been released to
+    (`core.rollout`). No row means the default for the deployment."""
+
+    name = models.CharField(max_length=40, unique=True)
+    stage = models.CharField(max_length=10, default="off")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.name}: {self.stage}"
+
+
+class SocialCohortMember(models.Model):
+    """An account invited to what is released to the `cohort` stage."""
+
+    user = models.OneToOneField(RepbaseUser, on_delete=models.CASCADE, related_name="social_cohort")
+    added_at = models.DateTimeField(auto_now_add=True)
+    note = models.CharField(max_length=200, blank=True, default="")
+
+    def __str__(self):
+        return f"cohort member {self.user_id}"
+
+
+class SocialRolloutEvent(models.Model):
+    """One change of stage: what moved, who moved it, the revisions it was
+    tested at, and what the release gates said at that moment. The record
+    the plan asks for, written by the act and not from memory afterwards."""
+
+    flag = models.CharField(max_length=40)
+    from_stage = models.CharField(max_length=10)
+    to_stage = models.CharField(max_length=10)
+    changed_by = models.CharField(max_length=150, blank=True, default="")
+    backend_revision = models.CharField(max_length=64, blank=True, default="")
+    client_build = models.CharField(max_length=64, blank=True, default="")
+    #: Widened although a gate was failing.
+    forced = models.BooleanField(default=False)
+    gates = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+
+    def __str__(self):
+        return f"{self.flag}: {self.from_stage} -> {self.to_stage}"
+
+
 class PostComment(models.Model):
     """A reply on a post, or on another reply.
 

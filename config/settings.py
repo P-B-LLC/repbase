@@ -86,6 +86,10 @@ FEED_STATS_STALE_SECONDS = int(os.getenv('FEED_STATS_STALE_SECONDS', str(6 * 60 
 # which are the people already trusted with this data; set it to a pager or
 # shared address when that is not the same thing.
 ANALYTICS_ALERT_EMAILS = os.getenv('ANALYTICS_ALERT_EMAILS', '')
+# The stage a part of the new Social is at when nobody has set one
+# (core.rollout): off, staff, cohort or everyone. Everything in development,
+# nothing in production until `social_rollout set` releases it.
+SOCIAL_ROLLOUT_DEFAULT = os.getenv('SOCIAL_ROLLOUT_DEFAULT', 'everyone' if DEBUG else 'off')
 # A shorter retention for viewing history and "not interested" than the 90
 # days the ranking reads back. Empty keeps 90; a larger number is ignored.
 RECOMMENDATION_HISTORY_DAYS = int(os.getenv('RECOMMENDATION_HISTORY_DAYS') or 0) or None

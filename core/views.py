@@ -48,6 +48,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
+from . import rollout
 from . import food_sources
 from .post_publication import publication_media, PublicationMediaError, remove_profile_photo
 from .moderation import CONSENT_HEADER_NAME, check_public_content
@@ -4897,6 +4898,12 @@ class PostViewSet(AttachmentDetailMixin, ThrottleByActionMixin, OwnedViewSetMixi
             "language": payload.validated_data.get("language", ""),
             "topics": payload.validated_data.get("topics", []),
         }
+        # Released a part at a time (`core.rollout`). Refused in the words of
+        # a field error, so an app that offered the button says why.
+        if payload.validated_data.get("source_post_id") is not None and not rollout.enabled("takes", author):
+            raise ValidationError({"source_post_id": "Takes are not available on this account yet."})
+        if payload.validated_data.get("sound_id") is not None and not rollout.enabled("sounds", author):
+            raise ValidationError({"sound_id": "Sounds are not available on this account yet."})
         if payload.validated_data.get("source_post_id") is not None:
             publication.update(lineage_from(
                 take_source_for(author, payload.validated_data["source_post_id"])

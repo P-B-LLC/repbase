@@ -17,6 +17,7 @@ from rest_framework import serializers
 
 from drf_spectacular.utils import extend_schema_field
 
+from . import rollout
 from . import models as core_models
 from .activities import (
     ACTIVITIES,
@@ -4397,6 +4398,8 @@ class PostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
         target = post.repost_of or post
         if viewer is None or target.kind not in TAKE_KINDS:
             return False
+        if not rollout.enabled("takes", viewer):
+            return False
         if post.repost_of_id is not None and target.pk not in self._visible_repost_targets():
             return False
         if (
@@ -4451,6 +4454,23 @@ class ForYouPostSerializer(PostSerializer):
     def get_recommendation(self, post):
         reason, label = getattr(post, "_recommendation", ("fresh", "New in the community"))
         return {"reason": reason, "label": label}
+
+
+class SocialFeaturesSerializer(serializers.Serializer):
+    """Which parts of the new Social are on for the account (`core.rollout`).
+    Every one may be missing from an older server, and missing means off."""
+
+    new_feed = serializers.BooleanField(read_only=True)
+    autoplay = serializers.BooleanField(read_only=True)
+    measurement_v2 = serializers.BooleanField(read_only=True)
+    measured_ranking = serializers.BooleanField(read_only=True)
+    sounds = serializers.BooleanField(read_only=True)
+    takes = serializers.BooleanField(read_only=True)
+    ranked_for_you = serializers.BooleanField(read_only=True)
+
+    optional_response_fields = frozenset([
+        "new_feed", "autoplay", "measurement_v2", "measured_ranking", "sounds", "takes", "ranked_for_you",
+    ])
 
 
 class ForYouPageSerializer(serializers.Serializer):

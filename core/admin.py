@@ -32,6 +32,9 @@ from .models import (
     Exercise,
     Post,
     PostVideo,
+    SocialCohortMember,
+    SocialFlag,
+    SocialRolloutEvent,
     Sound,
     PostComment,
     CommentReport,
@@ -492,4 +495,41 @@ class BlockAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SocialFlag)
+class SocialFlagAdmin(admin.ModelAdmin):
+    """Read here, changed with `manage.py social_rollout set`, which checks
+    the release gates and records the change. An edit here would do neither."""
+
+    list_display = ("name", "stage", "updated_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SocialCohortMember)
+class SocialCohortMemberAdmin(admin.ModelAdmin):
+    list_display = ("user", "added_at", "note")
+    raw_id_fields = ("user",)
+
+
+@admin.register(SocialRolloutEvent)
+class SocialRolloutEventAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "flag", "from_stage", "to_stage", "forced", "backend_revision", "client_build")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False

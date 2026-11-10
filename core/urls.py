@@ -13,6 +13,7 @@ from .for_you import (
     ForYouPreferencesView,
     ForYouView,
     ImpressionsView,
+    SocialFeaturesView,
     SuggestedPeopleView,
     SuggestionDismissalView,
 )
@@ -129,6 +130,7 @@ urlpatterns = [
     ),
     path("social/for-you/", ForYouView.as_view(), name="for-you"),
     path("social/impressions/", ImpressionsView.as_view(), name="impressions"),
+    path("social/features/", SocialFeaturesView.as_view(), name="social-features"),
     path(
         "social/for-you/preferences/",
         ForYouPreferencesView.as_view(),
