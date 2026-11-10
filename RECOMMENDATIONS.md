@@ -924,3 +924,56 @@ sounds exist:
   on its author's profile. This is eligibility, not a penalty: no score brings
   it back.
 
+
+## The learned ranker after the beta (Milestone 9)
+
+The rules stay the control and the small learned model stays behind its gate.
+What changed is what a model may learn from and what it has to answer for.
+None of this has been run on real data: it needs a beta sending measured
+attention first.
+
+**What is recorded when a post is served.** Beside its features, each sampled
+For You exposure records how it came to be served (`PostView.served`): the
+feature version, the experiment arm or release, the active model, the
+position, the candidate sources, whether it was an exploration slot, and the
+post's format. It is written when the page is made, before any outcome, kept
+for 14 days and cleared with the sample.
+
+**Two kinds of label, never mixed.** `legacy` reads the furthest position a
+player reached and time on screen. `measured` reads what the device measured,
+and tells apart satisfied viewing or reading, a save, conversation that still
+stands, approval, explicit rejection, and a scroll past. A measured exposure
+is left out when the post was never properly on screen and the reader said
+nothing, or when its clip failed to play: neither is a "no". Rows from an app
+that does not measure, or from another feature version, are not read at all.
+
+`FOR_YOU_RANKER_LABELS=measured` (or `train_ranking_model --labels measured`)
+switches. Leave it on `legacy` until `/insights/social/` shows measured
+exposures arriving in volume.
+
+**How a measured model is judged.** It trains on the earlier three quarters
+of the period and is tested on held-out readers in the last quarter: people
+it has not seen, at a time it has not seen. On top of the existing gate (enough
+data, and a held-out AUC at least 0.01 better than the rules) it must:
+
+- have at least 50 decided held-out exposures in every format that is a tenth
+  or more of the page, and not order any such format worse than the rules;
+- show at least 95% as many creators in its top fifth as the rules do;
+- keep at least 95% of the rules' saves and satisfied views there;
+- not be turned down there more than half a point more often.
+
+A better prediction score that fails any of these is saved, reported with the
+reason, and not made active. The previous model, or none, stays.
+
+**Experiments.** `feed_report` compares each arm with one named `control` by
+the share of *readers* who engaged, since the reader is what was assigned. It
+says `significant` or `no difference found` only when both arms have the
+readers needed to detect a 10% lift; otherwise it says `directional` and
+quotes no p-value. At a 20% base rate that is about 6,500 readers an arm, so a
+small beta will read `directional`: use it beside interviews, not as a result.
+
+**Not done.** Position bias is handled as before (position is a training
+feature, held at its average when serving), not with a propensity model.
+Format and clip length are accounted for in the labels and in the judgement,
+not as model inputs. There is no automatic check of serving latency in the
+gate; the model is two dot products over nineteen numbers.

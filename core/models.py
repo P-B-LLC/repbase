@@ -4184,6 +4184,12 @@ class PostView(models.Model):
     #: deleted with the row, so it lives no longer than the viewing history
     #: it belongs to.
     features = models.JSONField(null=True, blank=True, default=None)
+    #: How it came to be served, written with `features` and before anything
+    #: the reader did with it: the feature version, which ranking and model
+    #: served it, where on the page, from which candidate sources, whether
+    #: it was an exploration slot, and its format. Kept and cleared with
+    #: `features`. See `core.ranking_model.serving_context`.
+    served = models.JSONField(null=True, blank=True, default=None)
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(default=timezone.now)
 

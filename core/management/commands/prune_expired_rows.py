@@ -91,7 +91,7 @@ def _delete(rows):
 
 
 def _forget_sample(rows):
-    return rows.update(features=None)
+    return rows.update(features=None, served=None)
 
 
 class Command(BaseCommand):

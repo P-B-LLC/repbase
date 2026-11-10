@@ -81,7 +81,7 @@ def record_summaries(viewer, batch_id, session_id, events, now=None):
     """
     from . import social_insights
     from .ranking_model import sampled
-    from .recommendations import served_features, served_reasons
+    from .recommendations import served_context, served_features, served_reasons
     from .views import visible_posts_for
 
     now = now or timezone.now()
@@ -120,14 +120,16 @@ def record_summaries(viewer, batch_id, session_id, events, now=None):
         # locks in the same order and cannot wait on each other.
         visible = sorted(merged)
         if visible:
-            reasons, features = {}, {}
+            reasons, features, contexts = {}, {}, {}
             if any(merged[pk]["surface"] == PostView.Surface.FOR_YOU for pk in visible):
                 reasons, features = served_reasons(viewer), served_features(viewer)
+                contexts = served_context(viewer)
             for pk in visible:
                 entry = merged[pk]
                 for_you = entry["surface"] == PostView.Surface.FOR_YOU
                 entry["reason"] = reasons.get(pk, "") if for_you else ""
                 entry["features"] = sampled(viewer.pk, pk, features.get(pk)) if for_you else None
+                entry["served"] = contexts.get(pk) if entry["features"] is not None else None
                 entry["rewatch_cap"] = REWATCH_CAP_TIMES * facts[pk][1] if facts[pk][0] else None
             _upsert(viewer, [(pk, merged[pk]) for pk in visible], now)
         receipt.recorded = len(visible)
@@ -218,7 +220,7 @@ def _upsert(viewer, entries, now):
     table = q(PostView._meta.db_table)
     columns = [
         "viewer_id", "post_id", "view_count", "total_dwell_ms", "max_watch_ms", "completed",
-        "skipped", "surface", "reason", "features", "first_seen_at", "last_seen_at",
+        "skipped", "surface", "reason", "features", "served", "first_seen_at", "last_seen_at",
         "qualified_views", "active_dwell_ms", "playback_ms", "coverage_ms", "rewatch_ms",
         "watched_through", "attachment_opens", "attachment_read_ms", "playback_failures",
         "last_observed_at", "last_observed_key",
@@ -241,6 +243,8 @@ def _upsert(viewer, entries, now):
             entry["skipped"], str(entry["surface"]), str(entry.get("reason") or ""),
             None if entry.get("features") is None
             else features_field.get_db_prep_value(entry["features"], connection),
+            None if entry.get("served") is None
+            else features_field.get_db_prep_value(entry["served"], connection),
             stamp, stamp,
             entry["qualified"], entry["active"], entry["playback"], entry["coverage"], rewatch,
             entry["through"], entry["opens"], entry["read"], entry["failures"],
@@ -279,6 +283,8 @@ def _upsert(viewer, entries, now):
             summed("view_count"), summed("total_dwell_ms"), greatest("max_watch_ms"),
             f"completed = ({table}.completed OR excluded.completed)",
             f"skipped = CASE WHEN {newer} THEN excluded.skipped ELSE {table}.skipped END",
+            # Before `features`: every right-hand side sees the row as it was.
+            f"served = CASE WHEN {table}.{q('features')} IS NULL THEN excluded.served ELSE {table}.served END",
             f"features = COALESCE({table}.{q('features')}, excluded.{q('features')})",
             greatest("last_seen_at"),
             summed("qualified_views"), summed("active_dwell_ms"), summed_nullable("playback_ms"),

@@ -109,7 +109,7 @@ from .feed_integrity import (
     recently_moderated_authors,
     trust_by_id,
 )
-from .ranking_model import active_model, feature_row, sampled
+from .ranking_model import active_model, feature_row, sampled, serving_context
 from .ranking_model import value as ranking_value
 from .models import (
     Block,
@@ -2501,7 +2501,7 @@ def read_cursor(value):
     return session, offset
 
 
-def _extend(session, found, profile, weights, now, need, viewer=None):
+def _extend(session, found, profile, weights, now, need, viewer=None, variant=None):
     """Score what is left, rank the next `need` posts, and keep the rest.
     What the ranking knew about each post it serves is remembered for the
     impression that follows (`remember_features`)."""
@@ -2516,6 +2516,14 @@ def _extend(session, found, profile, weights, now, need, viewer=None):
         remember_features(viewer, {
             item.pk: feature_row(
                 by_pk[item.pk].raw, discovery=item.reason == "discovery", position=len(session.served) + index,
+            )
+            for index, item in enumerate(chosen)
+        })
+        remember_context(viewer, {
+            item.pk: serving_context(
+                algorithm=variant, model_id=model["id"] if model else None,
+                position=len(session.served) + index, sources=by_pk[item.pk].sources,
+                exploration=item.reason == "discovery", post_format=by_pk[item.pk].format,
             )
             for index, item in enumerate(chosen)
         })
@@ -2561,7 +2569,7 @@ def serve_page(viewer, session_id=None, offset=0, size=20, now=None, seed=None):
         session.similar = {
             item.pk: (item.similar, item.similar_voters) for item in found if item.similar
         }
-        ranked = _extend(session, found, profile, weights, now, size, viewer)
+        ranked = _extend(session, found, profile, weights, now, size, viewer, variant)
         _log_ranking("first", started, viewer, ranked, len(found), profile, variant)
     else:
         offset = min(offset, len(session.served))
@@ -2571,7 +2579,7 @@ def serve_page(viewer, session_id=None, offset=0, size=20, now=None, seed=None):
             profile = build_profile(viewer, weights, now)
             similar = {pk: Similar(*value) for pk, value in session.similar.items()}
             found = candidates_by_id(viewer, profile, session.pool, similar, now)
-            ranked = _extend(session, found, profile, weights, now, need, viewer)
+            ranked = _extend(session, found, profile, weights, now, need, viewer, variant)
             _log_ranking("next", started, viewer, ranked, len(found), profile, variant)
     if ranked is not None:
         _save_session(viewer, session_id, session)
@@ -2651,8 +2659,31 @@ def served_features(viewer):
     return cache.get(_features_key(viewer.pk)) or {}
 
 
+def _context_key(viewer_id):
+    return _reader_key("context", viewer_id)
+
+
+def remember_context(viewer, rows):
+    """{post id: how it came to be served}, kept beside the features and by
+    the same rule: the latest serving before the impression is the one
+    recorded."""
+    if not rows:
+        return
+    known = cache.get(_context_key(viewer.pk)) or {}
+    for pk, row in rows.items():
+        known.pop(pk, None)
+        known[pk] = row
+    if len(known) > SERVED_MEMORY:
+        known = dict(list(known.items())[-SERVED_MEMORY:])
+    cache.set(_context_key(viewer.pk), known, SERVED_TTL_SECONDS)
+
+
+def served_context(viewer):
+    return cache.get(_context_key(viewer.pk)) or {}
+
+
 def forget_reasons(viewer):
-    cache.delete_many([_served_key(viewer.pk), _features_key(viewer.pk)])
+    cache.delete_many([_served_key(viewer.pk), _features_key(viewer.pk), _context_key(viewer.pk)])
 
 
 # ---------------------------------------------------------------- monitoring
@@ -2765,15 +2796,19 @@ def record_impressions(viewer, events, now=None):
         elif entry["watch"] is not None and duration:
             entry["watch"] = min(entry["watch"], duration)
     if visible:
-        reasons, features = {}, {}
+        reasons, features, contexts = {}, {}, {}
         if any(merged[post_id]["surface"] == PostView.Surface.FOR_YOU for post_id in visible):
             reasons = served_reasons(viewer)
             features = served_features(viewer)
+            contexts = served_context(viewer)
         for post_id in visible:
             entry = merged[post_id]
             for_you = entry["surface"] == PostView.Surface.FOR_YOU
             entry["reason"] = reasons.get(post_id, "") if for_you else ""
             entry["features"] = sampled(viewer.pk, post_id, features.get(post_id)) if for_you else None
+            # With its sample or not at all: a context nobody can train on
+            # is only a record of where something was shown.
+            entry["served"] = contexts.get(post_id) if entry["features"] is not None else None
         _upsert_views(viewer, [(post_id, merged[post_id]) for post_id in visible], now)
     return len(visible)
 
@@ -2796,7 +2831,7 @@ def _upsert_views(viewer, entries, now):
     table = ops.quote_name(PostView._meta.db_table)
     columns = [
         "viewer_id", "post_id", "view_count", "total_dwell_ms", "max_watch_ms",
-        "completed", "skipped", "surface", "reason", "features", "first_seen_at", "last_seen_at",
+        "completed", "skipped", "surface", "reason", "features", "served", "first_seen_at", "last_seen_at",
     ]
     features_field = PostView._meta.get_field("features")
     first_seen = ops.adapt_datetimefield_value(timezone.now())
@@ -2826,6 +2861,8 @@ def _upsert_views(viewer, entries, now):
             # recording what it knew.
             None if entry.get("features") is None
             else features_field.get_db_prep_value(entry["features"], connection),
+            None if entry.get("served") is None
+            else features_field.get_db_prep_value(entry["served"], connection),
             first_seen,
             last_seen,
         ]
@@ -2847,6 +2884,10 @@ def _upsert_views(viewer, entries, now):
         # The first impression that recorded what the ranking knew is the
         # one learned from.
         f"features = COALESCE({table}.{ops.quote_name('features')}, excluded.{ops.quote_name('features')}), "
+        # Together with its features, or not at all: a row that already has
+        # features keeps the context it was given with them.
+        f"served = CASE WHEN {table}.{ops.quote_name('features')} IS NULL "
+        f"THEN excluded.served ELSE {table}.served END, "
         f"last_seen_at = excluded.last_seen_at"
     )
     with connection.cursor() as cursor:
