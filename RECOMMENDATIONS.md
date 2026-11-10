@@ -888,3 +888,39 @@ this".
   server; the client does not send it.
 - Ask for the first page without a cursor on open and on pull to refresh, and
   follow `next` as the reader nears the end of what is loaded.
+
+## Measured attention, tags, sounds and formats (Social Milestone 5)
+
+Everything in this section is off unless a weight turns it on, so the ranking
+described above is the control. `core.recommendations.MEASURED_VARIANT` is all
+of it at its starting values, ready to be one arm of `FOR_YOU_EXPERIMENT`:
+
+```python
+FOR_YOU_EXPERIMENT = {
+    "name": "measured-2026-12",
+    "variants": {"control": {}, "measured": MEASURED_VARIANT},
+}
+```
+
+These are starting values to test, not findings.
+
+| Weight | What it turns on |
+| ----- | ----- |
+| `measured` | A viewing is read from what the device measured, where a row has it: `qualified_completion` (+1.0, natural end and nine tenths covered), half the clip covered (`half_watch`), `genuine_rewatch` (up to +1.0, saturating at once more through), `satisfied_read` (+0.5, once per post with no clip), `attachment_read` (+0.75, three seconds or more in the workout or recipe). A seek to the end is none of these. Rows from older apps are read as before. |
+| `tag` | A post's first three hashtags and its declared topics, matched against those on posts the reader engaged with. The best match, not a sum, and never more than 0.6 of the weight: a stuffed caption buys nothing. |
+| `sound` | The same for the sound a clip is set to, at half the weight of a tag. |
+| `format_prior` | Engagement per view is measured against what posts of the same format usually get (`format_baselines`: kind, and clip or not), so a gym clip is not marked down for having no recipe to save. Baselines are smoothed toward the general rate and kept between 0.02 and 0.5. |
+| `candidate_cap` | One cap on the candidates a ranking considers, shared by `CANDIDATE_SHARES`: of 500, interests 160, followed creators 100, fresh 100, similar taste 60, discovery 60, the reader's own 20. Tag and sound matches join the interest source. Unused room goes to fresh posts. |
+
+Three things are on for everybody, because they do nothing until takes and
+sounds exist:
+
+- posting a take counts as the strongest signal about the post answered
+  (`take`, +4.0);
+- a page is not filled with one family of takes or one sound
+  (`family_repeat`, `sound_repeat`): a soft cost per recent appearance, so a
+  small inventory still fills the page;
+- a post set to a sound that has been taken down is not recommended. It stays
+  on its author's profile. This is eligibility, not a penalty: no score brings
+  it back.
+

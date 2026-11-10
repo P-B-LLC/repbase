@@ -1,3 +1,38 @@
+# Social Milestone 5: Ranking Reads Measured Attention
+
+**Status:** Done on `feature/social-m5-ranking` (stacked on Milestone 3), awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / For You ranking
+
+## Why
+
+The ranking already had the five stages the plan asks for. What it lacked was the new
+evidence: measured watching and reading, hashtags, sounds, formats and take families.
+
+## What Was Changed
+
+- Measured viewing signals, tag and sound relevance, format baselines and a shared
+  candidate cap, each behind a weight that is 0 by default. `MEASURED_VARIANT` turns
+  them on together as one experiment arm. See `RECOMMENDATIONS.md`.
+- A take counts as a strong signal; a page is not filled by one take family or one
+  sound; a post on a removed sound is not eligible.
+- No schema change.
+
+## Verification
+
+31 tests in `core/test_measured_ranking.py`. With every new weight at 0 the existing
+ranking tests, including the simulated community, pass unchanged.
+
+## Needs To Be Changed / Improved
+
+- Nothing here has been run as an experiment. The weights are the plan's starting
+  values and have not been evaluated on real readers.
+- Shared quality figures (`watch`, completions) still come from the legacy columns;
+  moving them needs new columns on `PostEngagementStats`.
+- The learned model's features are unchanged, so it does not see the new parts.
+
+---
+
 # Social Milestone 3: Measured Attention, Safe to Send Twice
 
 **Status:** Done on `feature/social-m3-attention` (stacked on Milestone 2), awaiting review; not deployed
