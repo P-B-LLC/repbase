@@ -41,7 +41,7 @@ List responses are paginated with `count`, `next`, `previous`, and `results` fie
 - `/api/v1/social/posts/` — posts the reader may see; create one from your own session, meal or planner entry, or a photo or video post (`kind: media`, no `source_id`) that is a picture or a clip and a caption. A clip-only media post sends `expects_video: true` and is visible to its author alone until the clip is ready and approved
 - `/api/v1/social/feed/` — the people you follow, newest first (cursor paging)
 - `/api/v1/social/for-you/` — posts picked for you from everyone, each with a `recommendation` saying why (cursor paging)
-- `POST /api/v1/social/impressions/` — what was on screen and for how long, in batches of up to 50
+- `POST /api/v1/social/impressions/` — what was on screen and for how long, in batches of up to 50. With `schema_version: 2` each event is one exposure measured on the device, the batch carries a `batch_id`, and sending it again adds nothing (`duplicate: true`). Figures past what could have happened are brought down to it; a body over 64 kB is a 413. See `core/attention.py`
 - `POST`/`DELETE /api/v1/social/posts/{id}/not-interested/` — dismiss a post from For You, or undo it
 - `GET`/`PATCH /api/v1/social/for-you/preferences/` — what For You has picked up about you, the topics you hid, and whether it is personalised at all
 - `DELETE /api/v1/social/for-you/history/` — start For You fresh: past activity stops counting and viewing history is deleted

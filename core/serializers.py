@@ -4449,17 +4449,88 @@ class ImpressionSerializer(serializers.Serializer):
         choices=PostView.Surface.choices, default=PostView.Surface.OTHER
     )
 
+    # ---- Schema version 2: one summary of one exposure, measured on the
+    # device. All optional here so a version 1 body is still valid; the batch
+    # requires `sequence` and `observed_at` of every event when it says 2.
+    # In a version 2 batch `dwell_ms` is the whole time on the card, and
+    # `watch_ms` is ignored: it is the furthest position a player reached,
+    # which is not a measurement of watching. See core.attention for what
+    # each figure is bounded by.
+
+    #: This exposure's number within the session, counting up.
+    sequence = serializers.IntegerField(min_value=0, max_value=2_000_000_000, required=False)
+    #: When the exposure ended, by the device's clock.
+    observed_at = serializers.DateTimeField(required=False)
+    #: Time visible in the foreground with nothing covering the card.
+    active_dwell_ms = serializers.IntegerField(
+        min_value=0, max_value=10 * 60 * 1000, required=False, default=0
+    )
+    #: Time the clip was actually playing. Null when the post has no clip.
+    playback_ms = serializers.IntegerField(
+        min_value=0, max_value=10 * 60 * 1000, required=False, allow_null=True, default=None
+    )
+    #: How much of the clip was played, counting each part once.
+    coverage_ms = serializers.IntegerField(
+        min_value=0, max_value=60 * 60 * 1000, required=False, allow_null=True, default=None
+    )
+    #: Time spent playing parts already played in this exposure.
+    rewatch_ms = serializers.IntegerField(
+        min_value=0, max_value=10 * 60 * 1000, required=False, allow_null=True, default=None
+    )
+    #: The clip could not start, or stalled until the reader left.
+    playback_failed = serializers.BooleanField(required=False, default=False)
+    #: The workout or recipe sheet was opened during this exposure.
+    attachment_opened = serializers.BooleanField(required=False, default=False)
+    attachment_read_ms = serializers.IntegerField(
+        min_value=0, max_value=10 * 60 * 1000, required=False, default=0
+    )
+
 
 class ImpressionBatchSerializer(serializers.Serializer):
     #: Fifty at most, which is more than two pages of a feed. A client sends
     #: these as it goes, not as one upload at the end of a session.
     events = ImpressionSerializer(many=True, allow_empty=False, max_length=50)
+    #: 1, or absent: what apps have always sent. 2: measured summaries, which
+    #: need the two ids below. A plain integer, so a later version is a value
+    #: this server refuses by name rather than a body it cannot parse.
+    schema_version = serializers.IntegerField(required=False, default=1)
+    #: Random, made by the device for this batch and sent again unchanged if
+    #: the batch is retried. A batch already recorded is not recorded twice.
+    batch_id = serializers.UUIDField(required=False)
+    #: Random, made by the device for this account's session. Never an
+    #: identity: who is reporting comes from the token, always.
+    session_id = serializers.UUIDField(required=False)
+
+    def validate_schema_version(self, value):
+        if value not in (1, 2):
+            raise serializers.ValidationError("This server reads schema versions 1 and 2.")
+        return value
+
+    def validate(self, attrs):
+        if attrs["schema_version"] == 2:
+            missing = {
+                name: "Required with schema_version 2."
+                for name in ("batch_id", "session_id") if attrs.get(name) is None
+            }
+            if missing:
+                raise serializers.ValidationError(missing)
+            for event in attrs["events"]:
+                if event.get("sequence") is None or event.get("observed_at") is None:
+                    raise serializers.ValidationError(
+                        {"events": "Every event needs sequence and observed_at with schema_version 2."}
+                    )
+        return attrs
 
 
 class ImpressionResultSerializer(serializers.Serializer):
     #: How many of the posts named were recorded. Posts the reader cannot
     #: see, and their own, are left out without complaint.
     recorded = serializers.IntegerField(read_only=True)
+    #: True when this batch had been recorded before and nothing was added.
+    duplicate = serializers.BooleanField(read_only=True, default=False)
+
+    #: Added to a response the app already decodes; see core.schema.
+    optional_response_fields = frozenset({"duplicate"})
 
 
 class TopicSerializer(serializers.Serializer):

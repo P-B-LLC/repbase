@@ -22,6 +22,8 @@ from core.models import (
     RECOMMENDATION_HISTORY_DAYS,
     SUGGESTION_DISMISSAL_DAYS,
     FoodSearchCache,
+    IMPRESSION_RECEIPT_DAYS,
+    ImpressionBatchReceipt,
     PostFeedback,
     PostView,
     SaveReceipt,
@@ -35,6 +37,10 @@ def recommendation_history(now):
     return {
         "viewing-history rows": PostView.objects.filter(last_seen_at__lt=history),
         "not-interested rows": PostFeedback.objects.filter(created_at__lt=history),
+        # Past any retry a device will make; see ImpressionBatchReceipt.
+        "impression batch receipts": ImpressionBatchReceipt.objects.filter(
+            received_at__lt=now - timedelta(days=IMPRESSION_RECEIPT_DAYS)
+        ),
         "dismissed suggestions": SuggestionDismissal.objects.filter(
             created_at__lt=now - timedelta(days=SUGGESTION_DISMISSAL_DAYS)
         ),

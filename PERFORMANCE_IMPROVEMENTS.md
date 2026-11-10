@@ -1,3 +1,44 @@
+# Social Milestone 3: Measured Attention, Safe to Send Twice
+
+**Status:** Done on `feature/social-m3-attention` (stacked on Milestone 2), awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / impression ingestion; iOS / on-device measurement
+
+## Why
+
+The player reported the furthest position it reached, so seeking forward read as
+watching. Batches were also dropped on any failure and could not be retried safely.
+
+## What Was Changed
+
+- **Schema version 2 on `POST /social/impressions/`** (`core/attention.py`): one
+  summary per exposure, with active dwell, playback time, unique coverage, rewatch,
+  attachment reading and playback failure. Every figure is bounded by something the
+  server knows; a figure over its bound is lowered, not refused.
+- **`ImpressionBatchReceipt`** (migration 0091), written in the transaction that adds
+  the batch. A retried batch adds nothing. Receipts are per account and kept 7 days.
+- **Ordering**: totals are sums and coverage a maximum; `skipped` belongs to the
+  exposure observed last, by device time then session and sequence.
+- **Legacy kept apart**: version 1 bodies write only the old columns, as before.
+  Version 2 also feeds those columns their honest equivalents, so the ranking in use
+  keeps working.
+- A 64 kB request limit, and timestamps bounded to 48 hours back and 5 minutes ahead.
+
+## Verification
+
+37 tests in `core/test_attention.py` cover duplicate, reordered, interrupted and
+malicious batches, including four simultaneous deliveries of one batch on PostgreSQL.
+A batch of 38 posts runs the same number of statements as a batch of one.
+1,757 backend tests pass on SQLite and PostgreSQL 16.
+
+## Needs To Be Changed / Improved
+
+- The ranker still reads only the legacy columns. Using the new ones is Milestone 5.
+- Device measurements are tested with a simulated clock only; they have not been
+  checked against known-duration playback on a simulator or an iPhone.
+
+---
+
 # Social Milestone 2: Publication Data and the Post Contract
 
 **Status:** Done on `feature/social-m2-publication-contract` (stacked on Milestone 1), awaiting review; not deployed

@@ -18,6 +18,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .attention import MAX_BODY_BYTES, record_summaries
 from .models import Post, PostFeedback, PostVideo, PostView, RecommendationPreferences, RepbaseUser, SuggestionDismissal
 from .recommendations import (
     HIDEABLE_TOPICS,
@@ -202,15 +203,39 @@ class ImpressionsView(APIView):
         description=(
             "Record a batch of views. Posts the reader cannot see, and their "
             "own posts, are ignored rather than refused, so a client does not "
-            "need to know which of the posts it showed have since gone."
+            "need to know which of the posts it showed have since gone.\n\n"
+            "With `schema_version` 2 each event is a summary of one exposure "
+            "measured on the device, and the batch carries a `batch_id`: "
+            "sending the same batch again adds nothing and answers with "
+            "`duplicate` true. Figures beyond what could have happened are "
+            "brought down to it, not refused. A body over 64 kB is a 413."
         ),
     )
     def post(self, request):
+        # Before the body is parsed: fifty summaries are a few kilobytes, and
+        # nothing larger is one of these.
+        try:
+            declared = int(request.META.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            declared = 0
+        if declared > MAX_BODY_BYTES or (not declared and len(request.body) > MAX_BODY_BYTES):
+            return Response(
+                {"detail": "That batch is too large. Send at most 50 events."},
+                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
         body = ImpressionBatchSerializer(data=request.data)
         body.is_valid(raise_exception=True)
-        recorded = record_impressions(profile_for(request.user), body.validated_data["events"])
+        batch = body.validated_data
+        viewer = profile_for(request.user)
+        duplicate = False
+        if batch["schema_version"] == 2:
+            recorded, duplicate = record_summaries(
+                viewer, batch["batch_id"], batch["session_id"], batch["events"]
+            )
+        else:
+            recorded = record_impressions(viewer, batch["events"])
         return Response(
-            ImpressionResultSerializer({"recorded": recorded}).data,
+            ImpressionResultSerializer({"recorded": recorded, "duplicate": duplicate}).data,
             status=status.HTTP_202_ACCEPTED,
         )
 

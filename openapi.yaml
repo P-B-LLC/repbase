@@ -4868,9 +4868,10 @@ paths:
   /api/v1/social/impressions/:
     post:
       operationId: social_impressions_create
-      description: Record a batch of views. Posts the reader cannot see, and their
-        own posts, are ignored rather than refused, so a client does not need to know
-        which of the posts it showed have since gone.
+      description: |-
+        Record a batch of views. Posts the reader cannot see, and their own posts, are ignored rather than refused, so a client does not need to know which of the posts it showed have since gone.
+
+        With `schema_version` 2 each event is a summary of one exposure measured on the device, and the batch carries a `batch_id`: sending the same batch again adds nothing and answers with `duplicate` true. Figures beyond what could have happened are brought down to it, not refused. A body over 64 kB is a 413.
       tags:
       - social
       requestBody:
@@ -8081,6 +8082,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ImpressionRequest'
+        schema_version:
+          type: integer
+          default: 1
+        batch_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
       required:
       - events
     ImpressionRequest:
@@ -8113,6 +8123,44 @@ components:
           allOf:
           - $ref: '#/components/schemas/SurfaceEnum'
           default: other
+        sequence:
+          type: integer
+          maximum: 2000000000
+          minimum: 0
+        observed_at:
+          type: string
+          format: date-time
+        active_dwell_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          default: 0
+        playback_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          nullable: true
+        coverage_ms:
+          type: integer
+          maximum: 3600000
+          minimum: 0
+          nullable: true
+        rewatch_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          nullable: true
+        playback_failed:
+          type: boolean
+          default: false
+        attachment_opened:
+          type: boolean
+          default: false
+        attachment_read_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          default: 0
       required:
       - post
     ImpressionResult:
@@ -8121,6 +8169,10 @@ components:
         recorded:
           type: integer
           readOnly: true
+        duplicate:
+          type: boolean
+          readOnly: true
+          default: false
       required:
       - recorded
     InitialWorkoutExercise:

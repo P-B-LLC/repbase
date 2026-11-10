@@ -4078,6 +4078,44 @@ class PostView(models.Model):
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(default=timezone.now)
 
+    # ---- Measured attention (summaries, schema version 2; `core.attention`).
+    #
+    # Kept apart from `max_watch_ms` and `completed` above, which are what a
+    # version 1 client reports: the furthest position its player reached,
+    # which seeking forward reaches without anything being watched. Nothing
+    # a version 1 client sends is ever written to the columns below, so the
+    # two kinds of evidence are never added together.
+    #
+    # Null means the measurement does not apply -- a photo has no playback --
+    # which is a different thing from a clip nobody played.
+
+    #: Exposures of at least a second: an impression that counts.
+    qualified_views = models.PositiveIntegerField(default=0, db_default=0)
+    #: Time on screen in the foreground with nothing covering the card.
+    active_dwell_ms = models.PositiveBigIntegerField(default=0, db_default=0)
+    #: Time the clip was actually playing, summed. Not buffering or paused.
+    playback_ms = models.PositiveBigIntegerField(null=True, blank=True)
+    #: The most of the clip actually played in one exposure, as the length
+    #: of the union of the intervals played. Seeking adds nothing to it.
+    coverage_ms = models.PositiveIntegerField(null=True, blank=True)
+    #: Time spent playing parts already played, summed, and capped at three
+    #: times the clip so a loop left running cannot grow it without end.
+    rewatch_ms = models.PositiveBigIntegerField(null=True, blank=True)
+    #: Played to its natural end with at least nine tenths of it covered.
+    watched_through = models.BooleanField(default=False, db_default=False)
+    #: The workout or recipe sheet: how often opened, and time spent in it.
+    attachment_opens = models.PositiveIntegerField(default=0, db_default=0)
+    attachment_read_ms = models.PositiveBigIntegerField(default=0, db_default=0)
+    #: Exposures whose clip failed to start or stalled out. Counted so a
+    #: broken player is never read as a reader's dislike.
+    playback_failures = models.PositiveIntegerField(default=0, db_default=0)
+    #: When the latest exposure recorded here ended, by the device's report
+    #: (bounded on arrival), and which exposure it was. `skipped` belongs to
+    #: that exposure: a batch delayed on a train does not overwrite what the
+    #: reader did after it.
+    last_observed_at = models.DateTimeField(null=True, blank=True)
+    last_observed_key = models.CharField(max_length=48, blank=True, default="", db_default="")
+
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=("viewer", "post"), name="one_view_row_per_pair")
@@ -4089,6 +4127,35 @@ class PostView(models.Model):
 
     def __str__(self):
         return f"{self.viewer_id} viewed post {self.post_id}"
+
+
+class ImpressionBatchReceipt(models.Model):
+    """One batch of attention summaries that has been added to PostView.
+
+    Written in the transaction that adds the batch, so a batch sent again --
+    the answer was lost, the app was killed mid-flush -- finds this row and
+    adds nothing a second time. Kept for a week, well past the 24 hours a
+    device holds a batch for retry (`prune_expired_rows`).
+    """
+
+    viewer = models.ForeignKey(
+        RepbaseUser, on_delete=models.CASCADE, related_name="impression_receipts"
+    )
+    batch_id = models.UUIDField()
+    #: What the first delivery answered, so a retry answers the same.
+    recorded = models.PositiveSmallIntegerField(default=0)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            # Per account: an id is random on the device, and one account
+            # must not be able to spend another's.
+            models.UniqueConstraint(fields=("viewer", "batch_id"), name="one_receipt_per_batch")
+        ]
+
+
+#: How long a receipt is kept. Twice the retry window with room to spare.
+IMPRESSION_RECEIPT_DAYS = 7
 
 
 class PostFeedback(models.Model):
