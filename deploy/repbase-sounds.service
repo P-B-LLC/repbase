@@ -1,0 +1,31 @@
+[Unit]
+Description=Rytivo sound audio preparation batch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=django
+Group=rytivo-media
+UMask=0027
+WorkingDirectory=/home/django/app
+EnvironmentFile=/etc/repbase.env
+ExecStart=/home/django/app/.venv/bin/python manage.py prepare_sounds --limit 5
+TimeoutStartSec=900
+# Its own limits, apart from the video worker's and the web processes':
+# extracting audio must never take CPU from somebody logging a set.
+Nice=15
+CPUQuota=25%
+MemoryMax=192M
+TasksMax=32
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+# MEDIA_ROOT must be listed here on the host: the prepared audio is written
+# to media storage. The path below is a placeholder until that is confirmed.
+ReadWritePaths=/tmp /var/lib/rytivo/media
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

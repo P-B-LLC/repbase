@@ -143,8 +143,14 @@ def taken_down(name):
     What it cannot do is recall a copy somebody already downloaded. Nothing
     can.
     """
-    from .models import Post, PostVideo
+    from .models import Post, PostVideo, Sound
 
+    if name.startswith('sounds/'):
+        # A sound taken down stops being served, like a clip: the link in
+        # somebody's hands must not outlive the removal.
+        return Sound.objects.filter(audio_key=name).exclude(
+            status=Sound.Status.ACTIVE, owner__user__is_active=True
+        ).exists()
     if name.startswith('post-videos/'):
         # A clip goes with its post, and also on its own: a moderator who
         # rejects a clip has not necessarily hidden the workout it is on.

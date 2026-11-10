@@ -87,6 +87,21 @@ normalised, ten at most), `topics` and `language` (set on create or `PATCH`),
 profile), `attachment_version`, and `sound` (the credit for the sound a clip is
 set to, null once the sound is removed).
 
+### Sounds, take counts and prompts
+
+- `POST /api/v1/social/sounds/` — publish the audio of one of your own posts as a sound (`post`, optional `title` and `reuse_permission`). The post needs an approved video with audio. The audio is extracted by a worker (`manage.py prepare_sounds`); `audio_url` is null until then
+- `GET`/`PATCH`/`DELETE /api/v1/social/sounds/{id}/` — read a sound; rename it or change who may use it; take it down
+- `POST /api/v1/social/sounds/{id}/restore/` — put back a sound you took down (not one a moderator removed)
+- `GET /api/v1/social/sounds/{id}/posts/` — the posts set to a sound that the reader may see, newest first (cursor paging)
+- `GET /api/v1/social/prompts/` — the prompts a post can answer; send a code as `prompt` on create, browse with `?prompt=` on the post list
+
+Taking a sound down is one change: every post set to it keeps its reference
+and loses the credit, the audio stops being served, nobody new can use it, and
+those posts leave For You. Restoring it reverses all of that.
+
+Every post carries `take_count`: the takes of it that anybody could see.
+It is the same number for every reader.
+
 ### Summaries first
 
 The post list, the feed, For You and the takes list accept

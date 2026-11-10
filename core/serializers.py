@@ -63,6 +63,7 @@ from .models import (
     Personalization,
     SavedFoodIngredient,
     SavedFoodMeal,
+    Sound,
     UserDiscipline,
     MAX_PROFILE_SOCIAL_LINKS,
     PlannerEntry,
@@ -3780,7 +3781,15 @@ class PublicationFieldsMixin(serializers.Serializer):
         "attachment_version",
         "audience",
         "reuse_permission",
+        "prompt",
     ]
+
+    #: The prompt the post answers, as its code, or null.
+    prompt = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_prompt(self, post):
+        return post.prompt or None
 
     @extend_schema_field(PostSourceSerializer(allow_null=True))
     def get_source(self, post):
@@ -4113,10 +4122,14 @@ class PostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
     #: button is offered only where it would work. A hint: the create is what
     #: decides, and it asks again.
     viewer_can_take = serializers.SerializerMethodField()
+    #: How many takes of this post anybody could see: published, approved,
+    #: public, by an account in good standing. The same number for every
+    #: reader, so it is a count of responses and not of who the reader knows.
+    take_count = serializers.SerializerMethodField()
 
     #: Added to a response the app already decodes; see core.schema.
     optional_response_fields = frozenset(
-        [*PublicationFieldsMixin.PUBLICATION_FIELDS, "viewer_can_take"]
+        [*PublicationFieldsMixin.PUBLICATION_FIELDS, "viewer_can_take", "take_count"]
     )
 
     class Meta:
@@ -4150,6 +4163,7 @@ class PostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
             "updated_at",
             *PublicationFieldsMixin.PUBLICATION_FIELDS,
             "viewer_can_take",
+            "take_count",
         ]
         read_only_fields = [
             "id",
@@ -4348,6 +4362,12 @@ class PostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
         # it could only load for itself.
         credits_for(self, post)
         return RepostedPostSerializer(original, context=self.context).data
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_take_count(self, post):
+        # Off the annotation. Zero where a post is serialized without it: a
+        # post just created, which nobody can have answered yet.
+        return int(getattr(post, "take_total", 0) or 0)
 
     @extend_schema_field(serializers.BooleanField())
     def get_viewer_can_take(self, post):
@@ -4777,11 +4797,17 @@ class CreatePostSerializer(serializers.Serializer):
     def validate_cooking_instructions(self, value):
         return value.strip()
 
+    #: An optional prompt this post answers, one of `GET /social/prompts/`.
+    prompt = serializers.CharField(max_length=24, required=False, allow_blank=True)
+
     def validate_language(self, value):
         return checked_language(value)
 
     def validate_topics(self, value):
         return checked_post_topics(value)
+
+    def validate_prompt(self, value):
+        return checked_post_prompt(value)
 
     def validate(self, attrs):
         if attrs.get("source_post_id") is not None and attrs["kind"] == Post.Kind.PLANNER:
@@ -4847,6 +4873,104 @@ def checked_post_topics(value):
         raise serializers.ValidationError(str(error)) from None
 
 
+def checked_post_prompt(value):
+    from .publication import checked_prompt
+
+    try:
+        return checked_prompt(value)
+    except ValueError as error:
+        raise serializers.ValidationError(str(error)) from None
+
+
+class PromptSerializer(serializers.Serializer):
+    """A prompt a post can answer, by its code and the words to show."""
+
+    code = serializers.CharField(read_only=True)
+    label = serializers.CharField(read_only=True)
+
+
+class SoundSerializer(serializers.ModelSerializer):
+    """A sound, as anybody who may use or hear it reads it."""
+
+    owner = CreditedPersonSerializer(read_only=True)
+    reuse_permission = serializers.CharField(read_only=True)
+    origin_post_id = serializers.IntegerField(read_only=True, allow_null=True)
+    #: The prepared audio, signed like every other media link. Null until it
+    #: has been extracted, which happens shortly after the sound is made.
+    audio_url = serializers.SerializerMethodField()
+    #: How many posts anybody could see are set to it.
+    use_count = serializers.SerializerMethodField()
+    viewer_is_owner = serializers.SerializerMethodField()
+    viewer_can_use = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Sound
+        fields = [
+            "id", "title", "owner", "duration_ms", "reuse_permission", "origin_post_id",
+            "audio_url", "use_count", "viewer_is_owner", "viewer_can_use", "created_at",
+        ]
+        read_only_fields = fields
+
+    def _viewer(self):
+        return getattr(getattr(self.context.get("request"), "user", None), "repbase_profile", None)
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_audio_url(self, sound):
+        if not sound.audio_key:
+            return None
+        from .media import signed_media_path
+
+        request = self.context.get("request")
+        path = signed_media_path(sound.audio_key)
+        return request.build_absolute_uri(path) if request else path
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_use_count(self, sound):
+        return int(getattr(sound, "use_total", 0) or 0)
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_is_owner(self, sound):
+        viewer = self._viewer()
+        return viewer is not None and sound.owner_id == viewer.pk
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_can_use(self, sound):
+        from .publication import may_reuse
+
+        viewer = self._viewer()
+        if viewer is None:
+            return False
+        return may_reuse(
+            viewer, sound.owner_id, sound.reuse_permission,
+            lambda: sound.owner_id in PublicRepbaseUserSerializer(context=self.context)._followed_profile_ids,
+        )
+
+
+class PublishSoundSerializer(serializers.Serializer):
+    """What an author says when they make a post's audio a sound."""
+
+    title = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    reuse_permission = serializers.ChoiceField(
+        choices=Post.Reuse.choices, required=False, default=Post.Reuse.EVERYONE
+    )
+
+    def validate_title(self, value):
+        value = value.strip()
+        if value:
+            check_public_content({"title": value}, request=self.context.get("request"))
+        return value
+
+
+class CreateSoundSerializer(PublishSoundSerializer):
+    #: The post whose audio it is. One of the author's own.
+    post = serializers.IntegerField(min_value=1, max_value=MAX_ID)
+
+
+class UpdateSoundSerializer(PublishSoundSerializer):
+    title = serializers.CharField(max_length=120, required=False, allow_blank=False)
+    reuse_permission = serializers.ChoiceField(choices=Post.Reuse.choices, required=False)
+
+
 class UpdatePostSerializer(serializers.ModelSerializer):
     """What about a post can still change: its words, and who it is for.
 
@@ -4875,9 +4999,14 @@ class UpdatePostSerializer(serializers.ModelSerializer):
         max_length=20,
     )
 
+    prompt = serializers.CharField(max_length=24, required=False, allow_blank=True)
+
     class Meta:
         model = Post
-        fields = ["caption", "visibility", "reuse_permission", "language", "topics"]
+        fields = ["caption", "visibility", "reuse_permission", "language", "topics", "prompt"]
+
+    def validate_prompt(self, value):
+        return checked_post_prompt(value)
 
     def validate_caption(self, value):
         check_public_content({'caption': value}, request=self.context.get("request"))

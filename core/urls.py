@@ -96,6 +96,8 @@ router.register("cycles", WorkoutCycleViewSet, basename="cycle")
 router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
+from .sound_views import PromptsView, RestoreSoundView, SoundPostsView, SoundsView, SoundView  # noqa: E402
+
 urlpatterns = [
     path('me/agreements/', AccountAgreementView.as_view(), name='account-agreements'),
     path('me/safety-consent/', SafetyConsentView.as_view(), name='safety-consent'),
@@ -107,6 +109,11 @@ urlpatterns = [
     path('web/login/', BrowserLoginView.as_view(), name='web-login'),
     path('web/register/', BrowserRegisterView.as_view(), name='web-register'),
     path('web/logout/', BrowserLogoutView.as_view(), name='web-logout'),
+    path('social/sounds/', SoundsView.as_view(), name='sounds'),
+    path('social/sounds/<int:pk>/', SoundView.as_view(), name='sound'),
+    path('social/sounds/<int:pk>/restore/', RestoreSoundView.as_view(), name='sound-restore'),
+    path('social/sounds/<int:pk>/posts/', SoundPostsView.as_view(), name='sound-posts'),
+    path('social/prompts/', PromptsView.as_view(), name='post-prompts'),
     path('social/spotlight/', CommunitySpotlightView.as_view(), name='community-spotlight'),
     path('me/access/', MyAccessView.as_view(), name='my-access'),
     path('administration/users/', AccessUsersView.as_view(), name='access-users'),

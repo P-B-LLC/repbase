@@ -75,6 +75,8 @@ from .throttles import (
 )
 from .videos import ReceivedVideo, VideoUploadParser, attach_video, remove_video
 from .publication import (
+    PROMPTS,
+    checked_prompt,
     hashtags_in,
     lineage_from,
     sound_for,
@@ -3356,6 +3358,16 @@ class FeedCursorPagination(pagination.CursorPagination):
         return size
 
 
+#: A post anybody signed in could read: what a public total counts. Kept as
+#: one expression so the take count on a card and the use count on a sound
+#: cannot come to mean different things.
+PUBLIC_AND_STANDING = Q(
+    is_hidden=False, moderation_status="approved", published_at__isnull=False,
+    moderation_child_hold=False, visibility="public",
+    author__is_profile_public=True, author__user__is_active=True,
+)
+
+
 def annotate_social_counts(viewer, queryset):
     """Add the like, comment and repost figures a card shows.
 
@@ -3396,6 +3408,16 @@ def annotate_social_counts(viewer, queryset):
         #
         # A post carries a workout or a meal, never both, so at most one of
         # these can be true and the app needs only the pair OR-ed together.
+        # Responses anybody could see, so the number is the same for every
+        # reader and never says who somebody else can and cannot see.
+        take_total=Coalesce(
+            Subquery(
+                Post.objects.filter(source_post=OuterRef("pk"), is_take=True)
+                .filter(PUBLIC_AND_STANDING)
+                .order_by().values("source_post").annotate(n=Count("pk")).values("n")[:1]
+            ),
+            Value(0),
+        ),
         viewer_saved=Exists(
             WorkoutTemplate.objects.filter(source_post=OuterRef("pk"), owner=viewer)
         )
@@ -4005,6 +4027,12 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
         parameters=[
             ATTACHMENTS_PARAMETER,
             OpenApiParameter(
+                name="prompt",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Return only posts answering this prompt, by its code.",
+            ),
+            OpenApiParameter(
                 name="author",
                 type=int,
                 location=OpenApiParameter.QUERY,
@@ -4151,6 +4179,12 @@ class PostViewSet(AttachmentDetailMixin, ThrottleByActionMixin, OwnedViewSetMixi
         author = id_param(self.request, "author")
         if author:
             queryset = queryset.filter(author_id=author)
+        prompt = self.request.query_params.get("prompt")
+        if prompt:
+            try:
+                queryset = queryset.filter(prompt=checked_prompt(prompt))
+            except ValueError as error:
+                raise ValidationError({"prompt": str(error)})
         return self._matching_search(self._matching_follow_state(queryset))
 
     def _matching_follow_state(self, queryset):
@@ -4826,6 +4860,7 @@ class PostViewSet(AttachmentDetailMixin, ThrottleByActionMixin, OwnedViewSetMixi
             "reuse_permission": payload.validated_data.get(
                 "reuse_permission", Post.Reuse.EVERYONE
             ),
+            "prompt": payload.validated_data.get("prompt", ""),
             "language": payload.validated_data.get("language", ""),
             "topics": payload.validated_data.get("topics", []),
         }

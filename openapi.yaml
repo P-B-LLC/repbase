@@ -5017,6 +5017,11 @@ paths:
         schema:
           type: integer
       - in: query
+        name: prompt
+        schema:
+          type: string
+        description: Return only posts answering this prompt, by its code.
+      - in: query
         name: search
         schema:
           type: string
@@ -5643,6 +5648,201 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UploadResponse'
+          description: ''
+  /api/v1/social/prompts/:
+    get:
+      operationId: social_prompts_list
+      description: The prompts a post can answer. Send a code as `prompt` when creating
+        a post; browse one with `?prompt=` on the post list.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Prompt'
+          description: ''
+  /api/v1/social/sounds/:
+    post:
+      operationId: social_sounds_create
+      description: Publish the audio of one of your own posts as a sound others may
+        set their clips to. The post needs an approved video with audio. Asking again
+        for the same post answers 200 with the sound already made. The audio is prepared
+        shortly afterwards; until then `audio_url` is null.
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSoundRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CreateSoundRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateSoundRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+          description: ''
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+          description: ''
+  /api/v1/social/sounds/{id}/:
+    get:
+      operationId: social_sounds_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+          description: ''
+    patch:
+      operationId: social_sounds_partial_update
+      description: Rename your sound, or change who may use it. Closing it stops new
+        uses; posts already set to it keep it.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSoundRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSoundRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSoundRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+          description: ''
+    delete:
+      operationId: social_sounds_destroy
+      description: Take your sound down. Posts set to it stay and lose its credit,
+        its audio stops being served, and nobody new can use it. `restore` puts all
+        of that back.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/social/sounds/{id}/posts/:
+    get:
+      operationId: social_sounds_posts_list
+      description: The posts set to this sound that the reader may see, newest first.
+        A sound that has been taken down has no such list.
+      parameters:
+      - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Post'
+          description: ''
+  /api/v1/social/sounds/{id}/restore/:
+    post:
+      operationId: social_sounds_restore_create
+      description: Put back a sound you took down. Not one a moderator removed.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
           description: ''
   /api/v1/social/spotlight/:
     get:
@@ -7004,8 +7204,30 @@ components:
           description: 'What the post is about: up to five codes for a type of training
             (type:running) or a discipline (discipline:powerlifting).'
           maxItems: 20
+        prompt:
+          type: string
+          maxLength: 24
       required:
       - kind
+    CreateSoundRequest:
+      type: object
+      description: What an author says when they make a post's audio a sound.
+      properties:
+        title:
+          type: string
+          default: ''
+          maxLength: 120
+        reuse_permission:
+          allOf:
+          - $ref: '#/components/schemas/ReusePermissionEnum'
+          default: everyone
+        post:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+      required:
+      - post
     CreditedPerson:
       type: object
       description: |-
@@ -7776,8 +7998,15 @@ components:
         reuse_permission:
           type: string
           readOnly: true
+        prompt:
+          type: string
+          nullable: true
+          readOnly: true
         viewer_can_take:
           type: boolean
+          readOnly: true
+        take_count:
+          type: integer
           readOnly: true
         recommendation:
           allOf:
@@ -9575,6 +9804,19 @@ components:
             minLength: 1
             maxLength: 40
           maxItems: 20
+        prompt:
+          type: string
+          maxLength: 24
+    PatchedUpdateSoundRequest:
+      type: object
+      description: What an author says when they make a post's audio a sound.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        reuse_permission:
+          $ref: '#/components/schemas/ReusePermissionEnum'
     PatchedWorkoutCycleRequest:
       type: object
       properties:
@@ -10235,8 +10477,15 @@ components:
         reuse_permission:
           type: string
           readOnly: true
+        prompt:
+          type: string
+          nullable: true
+          readOnly: true
         viewer_can_take:
           type: boolean
+          readOnly: true
+        take_count:
+          type: integer
           readOnly: true
       required:
       - author
@@ -11125,6 +11374,19 @@ components:
           maxItems: 6
       required:
       - social_links
+    Prompt:
+      type: object
+      description: A prompt a post can answer, by its code and the words to show.
+      properties:
+        code:
+          type: string
+          readOnly: true
+        label:
+          type: string
+          readOnly: true
+      required:
+      - code
+      - label
     PublicRepbaseUser:
       type: object
       properties:
@@ -11758,6 +12020,10 @@ components:
         reuse_permission:
           type: string
           readOnly: true
+        prompt:
+          type: string
+          nullable: true
+          readOnly: true
       required:
       - author
       - caption
@@ -12273,6 +12539,60 @@ components:
         * `warmup` - Warm-up
         * `drop` - Drop set
         * `failure` - Failure
+    Sound:
+      type: object
+      description: A sound, as anybody who may use or hear it reads it.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/CreditedPerson'
+          readOnly: true
+        duration_ms:
+          type: integer
+          readOnly: true
+          nullable: true
+        reuse_permission:
+          type: string
+          readOnly: true
+        origin_post_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        audio_url:
+          type: string
+          nullable: true
+          readOnly: true
+        use_count:
+          type: integer
+          readOnly: true
+        viewer_is_owner:
+          type: boolean
+          readOnly: true
+        viewer_can_use:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - audio_url
+      - created_at
+      - duration_ms
+      - id
+      - origin_post_id
+      - owner
+      - reuse_permission
+      - title
+      - use_count
+      - viewer_can_use
+      - viewer_is_owner
     StatusEnum:
       enum:
       - planned

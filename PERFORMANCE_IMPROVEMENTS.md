@@ -1,3 +1,45 @@
+# Social Milestone 6: Original Sounds and Takes
+
+**Status:** Done on `feature/social-m6-sounds-takes` (stacked on Milestone 5), awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / sounds, take totals, prompts
+
+## Why
+
+Milestone 2 gave posts a sound reference and take lineage. Nothing could yet create a
+sound, take one down, count takes, or show that all of it stays consistent.
+
+## What Was Changed
+
+- **Sounds** (`core/sounds.py`, `core/sound_views.py`, migration 0092): an author
+  publishes the audio of their own approved clip, on purpose, with a reuse permission.
+  A worker extracts the audio once (`prepare_sounds`); posts reference the row.
+- **Removal**: by the owner or a moderator, as a status. The credit, the audio file,
+  new uses and For You eligibility all follow from the one row, and come back on
+  restore. Only a moderator restores what a moderator removed.
+- **`take_count`** on every post: takes anybody could see, the same for every reader.
+- **Prompts**: a short fixed list to post under and browse by.
+- `deploy/repbase-sounds.service` and `.timer`, with their own CPU and memory limits.
+
+## Verification
+
+31 tests in `core/test_sounds_and_takes.py`, including a table of the exit criterion:
+source deletion, blocks, revoked reuse, sound removal, private accounts and saved
+copies, each read from the feed, the post, the post list, the takes list and the
+sound's posts. Audio extraction is tested with real ffmpeg on a fixture clip.
+
+## Needs To Be Changed / Improved
+
+- Extraction reads the clip from media storage. Clips processed by the object-storage
+  video pipeline (`variants`, no `file`) are not handled yet and stay unprepared.
+- The service file's `ReadWritePaths` names a placeholder media path.
+- Shared-calendar invitations were not built here; the plan puts them after the feed
+  is stable, and calendar sharing already exists on the `work/` branches.
+- `take_count` is a subquery per card. It belongs in the cached engagement counts
+  once takes are common.
+
+---
+
 # Social Milestone 5: Ranking Reads Measured Attention
 
 **Status:** Done on `feature/social-m5-ranking` (stacked on Milestone 3), awaiting review; not deployed

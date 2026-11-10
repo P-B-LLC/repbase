@@ -32,6 +32,7 @@ from .models import (
     Exercise,
     Post,
     PostVideo,
+    Sound,
     PostComment,
     CommentReport,
     PostReport,
@@ -334,6 +335,42 @@ class PendingClipFilter(admin.SimpleListFilter):
 
     def value(self):
         return super().value() or ("waiting" if "review" not in self.used_parameters else None)
+
+
+@admin.register(Sound)
+class SoundAdmin(admin.ModelAdmin):
+    """Where a moderator takes a sound down, or puts one back.
+
+    One change removes it everywhere: the credit on every post using it, the
+    audio file, the ability to use it, and those posts from For You."""
+
+    list_display = ("title", "owner", "status", "removed_by_moderator", "reuse_permission", "created_at")
+    list_filter = ("status", "removed_by_moderator")
+    search_fields = ("title", "owner__user__username")
+    list_select_related = ("owner__user",)
+    actions = ("remove_sounds", "restore_sounds")
+    # Changed through the actions, which record who did it, and never by hand.
+    readonly_fields = (
+        "owner", "origin_post", "audio_key", "duration_ms", "status", "removed_at",
+        "removed_by_moderator", "prepare_attempts", "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.action(description="Remove", permissions=["change"])
+    def remove_sounds(self, request, queryset):
+        from .sounds import set_removed
+
+        changed = sum(set_removed(sound, True, by_moderator=True) for sound in queryset)
+        self.message_user(request, f"Removed {changed} sounds.")
+
+    @admin.action(description="Restore", permissions=["change"])
+    def restore_sounds(self, request, queryset):
+        from .sounds import set_removed
+
+        changed = sum(set_removed(sound, False, by_moderator=True) for sound in queryset)
+        self.message_user(request, f"Restored {changed} sounds.")
 
 
 @admin.register(PostVideo)

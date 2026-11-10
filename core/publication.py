@@ -65,6 +65,25 @@ _LANGUAGE = re.compile(r"^[a-z]{2,3}(-[a-z0-9]{2,8}){0,3}$")
 TAKE_KINDS = (Post.Kind.MEDIA, Post.Kind.WORKOUT, Post.Kind.MEAL)
 
 
+#: The prompts a post can answer: a code, and the words shown for it. A short
+#: fixed list, so a prompt is something to browse by and never free text.
+PROMPTS = (
+    ("gym_lore", "Gym lore"),
+    ("rack_taken", "Rack taken"),
+    ("first_time", "First time trying this"),
+    ("meal_prep", "Meal prep"),
+    ("form_check", "Form check"),
+)
+
+
+def checked_prompt(value):
+    """A prompt code, or "" for none. Raises ValueError for one not offered."""
+    code = (value or "").strip()
+    if code and code not in dict(PROMPTS):
+        raise ValueError("Use one of: " + ", ".join(code for code, _ in PROMPTS) + ".")
+    return code
+
+
 def hashtags_in(caption):
     """[tag] the hashtags written in a caption, normalised, once each, in the
     order they first appear, `MAX_HASHTAGS` at most.

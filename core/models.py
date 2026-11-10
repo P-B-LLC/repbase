@@ -3047,6 +3047,10 @@ class Post(models.Model):
         max_length=20, choices=Reuse.choices, default=Reuse.EVERYONE,
         db_default=Reuse.EVERYONE.value,
     )
+    #: An optional prompt the post answers -- "Gym lore", "Rack taken" -- as
+    #: a code from `core.publication.PROMPTS`. A way into posting and a way
+    #: to browse, not another feed.
+    prompt = models.CharField(max_length=24, blank=True, default="", db_default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     # Existing creation paths stay compatible until asynchronous upload wiring
@@ -3090,6 +3094,13 @@ class Post(models.Model):
                 fields=("original_post",),
                 name="post_take_family",
                 condition=models.Q(original_post__isnull=False),
+            ),
+            # The posts answering one prompt, newest first. Partial for the
+            # reason the three above are: most posts answer none.
+            models.Index(
+                fields=("prompt", "-published_at", "-id"),
+                name="post_prompt_newest",
+                condition=~models.Q(prompt=""),
             ),
         ]
 
@@ -3145,10 +3156,30 @@ class Sound(models.Model):
         max_length=10, choices=Status.choices, default=Status.ACTIVE
     )
     removed_at = models.DateTimeField(null=True, blank=True)
+    #: Who took it down: its owner, or a moderator. Its owner can put back
+    #: what they took down themselves, and nobody but a moderator can put
+    #: back what a moderator did.
+    removed_by_moderator = models.BooleanField(default=False)
+    #: How many times preparing the audio has been tried, so a clip that
+    #: cannot be read is given up on rather than tried for ever.
+    prepare_attempts = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            # What the worker asks for: sounds still waiting for their audio.
+            models.Index(
+                fields=("created_at",), name="sound_awaiting_audio",
+                condition=models.Q(audio_key="", status="active"),
+            ),
+        ]
 
     def __str__(self):
         return f"{self.title} ({self.owner})"
+
+    @property
+    def is_prepared(self):
+        return bool(self.audio_key)
 
 
 class PostHashtag(models.Model):
