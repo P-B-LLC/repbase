@@ -58,7 +58,7 @@ from .cookbook_serializers import (CookbookDestinationSerializer, CookbookSerial
                                    PublishedCookbookSerializer)
 from .activities import ACTIVITIES, label as activity_label, session_trained
 from .schedule_sync import delete_schedule_rows, lock_schedule_rows, untouched_generated_tasks
-from .serializers import SessionFinishSerializer
+from .serializers import SessionFinishSerializer, WorkoutCapabilitiesSerializer
 from .params import date_param, id_param
 from .throttles import (
     FailedSignInLimit,
@@ -1453,12 +1453,22 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
     serializer_class = WorkoutTemplateSerializer
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(operation_id="workouts_capabilities_retrieve", responses=WorkoutCapabilitiesSerializer)
+    @action(detail=False, methods=["get"])
+    def capabilities(self, request):
+        return Response({"planned_sets_version": 1})
+
     def perform_update(self, serializer):
         with transaction.atomic():
             schedule_ids = lock_schedule_rows(WorkoutSchedule.objects.filter(
                 owner=serializer.instance.owner, workout=serializer.instance
             ))
             generated_ids = list(untouched_generated_tasks(schedule_ids).values_list("pk", flat=True))
+            # Schedule editing locks its schedules/planner rows first. Keep
+            # that order before taking the parent lock shared with session
+            # snapshots and exercise-plan writes; never wait on a schedule
+            # while already holding its parent template lock.
+            get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=serializer.instance.pk)
             saved = serializer.save()
             # These IDs were proven unchanged and locked before the template
             # name changed. Custom titles and completed records stay personal.
@@ -1527,9 +1537,10 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
                 }
             )
         with transaction.atomic():
-            delete_schedule_rows(WorkoutSchedule.objects.filter(
-                owner=instance.owner, workout=instance
-            ))
+            schedule_rows = WorkoutSchedule.objects.filter(owner=instance.owner, workout=instance)
+            lock_schedule_rows(schedule_rows)
+            get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=instance.pk)
+            delete_schedule_rows(schedule_rows)
             instance.delete()
 
     def get_queryset(self):
@@ -1563,6 +1574,11 @@ class WorkoutExerciseViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         return self.scope_to_owner(super().get_queryset())
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=instance.workout_id)
+        instance.delete()
 
 
 @extend_schema_view(
@@ -2943,9 +2959,16 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
 
     @transaction.atomic
     def perform_create(self, serializer):
+        workout = serializer.validated_data.get("workout")
+        if workout is not None:
+            # Lock only the template row (no nullable joins under PostgreSQL),
+            # shared with every relation mutation and atomic plan replacement.
+            get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=workout.pk)
         session = serializer.save(repbase_user=self.owner_profile())
         if session.workout_id:
-            planned = session.workout.workout_exercises.select_related("exercise")
+            planned = list(session.workout.workout_exercises.select_related("exercise"))
+            if any(item.target_sets > 50 for item in planned):
+                raise ValidationError({"workout": "Reduce each exercise to at most 50 planned sets before starting."})
             SessionExercise.objects.bulk_create(
                 [
                     SessionExercise(
@@ -2953,6 +2976,10 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
                         exercise=item.exercise,
                         order=item.order,
                         notes=item.notes,
+                        workout_exercise_id=item.pk,
+                        planned_sets=item.snapshot_planned_sets(),
+                        rest_seconds=item.rest_seconds,
+                        superset_group=item.superset_group,
                     )
                     for item in planned
                 ]

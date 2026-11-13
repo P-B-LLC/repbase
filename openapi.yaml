@@ -6954,6 +6954,21 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/workouts/capabilities/:
+    get:
+      operationId: workouts_capabilities_retrieve
+      tags:
+      - workouts
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutCapabilities'
+          description: ''
 components:
   schemas:
     AccessUser:
@@ -8950,6 +8965,13 @@ components:
             is normal; sets past the end of the list are normal. Never longer than
             target_sets.
           maxItems: 50
+        planned_sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutPlannedSet'
+          description: Ordered explicit targets. Nonempty rows define target_sets
+            and set_types and clear aggregate target_reps/target_weight_kg. Empty
+            uses legacy aggregate targets; omission preserves existing rows.
       required:
       - exercise
     InitialWorkoutExerciseRequest:
@@ -9003,6 +9025,13 @@ components:
             is normal; sets past the end of the list are normal. Never longer than
             target_sets.
           maxItems: 50
+        planned_sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutPlannedSetRequest'
+          description: Ordered explicit targets. Nonempty rows define target_sets
+            and set_types and clear aggregate target_reps/target_weight_kg. Empty
+            uses legacy aggregate targets; omission preserves existing rows.
       required:
       - exercise
     Interest:
@@ -10493,6 +10522,13 @@ components:
             is normal; sets past the end of the list are normal. Never longer than
             target_sets.
           maxItems: 50
+        planned_sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutPlannedSetRequest'
+          description: Ordered explicit targets. Nonempty rows define target_sets
+            and set_types and clear aggregate target_reps/target_weight_kg. Empty
+            uses legacy aggregate targets; omission preserves existing rows.
     PatchedWorkoutScheduleRequest:
       type: object
       properties:
@@ -10597,6 +10633,13 @@ components:
           writeOnly: true
           description: 'Update-only: atomically replace the exercise plan, preserving
             supplied relation IDs.'
+        planned_sets_version:
+          type: integer
+          maximum: 1
+          minimum: 1
+          writeOnly: true
+          description: Send 1 after checking workouts/capabilities/ when intentionally
+            replacing/removing explicit per-set exercise plans.
     PersonalRecord:
       type: object
       description: A best set during a session that beat everything logged before
@@ -12875,6 +12918,26 @@ components:
         notes:
           type: string
           maxLength: 300
+        planned_sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutPlannedSet'
+          readOnly: true
+          nullable: true
+          description: Immutable plan snapshot at session creation. Null is unknown
+            historical data; [] is a known empty plan. Never completed sets.
+        workout_exercise_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        rest_seconds:
+          type: integer
+          readOnly: true
+          nullable: true
+        superset_group:
+          type: integer
+          readOnly: true
+          nullable: true
       required:
       - exercise
       - exercise_name
@@ -13386,6 +13449,14 @@ components:
         * `4` - Friday
         * `5` - Saturday
         * `6` - Sunday
+    WorkoutCapabilities:
+      type: object
+      properties:
+        planned_sets_version:
+          type: integer
+          readOnly: true
+      required:
+      - planned_sets_version
     WorkoutCycle:
       type: object
       properties:
@@ -13579,6 +13650,13 @@ components:
             is normal; sets past the end of the list are normal. Never longer than
             target_sets.
           maxItems: 50
+        planned_sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutPlannedSet'
+          description: Ordered explicit targets. Nonempty rows define target_sets
+            and set_types and clear aggregate target_reps/target_weight_kg. Empty
+            uses legacy aggregate targets; omission preserves existing rows.
       required:
       - exercise
       - exercise_name
@@ -13638,6 +13716,13 @@ components:
             is normal; sets past the end of the list are normal. Never longer than
             target_sets.
           maxItems: 50
+        planned_sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutPlannedSetRequest'
+          description: Ordered explicit targets. Nonempty rows define target_sets
+            and set_types and clear aggregate target_reps/target_weight_kg. Empty
+            uses legacy aggregate targets; omission preserves existing rows.
       required:
       - exercise
       - workout
@@ -13694,6 +13779,13 @@ components:
             is normal; sets past the end of the list are normal. Never longer than
             target_sets.
           maxItems: 50
+        planned_sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutPlannedSet'
+          description: Ordered explicit targets. Nonempty rows define target_sets
+            and set_types and clear aggregate target_reps/target_weight_kg. Empty
+            uses legacy aggregate targets; omission preserves existing rows.
       required:
       - exercise
       - order
@@ -13750,9 +13842,60 @@ components:
             is normal; sets past the end of the list are normal. Never longer than
             target_sets.
           maxItems: 50
+        planned_sets:
+          type: array
+          items:
+            $ref: '#/components/schemas/WorkoutPlannedSetRequest'
+          description: Ordered explicit targets. Nonempty rows define target_sets
+            and set_types and clear aggregate target_reps/target_weight_kg. Empty
+            uses legacy aggregate targets; omission preserves existing rows.
       required:
       - exercise
       - order
+    WorkoutPlannedSet:
+      type: object
+      description: One ordered target, not a completed/logged set. Null means unspecified.
+      properties:
+        id:
+          type: string
+          format: uuid
+        set_type:
+          $ref: '#/components/schemas/SetTypeEnum'
+        target_reps:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          nullable: true
+        target_weight_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          nullable: true
+      required:
+      - id
+      - set_type
+    WorkoutPlannedSetRequest:
+      type: object
+      description: One ordered target, not a completed/logged set. Null means unspecified.
+      properties:
+        id:
+          type: string
+          format: uuid
+        set_type:
+          $ref: '#/components/schemas/SetTypeEnum'
+        target_reps:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          nullable: true
+        target_weight_kg:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,5}(?:\.\d{0,2})?$
+          nullable: true
+      required:
+      - id
+      - set_type
     WorkoutRecurrence:
       type: object
       description: |-
@@ -14164,6 +14307,9 @@ components:
           type: string
           format: date-time
           readOnly: true
+        supports_planned_sets:
+          type: boolean
+          readOnly: true
       required:
       - created_at
       - exercises
@@ -14221,6 +14367,13 @@ components:
           writeOnly: true
           description: 'Update-only: atomically replace the exercise plan, preserving
             supplied relation IDs.'
+        planned_sets_version:
+          type: integer
+          maximum: 1
+          minimum: 1
+          writeOnly: true
+          description: Send 1 after checking workouts/capabilities/ when intentionally
+            replacing/removing explicit per-set exercise plans.
       required:
       - name
     WorkoutTypeEnum:

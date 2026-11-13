@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone as datetime_timezone
 
 import base64
 import io
+import itertools
 import binascii
 from decimal import Decimal
 from zoneinfo import available_timezones
@@ -12,6 +13,7 @@ from django.contrib.auth.validators import ASCIIUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.db.models import F, Q
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import serializers
 
@@ -1668,8 +1670,70 @@ def fitted_set_types(set_types, target_sets, *, sent):
     return set_types[:target_sets]
 
 
+class WorkoutPlannedSetSerializer(serializers.Serializer):
+    """One ordered target, not a completed/logged set. Null means unspecified."""
+    id = serializers.UUIDField()
+    set_type = serializers.ChoiceField(choices=core_models.SetType.choices)
+    target_reps = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=1000)
+    target_weight_kg = serializers.DecimalField(required=False, allow_null=True, max_digits=7,
+                                                decimal_places=2, min_value=Decimal("0"))
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            # A parent PATCH is partial, but each submitted row is a complete
+            # replacement, never a partial row patch keyed by its position.
+            missing = {"id", "set_type"} - set(data)
+            if missing:
+                raise serializers.ValidationError({key: "This field is required." for key in sorted(missing)})
+            if set(data) - set(self.fields):
+                raise serializers.ValidationError("Unknown planned-set fields.")
+            if "id" in data and not isinstance(data["id"], str):
+                raise serializers.ValidationError({"id": "Use a UUID string."})
+            reps = data.get("target_reps")
+            if reps is not None and (isinstance(reps, bool) or not isinstance(reps, int)):
+                raise serializers.ValidationError({"target_reps": "Use a whole number or null."})
+            weight = data.get("target_weight_kg")
+            if weight is not None and not isinstance(weight, str):
+                raise serializers.ValidationError({"target_weight_kg": "Use a decimal string or null."})
+        result = super().to_internal_value(data)
+        # JSONField stores canonical strings, not Decimal/UUID objects.
+        result["id"] = str(result["id"])
+        result["target_reps"] = result.get("target_reps")
+        weight = result.get("target_weight_kg")
+        result["target_weight_kg"] = format(weight, ".2f") if weight is not None else None
+        return result
+
+
+def settle_planned_sets(attrs, instance=None):
+    """Preserve explicit targets from old clients; rows own count and kinds."""
+    current = getattr(instance, "planned_sets", [])
+    if "planned_sets" in attrs:
+        rows = attrs["planned_sets"]
+        ids = [row["id"] for row in rows]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError({"planned_sets": "Each set needs a distinct UUID."})
+        if rows:
+            attrs["target_sets"] = len(rows)
+            attrs["set_types"] = [row["set_type"] for row in rows]
+            # A single old-reader target cannot represent different row targets.
+            # Never project one set's number onto every set in older clients.
+            attrs["target_reps"] = None
+            attrs["target_weight_kg"] = None
+    elif current:
+        for field in ("target_sets", "set_types", "target_reps", "target_weight_kg", "exercise"):
+            if field in attrs and attrs[field] != getattr(instance, field):
+                raise serializers.ValidationError({"planned_sets": "This workout has individual set targets. Reload with a supported app before changing its set plan."})
+    return attrs
+
+
+class WorkoutCapabilitiesSerializer(serializers.Serializer):
+    planned_sets_version = serializers.IntegerField(read_only=True)
+
+
 class WorkoutExerciseSerializer(serializers.ModelSerializer):
     exercise_name = serializers.CharField(source="exercise.name", read_only=True)
+    planned_sets = WorkoutPlannedSetSerializer(many=True, required=False, max_length=core_models.MAX_PLANNED_SET_TYPES,
+        help_text="Ordered explicit targets. Nonempty rows define target_sets and set_types and clear aggregate target_reps/target_weight_kg. Empty uses legacy aggregate targets; omission preserves existing rows.")
     # The three below are declared rather than inferred, for the reason
     # PlannerEntrySerializer.duration_minutes is: the bounds belong in the
     # contract, and left to the model the schema advertised the database's
@@ -1734,6 +1798,7 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
             "rest_seconds",
             "superset_group",
             "set_types",
+            "planned_sets",
         ]
         read_only_fields = ["id", "exercise_name"]
 
@@ -1746,6 +1811,8 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
         if exercise and exercise.created_by_id not in (None, profile.id):
             raise serializers.ValidationError("Exercise is not available to this user.")
 
+        attrs = settle_planned_sets(attrs, self.instance)
+
         target_sets = attrs.get("target_sets", getattr(self.instance, "target_sets", None))
         if target_sets is None and self.omitted_target_sets_is_default:
             target_sets = DEFAULT_TARGET_SETS
@@ -1756,6 +1823,26 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
             if sent or fitted != current:
                 attrs["set_types"] = fitted
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        # Same parent lock as template replacements and session snapshots.
+        get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=validated_data["workout"].pk)
+        return super().create(validated_data)
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        if "workout" in validated_data and validated_data["workout"].pk != instance.workout_id:
+            raise serializers.ValidationError({"workout": "An exercise relation cannot move to another workout."})
+        get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=instance.workout_id)
+        instance = get_object_or_404(WorkoutExercise.objects.select_for_update(), pk=instance.pk)
+        settle_planned_sets(validated_data, instance)
+        target_sets = validated_data.get("target_sets", instance.target_sets)
+        current = validated_data.get("set_types", instance.set_types)
+        fitted = fitted_set_types(current, target_sets, sent="set_types" in validated_data)
+        if fitted != current:
+            validated_data["set_types"] = fitted
+        return super().update(instance, validated_data)
 
 
 class InitialWorkoutExerciseSerializer(WorkoutExerciseSerializer):
@@ -1770,6 +1857,7 @@ class InitialWorkoutExerciseSerializer(WorkoutExerciseSerializer):
             "rest_seconds",
             "superset_group",
             "set_types",
+            "planned_sets",
         ]
         read_only_fields = []
 
@@ -1787,6 +1875,9 @@ class WorkoutPlanExerciseSerializer(InitialWorkoutExerciseSerializer):
 
 
 class WorkoutTemplateSerializer(serializers.ModelSerializer):
+    supports_planned_sets = serializers.SerializerMethodField()
+    planned_sets_version = serializers.IntegerField(required=False, write_only=True, min_value=1, max_value=1,
+        help_text="Send 1 after checking workouts/capabilities/ when intentionally replacing/removing explicit per-set exercise plans.")
     exercise_plan = WorkoutPlanExerciseSerializer(
         many=True, required=False, write_only=True, max_length=200,
         help_text="Update-only: atomically replace the exercise plan, preserving supplied relation IDs.",
@@ -1830,7 +1921,7 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
     )
 
     #: Added to a response the app already decodes; see core.schema.
-    optional_response_fields = frozenset({"last_performed_at", "activity"})
+    optional_response_fields = frozenset({"last_performed_at", "activity", "supports_planned_sets"})
 
     class Meta:
         model = WorkoutTemplate
@@ -1850,8 +1941,14 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
             "last_performed_at",
             "created_at",
             "updated_at",
+            "supports_planned_sets",
+            "planned_sets_version",
         ]
         read_only_fields = ["id", "owner", "created_at", "updated_at"]
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_supports_planned_sets(self, workout):
+        return True
 
     @extend_schema_field(serializers.DateTimeField(allow_null=True))
     def get_last_performed_at(self, workout):
@@ -1906,7 +2003,8 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance, validated_data):
-        instance = WorkoutTemplate.objects.select_for_update().get(pk=instance.pk)
+        instance = get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=instance.pk)
+        planned_sets_version = validated_data.pop("planned_sets_version", None)
         plan = validated_data.pop("exercise_plan", None)
         if plan is not None:
             rows = list(instance.workout_exercises.all())
@@ -1915,10 +2013,13 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"exercise_plan": "An exercise relation is not in this workout. Reload the plan."})
             # Move existing rows aside first so exchanging positions never
             # violates the unique(workout, order) constraint halfway through.
-            offset = max([row.order for row in rows] + [entry["order"] for entry in plan] + [0]) + 1
+            taken = {row.order for row in rows} | {entry["order"] for entry in plan}
+            spare = (number for number in itertools.count(1) if number not in taken)
             original = {(row.order, row.exercise_id): row for row in rows}
-            for index, row in enumerate(rows):
-                row.order = offset + index
+            for row in rows:
+                # Bounded spare positions, not max(order)+1, which can overflow
+                # PostgreSQL's integer column for an older sparse plan.
+                row.order = next(spare)
                 row.save(update_fields=["order"])
             kept = set()
             reserved = {entry["relation_id"] for entry in plan if "relation_id" in entry}
@@ -1940,6 +2041,7 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
                 # out, because only now is it known which relation's count
                 # that is.
                 existing = row is not None and row.pk not in kept
+                settle_planned_sets(values, row if existing else None)
                 target_sets = values.get(
                     "target_sets", row.target_sets if existing else DEFAULT_TARGET_SETS
                 )
@@ -1959,11 +2061,15 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
                 else:
                     row = WorkoutExercise.objects.create(workout=instance, **values)
                 kept.add(row.pk)
+            removed = [row for row in rows if row.pk not in kept]
+            if planned_sets_version != 1 and any(row.planned_sets for row in removed):
+                raise serializers.ValidationError({"planned_sets_version": "Reload with a supported app before replacing individual set targets."})
             instance.workout_exercises.exclude(pk__in=kept).delete()
         return super().update(instance, validated_data)
 
     @transaction.atomic
     def create(self, validated_data):
+        validated_data.pop("planned_sets_version", None)
         exercises = validated_data.pop("initial_exercises", [])
         date = validated_data.pop("initial_date", None)
         workout = super().create(validated_data)
@@ -3089,10 +3195,17 @@ class SessionRouteUploadSerializer(serializers.Serializer):
 
 class SessionExerciseSerializer(serializers.ModelSerializer):
     exercise_name = serializers.CharField(source="exercise.name", read_only=True)
+    planned_sets = WorkoutPlannedSetSerializer(many=True, read_only=True, allow_null=True,
+        help_text="Immutable plan snapshot at session creation. Null is unknown historical data; [] is a known empty plan. Never completed sets.")
+    workout_exercise_id = serializers.IntegerField(read_only=True, allow_null=True)
+    rest_seconds = serializers.IntegerField(read_only=True, allow_null=True)
+    superset_group = serializers.IntegerField(read_only=True, allow_null=True)
+    optional_response_fields = frozenset({"planned_sets", "workout_exercise_id", "rest_seconds", "superset_group"})
 
     class Meta:
         model = SessionExercise
-        fields = ["id", "session", "exercise", "exercise_name", "order", "notes"]
+        fields = ["id", "session", "exercise", "exercise_name", "order", "notes",
+                  "planned_sets", "workout_exercise_id", "rest_seconds", "superset_group"]
         read_only_fields = ["id", "exercise_name"]
 
     def validate(self, attrs):
@@ -3103,7 +3216,14 @@ class SessionExerciseSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Session does not belong to this user.")
         if exercise and exercise.created_by_id not in (None, profile.id):
             raise serializers.ValidationError("Exercise is not available to this user.")
+        if self.instance and (session != self.instance.session or exercise != self.instance.exercise):
+            raise serializers.ValidationError("A recorded session exercise cannot change its source exercise or session.")
         return attrs
+
+    def create(self, validated_data):
+        # Added during a session, not copied from a plan. Historical rows stay
+        # null through the additive migration; new manual additions are known.
+        return super().create({**validated_data, "planned_sets": []})
 
 
 #: The most exercises one reorder may name. A session is copied from a plan of

@@ -1,3 +1,4 @@
+import copy
 import math
 import pathlib
 import re
@@ -665,6 +666,28 @@ class WorkoutExercise(models.Model):
     #: Values are `SetType`s. JSONField cannot hold `choices`, so they are
     #: checked by the serializers that write it.
     set_types = models.JSONField(default=list, blank=True)
+    #: Ordered explicit per-set targets. Empty preserves the legacy aggregate
+    #: targets. No logged data lives here; set IDs survive edits and reorders.
+    planned_sets = models.JSONField(default=list, blank=True)
+
+    def snapshot_planned_sets(self):
+        if self.planned_sets:
+            return copy.deepcopy(self.planned_sets)
+        # Freeze what the old plan meant when the session was created. Do not
+        # backfill historical sessions from a plan that may since have changed.
+        if self.target_sets > MAX_PLANNED_SET_TYPES:
+            raise ValidationError("This plan has too many sets. Reduce it before starting.")
+        result = []
+        for index in range(self.target_sets):
+            kind = self.set_types[index] if index < len(self.set_types) else SetType.NORMAL
+            warmup = kind == SetType.WARMUP
+            result.append({
+                "id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"rytivo:workout-exercise:{self.pk}:set:{index + 1}")),
+                "set_type": kind,
+                "target_reps": self.target_reps if not warmup and self.target_reps else None,
+                "target_weight_kg": format(self.target_weight_kg, ".2f") if not warmup and self.target_weight_kg is not None else None,
+            })
+        return result
 
     class Meta:
         ordering = ("order", "id")
@@ -1351,6 +1374,13 @@ class SessionExercise(models.Model):
     )
     order = models.PositiveIntegerField(default=1)
     notes = models.CharField(max_length=300, blank=True)
+    #: Immutable provenance rather than a FK: deleting the saved plan must not
+    #: change a recorded session. Null denotes an unknown historical source.
+    workout_exercise_id = models.PositiveBigIntegerField(null=True, blank=True)
+    #: Null means historical/unknown; [] means known to have no planned sets.
+    planned_sets = models.JSONField(null=True, blank=True)
+    rest_seconds = models.PositiveIntegerField(null=True, blank=True)
+    superset_group = models.PositiveSmallIntegerField(null=True, blank=True)
 
     class Meta:
         ordering = ("order", "id")
