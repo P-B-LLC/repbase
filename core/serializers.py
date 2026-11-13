@@ -34,6 +34,7 @@ from .params import MAX_ID
 from .food_nutrition import FOOD_METADATA_FIELDS, FoodMetadataSerializerMixin
 from .uploads import check_image_dimensions, without_metadata
 from .throttles import FailedSignInLimit
+from .health_serializers import HealthWorkoutSummarySerializer, HealthWorkoutImportSerializer, HealthImportResultSerializer
 
 
 class SessionFinishSerializer(serializers.Serializer):
@@ -2821,6 +2822,7 @@ def activity_details_field():
 
 
 class WorkoutSessionSerializer(serializers.ModelSerializer):
+    health_summary = HealthWorkoutSummarySerializer(read_only=True, allow_null=True)
     repbase_user = serializers.PrimaryKeyRelatedField(read_only=True)
     #: allow_null for the same reason workout_type has it, which is the whole
     #: bug: without it DRF does not send null when workout is None, it drops
@@ -2882,6 +2884,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
 
     #: Added to a response the app already decodes; see core.schema.
     optional_response_fields = frozenset({
+        "health_summary",
         "activity",
         "perceived_effort",
         "manual_calories_kcal",
@@ -2894,6 +2897,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkoutSession
         fields = [
+            "health_summary",
             "id",
             "repbase_user",
             "workout",
@@ -4785,46 +4789,6 @@ class DailyStepCountRecordSerializer(serializers.Serializer):
     #: Each day is an upsert in one transaction, so the batch is bounded:
     #: the app sends a week, and a year is more than any backfill needs.
     days = DailyStepCountEntrySerializer(many=True, allow_empty=True, max_length=400)
-
-
-class HealthWorkoutSerializer(serializers.Serializer):
-    """One finished workout on its way in from Apple Health."""
-
-    external_id = serializers.CharField(max_length=64)
-    activity = serializers.ChoiceField(choices=WorkoutTemplate.WorkoutType.choices)
-    started_at = serializers.DateTimeField()
-    ended_at = serializers.DateTimeField()
-    distance_km = serializers.DecimalField(
-        max_digits=7,
-        decimal_places=3,
-        required=False,
-        allow_null=True,
-    )
-
-    def validate(self, attrs):
-        if attrs["ended_at"] < attrs["started_at"]:
-            raise serializers.ValidationError(
-                {"ended_at": "End time cannot be before start time."}
-            )
-        return attrs
-
-
-class HealthWorkoutImportSerializer(serializers.Serializer):
-    #: Bounded for the same reason as step counts: two lookups and a write per
-    #: workout, in one transaction. The app sends thirty days.
-    workouts = HealthWorkoutSerializer(many=True, allow_empty=True, max_length=500)
-
-
-class HealthImportResultSerializer(serializers.Serializer):
-    """What the import did, counted rather than described.
-
-    Three numbers rather than one, because "nothing happened" has three very
-    different causes and a user who imported nothing deserves to know which.
-    """
-
-    imported = serializers.IntegerField()
-    skipped_overlapping = serializers.IntegerField()
-    already_imported = serializers.IntegerField()
 
 
 class GearSerializer(serializers.ModelSerializer):

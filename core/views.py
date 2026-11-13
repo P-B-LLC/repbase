@@ -60,6 +60,7 @@ from .activities import ACTIVITIES, label as activity_label, session_trained
 from .schedule_sync import delete_schedule_rows, lock_schedule_rows, untouched_generated_tasks
 from .serializers import SessionFinishSerializer, WorkoutCapabilitiesSerializer
 from .params import date_param, id_param
+from .health_imports import import_health_workouts, lock_health_owner, require_health_connection
 from .throttles import (
     FailedSignInLimit,
     PasswordResetFailureLimit,
@@ -2832,7 +2833,7 @@ MAX_ROUTE_POINTS_PER_SESSION = 50_000
 )
 class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = (
-        WorkoutSession.objects.select_related("repbase_user", "workout")
+        WorkoutSession.objects.select_related("repbase_user", "workout", "health_summary")
         # No prefetch of route_points. Serialising a session reads its track
         # values from route_summary, so the points are not touched -- and
         # prefetching them meant a page of fifty sessions pulled every GPS fix
@@ -5558,6 +5559,8 @@ class DailyStepCountViewSet(
         days = payload.validated_data["days"]
 
         with transaction.atomic():
+            lock_health_owner(owner)
+            require_health_connection(owner)
             for entry in days:
                 DailyStepCount.objects.update_or_create(
                     owner=owner,
@@ -5577,6 +5580,7 @@ class HealthWorkoutImportView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_scope = "health_import"
 
     @extend_schema(
         request=HealthWorkoutImportSerializer,
@@ -5588,61 +5592,7 @@ class HealthWorkoutImportView(APIView):
         owner = profile_for(request.user)
         incoming = payload.validated_data["workouts"]
 
-        imported = 0
-        skipped_overlapping = 0
-        already_imported = 0
-
-        with transaction.atomic():
-            for entry in incoming:
-                if WorkoutSession.objects.filter(
-                    repbase_user=owner,
-                    health_external_id=entry["external_id"],
-                ).exists():
-                    already_imported += 1
-                    continue
-
-                # A run tracked in Repbase and by the Watch is one run. The
-                # session Repbase recorded itself wins: it has the route and
-                # the climb, and this one would be the same effort counted
-                # twice. Only sessions Repbase recorded are compared against,
-                # so two imported workouts that happen to abut do not cancel
-                # each other out.
-                if WorkoutSession.objects.filter(
-                    repbase_user=owner,
-                    health_external_id__isnull=True,
-                    started_at__lt=entry["ended_at"],
-                    ended_at__gt=entry["started_at"],
-                ).exists():
-                    skipped_overlapping += 1
-                    continue
-
-                activity = entry["activity"]
-                template, _ = WorkoutTemplate.objects.get_or_create(
-                    owner=owner,
-                    name=WorkoutTemplate.WorkoutType(activity).label,
-                    defaults={"workout_type": activity},
-                )
-                WorkoutSession.objects.create(
-                    repbase_user=owner,
-                    workout=template,
-                    status=WorkoutSession.Status.COMPLETED,
-                    started_at=entry["started_at"],
-                    ended_at=entry["ended_at"],
-                    health_external_id=entry["external_id"],
-                    health_distance_km=entry.get("distance_km"),
-                    recorded_distance_km=entry.get("distance_km"),
-                )
-                imported += 1
-
-        return Response(
-            HealthImportResultSerializer(
-                {
-                    "imported": imported,
-                    "skipped_overlapping": skipped_overlapping,
-                    "already_imported": already_imported,
-                }
-            ).data
-        )
+        return Response(HealthImportResultSerializer(import_health_workouts(owner, incoming)).data)
 
 
 class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
@@ -5792,6 +5742,7 @@ class TrainingStatsView(APIView):
                 "recorded_distance_km",
                 "manual_distance_km",
                 "logged_sets",
+                "health_summary__duration_seconds",
             )
         )
 
@@ -5819,7 +5770,7 @@ class TrainingStatsView(APIView):
                 distances=(row["recorded_distance_km"], row["manual_distance_km"]),
             )
 
-            if trained:
+            if trained or (row["health_summary__duration_seconds"] or 0) > 0:
                 days.add((row["workout__name"], timezone.localtime(performed).date()))
 
         week_of = {}

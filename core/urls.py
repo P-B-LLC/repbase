@@ -10,6 +10,7 @@ from .access_views import (MyAccessView, AccessUsersView, UserAccessView, UserSt
 from .push_views import PushDeviceRegistrationView
 from .community_views import CommunitySpotlightView
 from .web_auth import BrowserSessionView, BrowserLoginView, BrowserRegisterView, BrowserLogoutView
+from .health_views import AppleHealthConnectionView, HealthWorkoutListView
 
 from .for_you import (
     ForYouHistoryView,
@@ -106,6 +107,8 @@ router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
 urlpatterns = [
+    path("integrations/apple-health/", AppleHealthConnectionView.as_view(), name="apple-health-connection"),
+    path("integrations/workouts/", HealthWorkoutListView.as_view(), name="health-workouts"),
     path('me/agreements/', AccountAgreementView.as_view(), name='account-agreements'),
     path('me/safety-consent/', SafetyConsentView.as_view(), name='safety-consent'),
     path('social/posts/<int:post_id>/video-upload/', UploadStart.as_view(), name='video-upload-start'),

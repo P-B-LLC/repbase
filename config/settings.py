@@ -321,6 +321,9 @@ REST_FRAMEWORK = {
         # allowance the whole userbase shares. Generous, because the
         # cache absorbs anything anyone has searched for lately.
         'food_search': os.environ.get('REPBASE_THROTTLE_FOOD', '120/hour'),
+        # HealthKit anchored pages are bounded separately (500 workouts).
+        # Retries must not become an unlimited account-locked write loop.
+        'health_import': os.environ.get('REPBASE_THROTTLE_HEALTH_IMPORT', '120/hour'),
         # Wider, because a person who mistypes a code needs several
         # tries and the code itself only allows five before it is
         # spent. Five tries at six codes is the honest ceiling.

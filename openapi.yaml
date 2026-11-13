@@ -2679,6 +2679,80 @@ paths:
                 items:
                   $ref: '#/components/schemas/PublicRepbaseUser'
           description: ''
+  /api/v1/integrations/apple-health/:
+    get:
+      operationId: integrations_apple_health_retrieve
+      tags:
+      - integrations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppleHealthConnection'
+          description: ''
+    patch:
+      operationId: integrations_apple_health_partial_update
+      tags:
+      - integrations
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedAppleHealthConnectionUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedAppleHealthConnectionUpdateRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedAppleHealthConnectionUpdateRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AppleHealthConnection'
+          description: ''
+  /api/v1/integrations/workouts/:
+    get:
+      operationId: integrations_workouts_list
+      parameters:
+      - name: page
+        required: false
+        in: query
+        description: A page number within the paginated result set.
+        schema:
+          type: integer
+      - in: query
+        name: since
+        schema:
+          type: string
+        description: Inclusive start date, YYYY-MM-DD.
+      - in: query
+        name: source
+        schema:
+          type: string
+          enum:
+          - apple_health
+          - garmin
+      tags:
+      - integrations
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedHealthWorkoutSummaryList'
+          description: ''
   /api/v1/me/:
     get:
       operationId: me_retrieve
@@ -7144,6 +7218,34 @@ components:
         * `owner` - owner
         * `analytics` - analytics
         * `moderator` - moderator
+    AppleHealthConnection:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        consent_version:
+          type: string
+          nullable: true
+        last_sync_at:
+          type: string
+          format: date-time
+          nullable: true
+        last_sync_imported_count:
+          type: integer
+        last_sync_updated_count:
+          type: integer
+        schema_version:
+          type: integer
+          default: 1
+        garmin_direct_available:
+          type: boolean
+          default: false
+      required:
+      - consent_version
+      - enabled
+      - last_sync_at
+      - last_sync_imported_count
+      - last_sync_updated_count
     ApplySavedMealRequest:
       type: object
       description: |-
@@ -8814,17 +8916,16 @@ components:
       - name
     HealthImportResult:
       type: object
-      description: |-
-        What the import did, counted rather than described.
-
-        Three numbers rather than one, because "nothing happened" has three very
-        different causes and a user who imported nothing deserves to know which.
       properties:
         imported:
           type: integer
         skipped_overlapping:
           type: integer
         already_imported:
+          type: integer
+        updated:
+          type: integer
+        linked:
           type: integer
       required:
       - already_imported
@@ -8841,7 +8942,6 @@ components:
       - workouts
     HealthWorkoutRequest:
       type: object
-      description: One finished workout on its way in from Apple Health.
       properties:
         external_id:
           type: string
@@ -8849,22 +8949,153 @@ components:
           maxLength: 64
         activity:
           $ref: '#/components/schemas/WorkoutTypeEnum'
+        workout_activity:
+          type: string
+          minLength: 1
+          maxLength: 40
         started_at:
           type: string
           format: date-time
         ended_at:
           type: string
           format: date-time
+        duration_seconds:
+          type: number
+          format: double
+          maximum: 604800
+          minimum: 0.001
         distance_km:
           type: string
           format: decimal
           pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
           nullable: true
+        active_energy_kcal:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          nullable: true
+        average_heart_rate_bpm:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+          nullable: true
+        max_heart_rate_bpm:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+          nullable: true
+        source_name:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 100
+        source_bundle_id:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 255
+        device_name:
+          type: string
+          nullable: true
+          minLength: 1
+          maxLength: 100
       required:
       - activity
       - ended_at
       - external_id
       - started_at
+    HealthWorkoutSummary:
+      type: object
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        session:
+          type: integer
+          readOnly: true
+        external_id:
+          type: string
+          readOnly: true
+        provider:
+          type: string
+          readOnly: true
+          default: apple_health
+        source:
+          type: string
+          readOnly: true
+        source_name:
+          type: string
+          readOnly: true
+          nullable: true
+        source_bundle_id:
+          type: string
+          readOnly: true
+          nullable: true
+        device_name:
+          type: string
+          readOnly: true
+          nullable: true
+        workout_activity:
+          type: string
+          readOnly: true
+        started_at:
+          type: string
+          format: date-time
+          readOnly: true
+        ended_at:
+          type: string
+          format: date-time
+          readOnly: true
+        duration_seconds:
+          type: number
+          format: double
+          readOnly: true
+        distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          readOnly: true
+          nullable: true
+        active_energy_kcal:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,6}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        average_heart_rate_bpm:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        max_heart_rate_bpm:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,3}(?:\.\d{0,2})?$
+          readOnly: true
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - active_energy_kcal
+      - average_heart_rate_bpm
+      - device_name
+      - distance_km
+      - duration_seconds
+      - ended_at
+      - external_id
+      - id
+      - max_heart_rate_bpm
+      - provider
+      - session
+      - source
+      - source_bundle_id
+      - source_name
+      - started_at
+      - updated_at
+      - workout_activity
     ImpressionBatchRequest:
       type: object
       properties:
@@ -9574,6 +9805,29 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Gym'
+    PaginatedHealthWorkoutSummaryList:
+      type: object
+      required:
+      - count
+      - results
+      properties:
+        count:
+          type: integer
+          example: 123
+        next:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=4
+        previous:
+          type: string
+          nullable: true
+          format: uri
+          example: http://api.example.org/accounts/?page=2
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthWorkoutSummary'
     PaginatedNotificationList:
       type: object
       required:
@@ -9979,6 +10233,15 @@ components:
           minLength: 1
       required:
       - email
+    PatchedAppleHealthConnectionUpdateRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        consent_version:
+          type: string
+          minLength: 1
+          maxLength: 40
     PatchedBodyWeightEntryRequest:
       type: object
       properties:
@@ -14022,6 +14285,11 @@ components:
     WorkoutSession:
       type: object
       properties:
+        health_summary:
+          allOf:
+          - $ref: '#/components/schemas/HealthWorkoutSummary'
+          readOnly: true
+          nullable: true
         id:
           type: integer
           readOnly: true

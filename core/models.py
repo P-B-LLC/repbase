@@ -17,6 +17,7 @@ from django.db import models, transaction
 from django.db.models.functions import Coalesce
 from .video_jobs_models import VideoJob, VideoStoredObject, VideoMetric, VideoDailyUpload  # noqa: F401
 from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
+from .health_models import AppleHealthConnection, HealthWorkoutRecord  # noqa: F401
 from .access_models import AccountAccess, AccessPolicyLock, AccessAudit, CommunitySpotlight  # noqa: F401
 from .schedule_sync import remove_unfinished_generated_tasks
 from .activities import (
@@ -484,6 +485,8 @@ class WorkoutTemplate(models.Model):
     #: somebody's post -- ends up with one, and every row from before this
     #: column was backfilled the same way by migration 0084.
     activity = models.CharField(max_length=40, blank=True, default="")
+    # Private identity for the importer's templates; names are not identities.
+    health_import_activity = models.CharField(max_length=40, null=True, blank=True, editable=False)
     #: Optional cardio to finish on. Blank means the workout ends with its
     #: exercises. This is part of the workout, not a second one scheduled
     #: after it.
@@ -528,7 +531,9 @@ class WorkoutTemplate(models.Model):
             models.UniqueConstraint(
                 fields=("owner", "name"),
                 name="unique_workout_name_per_owner",
-            )
+            ),
+            models.UniqueConstraint(fields=("owner", "health_import_activity"),
+                                    name="unique_health_template_activity")
         ]
 
     def save(self, *args, **kwargs):
@@ -1525,6 +1530,7 @@ def performed_sessions():
         .filter(
             (models.Q(counts_by_time=True) & TOOK_TIME_OR_DISTANCE)
             | (models.Q(counts_by_time=False) & has_recorded_set)
+            | models.Q(health_summary__duration_seconds__gt=0)
         )
         .annotate(performed_at=Coalesce("ended_at", "started_at"))
         .filter(performed_at__isnull=False)
