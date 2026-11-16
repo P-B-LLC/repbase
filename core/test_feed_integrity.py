@@ -568,6 +568,7 @@ class ModerationAuditTests(ForYouTestCase):
         form = form_class(data=data, instance=self.target)
         self.assertTrue(form.is_valid(), form.errors)
         self.assertNotIn("hidden_at", form.base_fields, "set with the flag, not by hand")
+        self.assertNotIn("published_at", form.base_fields, "set by publication, not by hand")
         with self.captureOnCommitCallbacks(execute=True):
             self.post_admin.save_model(self.request, form.save(commit=False), form, change=True)
         self.target.refresh_from_db()

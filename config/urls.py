@@ -21,6 +21,7 @@ from django.urls import include, path, re_path
 from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerSplitView
 
 from core.media import serve_media
+from core.media_review_portal import preview as media_review_preview
 from core.throttles import limit_sign_in_attempts
 from core.analytics import dashboard, InsightsLoginView, InsightsLogoutView
 from core.access_portal import workspace, edit_access, reports, account_control, AccessLoginView, AccessLogoutView
@@ -33,6 +34,7 @@ urlpatterns = [
     path('access/community/', community_studio, name='access-community'),
     path('access/users/<int:profile_id>/flair/', community_studio, name='access-flair'),
     path('access/reports/', reports, name='access-reports'),
+    path('access/reports/media/<int:post_id>/<uuid:generation>/<str:asset>/', media_review_preview, name='access-media-preview'),
     path('access/login/', AccessLoginView.as_view(), name='access-login'),
     path('access/logout/', AccessLogoutView.as_view(), name='access-logout'),
     path('access/users/<int:profile_id>/', edit_access, name='access-edit'),

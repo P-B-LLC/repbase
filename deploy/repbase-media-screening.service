@@ -1,0 +1,24 @@
+[Unit]
+Description=Rytivo bounded private media screening batch
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=django
+Group=rytivo-media
+UMask=0077
+WorkingDirectory=/home/django/app
+EnvironmentFile=/etc/repbase.env
+ExecStart=/home/django/app/.venv/bin/python manage.py process_media_screening --limit 1
+TimeoutStartSec=3600
+Nice=15
+CPUQuota=25%
+MemoryMax=256M
+TasksMax=32
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/tmp
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

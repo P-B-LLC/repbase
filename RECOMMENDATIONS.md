@@ -96,15 +96,19 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
 2. **Eligibility** (`eligible_posts`): built on `visible_posts_for`, so a post
    the reader could not open is never a candidate -- hidden, blocked either
    way, private, followers-only without a follow, closed profile, suspended
-   author. On top of that it removes the reader's own posts, reposts (the
+   author. Published original posts by the reader are eligible, but their
+   private posts still stay off this shared-publication surface. On top of
+   that it removes reposts (the
    original is the candidate), anything older than 30 days, posts the reader
    reported or dismissed, **posts they already liked, commented on, saved or
    reposted**, posts on **topics they hid**, posts whose clip is waiting for or
    failed review, posts with three or more open reports, and -- unless the
    reader follows them -- **posts by anybody a moderator took a post down from,
    or rejected a clip of, in the last 30 days** (see "Integrity" below).
-3. **Candidates** (`candidates`): up to six capped sources, merged --
+3. **Candidates** (`candidates`): up to seven capped sources, merged --
    - **fresh**: the newest 500 eligible posts;
+   - **own**: the newest 20 eligible original posts by the reader, so a busy
+     community cannot push their recent publication out of the candidate pool;
    - **following**: the newest 150 from people followed;
    - **interest**: the newest 150 on the reader's strongest topics (momentum
      included);
@@ -191,11 +195,20 @@ disciplines; Running, Cycling, Swimming → their workout type and discipline
    follows -- and for a reader who turned personalisation off, the topic cost
    is up to twice as high (`cold_variety`), falling back to normal by 30
    signals: a wider first page is how the page finds out what they like. These
-   rules carry across page boundaries (`RankState`).
+   rules carry across page boundaries (`RankState`). A new ranking reserves
+   its first ordinary slot for the reader's newest eligible publication from
+   the last 24 hours, confirming that it was published. It is counted in the
+   same session, cursor offsets, and author-spacing state, not appended around
+   the paginator. Older own posts rank normally. Existing sessions never
+   inject new posts halfway through; pull to refresh starts a fresh ranking.
+   Publication, child-safety holds, hidden/private content, video review,
+   reports, and hidden-topic rules are not bypassed. Own impressions still
+   do not count toward recommendation learning or engagement.
 6. **Explain** (`_reason`), most personal first:
 
    | Reason | Label |
    | --- | --- |
+   | `own` | Your post |
    | `discovery` | Something new for you |
    | `following` | From someone you follow |
    | `interest` | Because you like *topic* -- or the exercise, when that matched about as well |
@@ -439,11 +452,14 @@ reads those rows in one query instead of counting during somebody's request.
 Each run rewrites every post acted on since the last run that finished (and,
 for posts under two days old, every one that was seen), and enough of the rest,
 oldest first, that every row in the 30-day window comes round within 15
-minutes however big the window grows. A row is read only while it is under 30
-minutes old and was written by the current way of counting
-(`STATS_VERSION`); anything else is counted on the spot, as before, so a
-stopped job makes the page slower, never wrong, and the deploy check
-`core.W009` says so. Each batch commits on its own; a post deleted while its
+minutes however big the window grows. A row under 30 minutes old and written
+by the current way of counting (`STATS_VERSION`) is simply the answer. When the
+job is late a request does not make up for it: a row up to 6 hours old
+(`FEED_STATS_STALE_SECONDS`) stands in, a post with no usable row counts as one
+with no record yet, and the next run is asked to repair those posts. Only one
+request at a time may count, and only 200 posts that have no row at all, which is
+what lets a small deployment run without the job. A stopped job makes the page a
+little less current, never slower, and the deploy check `core.W009` says so. Each batch commits on its own; a post deleted while its
 batch was counted is left out, not a failed run; and a run stopped half way
 leaves nothing behind, because the next one looks for activity from when the
 last *finished* run started.
@@ -605,7 +621,7 @@ simulated community.
 
 | Timer (in `deploy/`) | Runs | Missing it means |
 | --- | --- | --- |
-| `repbase-feed-stats` | `refresh_feed_stats`, 5 minutes after each run | a slower first page (counted on the spot); `core.W009` warns |
+| `repbase-feed-stats` | `refresh_feed_stats`, 5 minutes after each run | counts up to 6 hours old, then no record; `core.W009` warns |
 | `repbase-ranking-model` | `train_ranking_model`, daily ~04:30 | the active model ages; with none, the rules alone |
 
 Both are installed like the other timers: copy the `.service` and `.timer`

@@ -111,11 +111,27 @@ Revocation intentionally does not remove staff status or unrelated permissions.
    It reports nothing while `ANALYTICS_ENABLED` is false: silence from a
    system recording nothing would read as an all-clear.
 8. Smoke-test known successful/rejected requests in staging and compare counters.
-   Measure API latency under expected concurrency before enabling production
-   collection: recording currently performs synchronous, atomic database writes
-   and popular routes share a daily counter row. Database recording failures
+   With `ANALYTICS_BUFFERED` off, recording performs synchronous, atomic database
+   writes and popular routes share a daily counter row. Recording failures
    preserve the application response but may lose observations. Monitor the
    generic analytics-write warning. Collection is not billing-grade telemetry.
+9. To move recording out of requests, install the flush timer **first**, confirm
+   it runs, and only then set `ANALYTICS_BUFFERED=true` and restart. With the flag
+   on and no timer, the dashboard and `check_api_health` stop seeing new data.
+
+   ```sh
+   cp deploy/repbase-metrics-flush.{service,timer} /etc/systemd/system/
+   systemctl daemon-reload && systemctl enable --now repbase-metrics-flush.timer
+   journalctl -u repbase-metrics-flush -n 5    # one line of JSON per run
+   ```
+
+   Requests then make one Redis call, and the totals reach these tables every 30
+   to 60 seconds. It needs Redis 6.2 or later. To go back, set the flag to false
+   and restart; anything still buffered is applied by the timer.
+
+   Observations that cannot be buffered during a Redis outage are counted, logged
+   as "could not be buffered", and recorded per batch in
+   `MetricFlushReceipt.lost_observations`.
 
 ## Metric definitions
 

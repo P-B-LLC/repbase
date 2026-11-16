@@ -131,6 +131,9 @@ def reports(request):
     if not capabilities(request.user)['moderate']:
         return HttpResponseForbidden('Access denied.')
     kind = request.GET.get('kind', 'post')
+    if kind == 'media':
+        from .media_review_portal import queue
+        return queue(request)
     error = None
     status = 200
     try:

@@ -1,7 +1,7 @@
 Django==6.1.2
 djangorestframework==3.18.3
 drf-spectacular==0.30.0
-Pillow==12.3.0
+Pillow==13.0.0
 jsonschema==4.26.0
 PyYAML==6.0.3
 psycopg[binary]==3.3.6

@@ -1,0 +1,33 @@
+{% extends 'access/base.html' %}{% block content %}
+<a href="{% url 'access-workspace' %}">← Administration</a><h1>Moderation workspace</h1>
+<nav><a href="?kind=post">Post reports</a> · <a href="?kind=comment">Comments</a> · <a href="?kind=media">Media screening</a></nav>
+<p>Pending and flagged media is not public. Review the entire post before approving. Decision notes are confidential.</p>
+<nav class="review-tabs" aria-label="Screening status">
+<a href="?kind=media&amp;status=flagged" {% if selected == 'flagged' %}aria-current="page"{% endif %}>Needs review · {{ totals.flagged|default:0 }}</a>
+<a href="?kind=media&amp;status=pending" {% if selected == 'pending' %}aria-current="page"{% endif %}>Processing · {{ totals.pending|default:0 }}</a>
+<a href="?kind=media&amp;status=approved" {% if selected == 'approved' %}aria-current="page"{% endif %}>Approved · {{ totals.approved|default:0 }}</a>
+<a href="?kind=media&amp;status=rejected" {% if selected == 'rejected' %}aria-current="page"{% endif %}>Rejected · {{ totals.rejected|default:0 }}</a>
+</nav><p>{{ page.paginator.count }} posts · {{ selected|title }} · Oldest first</p>
+{% if error %}<p role="alert">{{ error }}</p>{% endif %}
+{% for post in page %}<article>
+<h2>Post #{{ post.pk }} · @{{ post.author.user.username }}</h2>
+<p>Uploaded {{ post.created_at }} · {{ post.moderation_status }}</p>
+<p>{{ post.caption }}</p>
+{% for snapshot in post.review_snapshots %}<details><summary>Shared {{ snapshot.name }} details</summary><pre>{{ snapshot.data }}</pre></details>{% endfor %}
+{% if post.moderation_child_hold %}<p>Safety hold: use the separate child-safety workflow. Preview and release are disabled.</p>
+{% else %}
+{% if post.image %}<img src="{% url 'access-media-preview' post.pk post.moderation_generation 'image' %}" alt="Submitted post image" style="max-width:100%;max-height:600px">{% endif %}
+{% if post.video %}<video controls preload="none" style="max-width:100%;max-height:600px" src="{% url 'access-media-preview' post.pk post.moderation_generation 'video' %}"></video>{% endif %}
+<details><summary>Why this post is here</summary><p>Screening state: {{ post.screening_job.state|default:'Not queued' }}. {{ post.screening_job.error_code }}</p>
+{% if post.screening_job.evidence %}<p>Sexual-content score: {{ post.screening_job.evidence.max_sexual_score }} · threshold: {{ post.screening_job.evidence.threshold }} · images checked: {{ post.screening_job.evidence.checked_images }}</p>{% endif %}
+</details>
+{% if post.moderation_status == 'pending' or post.moderation_status == 'flagged' %}
+{% if post.author.user_id == user.pk %}<p>You cannot review your own post.</p>{% else %}
+<form method="post">{% csrf_token %}
+<input type="hidden" name="post_id" value="{{ post.pk }}"><input type="hidden" name="generation" value="{{ post.moderation_generation }}">
+<label>Decision reason (confidential)<textarea name="reason" required maxlength="500" rows="3" placeholder="Explain how the post meets or violates the rules."></textarea></label>
+<p>Approve publishes the post. Reject keeps it private and notifies its author.</p>
+<div class="review-actions"><button name="decision" value="approved">Approve &amp; publish</button> <button class="review-reject" name="decision" value="rejected">Reject post</button></div>
+</form>{% endif %}{% else %}<p>Decision completed{% if post.reviewed_at %} · {{ post.reviewed_at }}{% endif %}. Read-only.</p>{% endif %}{% endif %}</article>{% empty %}<h2>You're all caught up</h2><p>No posts in this queue.</p>{% endfor %}
+<nav>{% if page.has_previous %}<a href="?kind=media&amp;status={{ selected }}&amp;page={{ page.previous_page_number }}">Previous</a>{% endif %}<span>Page {{ page.number }} of {{ page.paginator.num_pages }}</span>{% if page.has_next %}<a href="?kind=media&amp;status={{ selected }}&amp;page={{ page.next_page_number }}">Next</a>{% endif %}</nav>
+{% endblock %}

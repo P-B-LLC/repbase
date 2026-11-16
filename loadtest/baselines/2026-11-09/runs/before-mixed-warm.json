@@ -1,0 +1,229 @@
+{
+ "cache": {
+  "commands": 50679,
+  "hit_rate_pct": 96.83,
+  "hits": 277692,
+  "misses": 9093
+ },
+ "database": {
+  "active_queries_mean": 0.4,
+  "blocks_per_request": 12469.3,
+  "connection_reserve_pct": 84.0,
+  "connections_peak": 8,
+  "cpu_cores_mean": 0.084,
+  "cpu_pct_of_host": 0.7,
+  "deadlocks": 0,
+  "lock_waiters_mean": 0.0,
+  "lock_waiters_peak": 0,
+  "max_connections": 50,
+  "rows_examined_per_request": 29223.0,
+  "rows_returned_per_request": 567.1,
+  "statement_calls": 84902,
+  "statement_calls_per_request": 21.65,
+  "statement_time_ms": 50291.7
+ },
+ "groups": {
+  "first_page": {
+   "count": 73,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 222.3,
+   "p95_ms": 265.2,
+   "p99_ms": 315.6,
+   "sql_count_mean": 43.14,
+   "sql_ms_mean": 141.25
+  },
+  "following": {
+   "count": 32,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 156.0,
+   "p95_ms": 184.1,
+   "p99_ms": 216.8,
+   "sql_count_mean": 21.34,
+   "sql_ms_mean": 128.18
+  },
+  "food": {
+   "count": 865,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 8.9,
+   "p95_ms": 30.1,
+   "p99_ms": 516.4,
+   "sql_count_mean": 10.32,
+   "sql_ms_mean": 3.16
+  },
+  "impressions": {
+   "count": 1587,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 14.0,
+   "p95_ms": 182.9,
+   "p99_ms": 607.4,
+   "sql_count_mean": 9.0,
+   "sql_ms_mean": 5.23
+  },
+  "later_page": {
+   "count": 237,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 90.5,
+   "p95_ms": 127.9,
+   "p99_ms": 147.9,
+   "sql_count_mean": 33.0,
+   "sql_ms_mean": 38.03
+  },
+  "like": {
+   "count": 80,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 302.6,
+   "p95_ms": 1901.0,
+   "p99_ms": 2074.3,
+   "sql_count_mean": 28.82,
+   "sql_ms_mean": 356.9
+  },
+  "planner": {
+   "count": 546,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 11.9,
+   "p95_ms": 30.1,
+   "p99_ms": 473.5,
+   "sql_count_mean": 12.71,
+   "sql_ms_mean": 4.54
+  },
+  "workout": {
+   "count": 502,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 9.9,
+   "p95_ms": 34.0,
+   "p99_ms": 455.4,
+   "sql_count_mean": 13.25,
+   "sql_ms_mean": 4.61
+  }
+ },
+ "overall": {
+  "count": 3922,
+  "error_rate_pct": 0.0,
+  "errors_5xx": 0,
+  "failures": 0,
+  "metric_sql_per_request": 5.004,
+  "p50_ms": 13.3,
+  "p95_ms": 265.1,
+  "p99_ms": 618.0,
+  "requests_per_second": 26.15,
+  "sql_count_mean": 12.94,
+  "sql_ms_mean": 17.29
+ },
+ "scenario": {
+  "buffered": false,
+  "cache": "warm",
+  "core_users": 50,
+  "duration_s": 150,
+  "feed_users": 100,
+  "git_commit": "11a3544",
+  "label": "before-mixed-warm",
+  "mode": "mixed",
+  "redis": "up",
+  "scale": 1.0,
+  "seed": 20261109,
+  "stats": "fresh",
+  "web_threads": 4,
+  "web_workers": 2
+ },
+ "top_statements": [
+  {
+   "calls": 83,
+   "mean_ms": 315.82,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 83,
+   "total_ms": 26212.7
+  },
+  {
+   "calls": 32,
+   "mean_ms": 114.84,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 672,
+   "total_ms": 3674.9
+  },
+  {
+   "calls": 173,
+   "mean_ms": 19.63,
+   "query": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", COUNT(\"core_postlike\".\"id\") AS \"shared\" FROM \"core_postlike\" INNER JOIN \"core_repbaseuser\" ON (\"core_postlike\".\"u",
+   "rows": 17300,
+   "total_ms": 3395.7
+  },
+  {
+   "calls": 173,
+   "mean_ms": 9.57,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 25950,
+   "total_ms": 1655.4
+  },
+  {
+   "calls": 173,
+   "mean_ms": 8.73,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 86500,
+   "total_ms": 1511.1
+  },
+  {
+   "calls": 83,
+   "mean_ms": 17.56,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 83,
+   "total_ms": 1457.7
+  },
+  {
+   "calls": 173,
+   "mean_ms": 4.82,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 25950,
+   "total_ms": 834.5
+  },
+  {
+   "calls": 173,
+   "mean_ms": 4.65,
+   "query": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", \"core_postlike\".\"post_id\" AS \"post_id\" FROM \"core_postlike\" INNER JOIN \"core_post\" ON (\"core_postlike\".\"post_id\" ",
+   "rows": 456647,
+   "total_ms": 804.1
+  },
+  {
+   "calls": 410,
+   "mean_ms": 1.66,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 8200,
+   "total_ms": 681.8
+  },
+  {
+   "calls": 115,
+   "mean_ms": 5.85,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 46000,
+   "total_ms": 672.2
+  },
+  {
+   "calls": 173,
+   "mean_ms": 3.39,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 21895,
+   "total_ms": 586.5
+  },
+  {
+   "calls": 4230,
+   "mean_ms": 0.12,
+   "query": "UPDATE \"core_dailyapimetric\" SET \"requests\" = (\"core_dailyapimetric\".\"requests\" + $1), \"client_errors\" = (\"core_dailyapimetric\".\"client_errors\" + $2), \"server_e",
+   "rows": 4230,
+   "total_ms": 501.6
+  }
+ ],
+ "workers": {
+  "feed_stats_age_s": 127.0,
+  "metric_flush_lag_s": null,
+  "push_queue_age_s": null,
+  "screening_queue_age_s": null,
+  "video_queue_age_s": null
+ }
+}

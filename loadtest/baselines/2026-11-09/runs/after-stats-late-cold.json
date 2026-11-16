@@ -1,0 +1,229 @@
+{
+ "cache": {
+  "commands": 72206,
+  "hit_rate_pct": 50.93,
+  "hits": 268068,
+  "misses": 258255
+ },
+ "database": {
+  "active_queries_mean": 0.36,
+  "blocks_per_request": 12339.7,
+  "connection_reserve_pct": 84.0,
+  "connections_peak": 8,
+  "cpu_cores_mean": 0.361,
+  "cpu_pct_of_host": 3.01,
+  "deadlocks": 0,
+  "lock_waiters_mean": 0.0,
+  "lock_waiters_peak": 0,
+  "max_connections": 50,
+  "rows_examined_per_request": 29050.7,
+  "rows_returned_per_request": 572.0,
+  "statement_calls": 55082,
+  "statement_calls_per_request": 14.05,
+  "statement_time_ms": 45976.5
+ },
+ "groups": {
+  "first_page": {
+   "count": 73,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 220.6,
+   "p95_ms": 260.1,
+   "p99_ms": 295.6,
+   "sql_count_mean": 38.08,
+   "sql_ms_mean": 136.06
+  },
+  "following": {
+   "count": 32,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 150.3,
+   "p95_ms": 172.6,
+   "p99_ms": 180.4,
+   "sql_count_mean": 16.25,
+   "sql_ms_mean": 122.21
+  },
+  "food": {
+   "count": 865,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 7.1,
+   "p95_ms": 28.5,
+   "p99_ms": 481.9,
+   "sql_count_mean": 5.3,
+   "sql_ms_mean": 2.06
+  },
+  "impressions": {
+   "count": 1587,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 12.6,
+   "p95_ms": 194.4,
+   "p99_ms": 516.2,
+   "sql_count_mean": 4.0,
+   "sql_ms_mean": 3.58
+  },
+  "later_page": {
+   "count": 237,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 89.0,
+   "p95_ms": 115.1,
+   "p99_ms": 139.4,
+   "sql_count_mean": 27.98,
+   "sql_ms_mean": 35.87
+  },
+  "like": {
+   "count": 80,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 287.3,
+   "p95_ms": 1524.2,
+   "p99_ms": 1701.8,
+   "sql_count_mean": 23.79,
+   "sql_ms_mean": 319.35
+  },
+  "planner": {
+   "count": 546,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 10.3,
+   "p95_ms": 24.4,
+   "p99_ms": 318.6,
+   "sql_count_mean": 7.69,
+   "sql_ms_mean": 2.99
+  },
+  "workout": {
+   "count": 501,
+   "errors_5xx": 0,
+   "failures": 0,
+   "p50_ms": 8.0,
+   "p95_ms": 25.7,
+   "p99_ms": 666.8,
+   "sql_count_mean": 8.23,
+   "sql_ms_mean": 3.13
+  }
+ },
+ "overall": {
+  "count": 3921,
+  "error_rate_pct": 0.0,
+  "errors_5xx": 0,
+  "failures": 0,
+  "metric_sql_per_request": 0.0,
+  "p50_ms": 11.6,
+  "p95_ms": 247.3,
+  "p99_ms": 566.7,
+  "requests_per_second": 26.14,
+  "sql_count_mean": 7.93,
+  "sql_ms_mean": 14.93
+ },
+ "scenario": {
+  "buffered": true,
+  "cache": "cold",
+  "core_users": 50,
+  "duration_s": 150,
+  "feed_users": 100,
+  "git_commit": "dada1f7",
+  "label": "after-stats-late-cold",
+  "mode": "mixed",
+  "redis": "up",
+  "scale": 1.0,
+  "seed": 20261109,
+  "stats": "late",
+  "web_threads": 4,
+  "web_workers": 2
+ },
+ "top_statements": [
+  {
+   "calls": 83,
+   "mean_ms": 281.23,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 83,
+   "total_ms": 23341.8
+  },
+  {
+   "calls": 32,
+   "mean_ms": 108.91,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 672,
+   "total_ms": 3485.1
+  },
+  {
+   "calls": 173,
+   "mean_ms": 18.67,
+   "query": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", COUNT(\"core_postlike\".\"id\") AS \"shared\" FROM \"core_postlike\" INNER JOIN \"core_repbaseuser\" ON (\"core_postlike\".\"u",
+   "rows": 17300,
+   "total_ms": 3230.7
+  },
+  {
+   "calls": 173,
+   "mean_ms": 8.94,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 25950,
+   "total_ms": 1545.8
+  },
+  {
+   "calls": 83,
+   "mean_ms": 17.85,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 83,
+   "total_ms": 1481.6
+  },
+  {
+   "calls": 173,
+   "mean_ms": 8.33,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 86500,
+   "total_ms": 1441.8
+  },
+  {
+   "calls": 173,
+   "mean_ms": 4.95,
+   "query": "SELECT \"core_postlike\".\"user_id\" AS \"user_id\", \"core_postlike\".\"post_id\" AS \"post_id\" FROM \"core_postlike\" INNER JOIN \"core_post\" ON (\"core_postlike\".\"post_id\" ",
+   "rows": 456066,
+   "total_ms": 857.1
+  },
+  {
+   "calls": 173,
+   "mean_ms": 4.68,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 25950,
+   "total_ms": 809.0
+  },
+  {
+   "calls": 115,
+   "mean_ms": 5.64,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 46000,
+   "total_ms": 648.4
+  },
+  {
+   "calls": 410,
+   "mean_ms": 1.55,
+   "query": "SELECT \"core_post\".\"id\", \"core_post\".\"author_id\", \"core_post\".\"kind\", \"core_post\".\"caption\", \"core_post\".\"image\", \"core_post\".\"feed_image\", \"core_post\".\"visibil",
+   "rows": 8200,
+   "total_ms": 636.9
+  },
+  {
+   "calls": 173,
+   "mean_ms": 3.18,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 21898,
+   "total_ms": 550.9
+  },
+  {
+   "calls": 73,
+   "mean_ms": 5.49,
+   "query": "SELECT \"core_post\".\"id\" AS \"pk\", \"core_post\".\"author_id\" AS \"author_id\", \"core_repbaseuser\".\"created_at\" AS \"author__created_at\", \"core_post\".\"kind\" AS \"kind\", ",
+   "rows": 27740,
+   "total_ms": 400.6
+  }
+ ],
+ "workers": {
+  "feed_stats_age_s": 7375.2,
+  "metric_flush_lag_s": 24.0,
+  "push_queue_age_s": null,
+  "screening_queue_age_s": null,
+  "video_queue_age_s": null
+ }
+}

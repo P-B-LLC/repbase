@@ -1,0 +1,106 @@
+-- 2.8 ms when captured
+-- SELECT "core_workoutsession"."id", "core_workoutsession"."repbase_user_id", "core_workoutsession"."workout_id", "core_workoutsession"."status", "core_workoutsession"."started_at", "core_workoutsession"."ended_at", "core_workoutsession"."cardio_machine", "core_workoutsession"."cardio_seconds", "core_workoutsession"."cardio_distance_km", "core_workoutsession"."health_external_id", "core_workoutsession"."health_distance_km", "core_workoutsession"."recorded_distance_km", "core_workoutsession"."route_summary", "core_workoutsession"."gear_id", "core_workoutsession"."perceived_effort", "core_workouts
+Limit  (cost=2665.43..2665.56 rows=50 width=822) (actual time=2.024..2.027 rows=50 loops=1)
+  Buffers: shared hit=2287
+  ->  Sort  (cost=2665.43..2666.83 rows=561 width=822) (actual time=2.024..2.025 rows=50 loops=1)
+        Sort Key: core_workoutsession.created_at DESC, core_workoutsession.id DESC
+        Sort Method: top-N heapsort  Memory: 47kB
+        Buffers: shared hit=2287
+        ->  GroupAggregate  (cost=2635.58..2646.80 rows=561 width=822) (actual time=1.746..1.979 rows=120 loops=1)
+              Group Key: core_workoutsession.id, core_workouttemplate.id
+              Buffers: shared hit=2287
+              ->  Sort  (cost=2635.58..2636.98 rows=561 width=831) (actual time=1.741..1.770 rows=1440 loops=1)
+                    Sort Key: core_workoutsession.id DESC, core_workouttemplate.id, core_setentry.id
+                    Sort Method: quicksort  Memory: 319kB
+                    Buffers: shared hit=2287
+                    ->  Nested Loop Left Join  (cost=1.59..2609.96 rows=561 width=831) (actual time=0.012..0.757 rows=1440 loops=1)
+                          Buffers: shared hit=2287
+                          ->  Nested Loop Left Join  (cost=1.17..2482.60 rows=187 width=822) (actual time=0.009..0.253 rows=480 loops=1)
+                                Buffers: shared hit=367
+                                ->  Nested Loop  (cost=0.88..1371.48 rows=187 width=692) (actual time=0.008..0.171 rows=480 loops=1)
+                                      Buffers: shared hit=367
+                                      ->  Index Scan using core_repbaseuser_pkey on core_repbaseuser  (cost=0.29..8.30 rows=1 width=301) (actual time=0.003..0.003 rows=1 loops=1)
+                                            Index Cond: (id = 101)
+                                            Buffers: shared hit=3
+                                      ->  Nested Loop Left Join  (cost=0.59..1361.30 rows=187 width=391) (actual time=0.005..0.134 rows=480 loops=1)
+                                            Buffers: shared hit=364
+                                            ->  Index Scan using core_session_repbase_user_id_2e26f9b0 on core_workoutsession  (cost=0.29..13.57 rows=187 width=383) (actual time=0.003..0.019 rows=120 loops=1)
+                                                  Index Cond: (repbase_user_id = 101)
+                                                  Buffers: shared hit=4
+                                            ->  Index Scan using core_sessionexercise_session_id_1fb11aeb on core_sessionexercise  (cost=0.29..7.17 rows=4 width=16) (actual time=0.000..0.001 rows=4 loops=120)
+                                                  Index Cond: (session_id = core_workoutsession.id)
+                                                  Buffers: shared hit=360
+                                ->  Index Scan using core_workouttemplate_pkey on core_workouttemplate  (cost=0.29..5.91 rows=1 width=130) (actual time=0.000..0.000 rows=0 loops=480)
+                                      Index Cond: (id = core_workoutsession.workout_id)
+                          ->  Index Scan using core_setentry_session_exercise_id_cf141abb on core_setentry  (cost=0.42..0.65 rows=3 width=25) (actual time=0.001..0.001 rows=3 loops=480)
+                                Index Cond: (session_exercise_id = core_sessionexercise.id)
+                                Buffers: shared hit=1920
+Planning:
+  Buffers: shared hit=50
+Planning Time: 0.372 ms
+Execution Time: 2.056 ms
+
+-- 0.9 ms when captured
+-- SELECT COUNT(*) FROM (SELECT "core_workoutsession"."id" AS "col1" FROM "core_workoutsession" LEFT OUTER JOIN "core_sessionexercise" ON ("core_workoutsession"."id" = "core_sessionexercise"."session_id") LEFT OUTER JOIN "core_setentry" ON ("core_sessionexercise"."id" = "core_setentry"."session_exercise_id") WHERE "core_workoutsession"."repbase_user_id" = %s GROUP BY 1) subquery
+Aggregate  (cost=1466.56..1466.57 rows=1 width=8) (actual time=0.536..0.536 rows=1 loops=1)
+  Buffers: shared hit=1805
+  ->  HashAggregate  (cost=1462.36..1464.23 rows=187 width=8) (actual time=0.528..0.533 rows=120 loops=1)
+        Group Key: core_workoutsession.id
+        Batches: 1  Memory Usage: 40kB
+        Buffers: shared hit=1805
+        ->  Nested Loop Left Join  (cost=1.01..1460.95 rows=561 width=8) (actual time=0.004..0.446 rows=1440 loops=1)
+              Buffers: shared hit=1805
+              ->  Nested Loop Left Join  (cost=0.59..1361.30 rows=187 width=16) (actual time=0.003..0.111 rows=480 loops=1)
+                    Buffers: shared hit=364
+                    ->  Index Scan using core_session_repbase_user_id_2e26f9b0 on core_workoutsession  (cost=0.29..13.57 rows=187 width=8) (actual time=0.001..0.009 rows=120 loops=1)
+                          Index Cond: (repbase_user_id = 101)
+                          Buffers: shared hit=4
+                    ->  Index Scan using core_sessionexercise_session_id_1fb11aeb on core_sessionexercise  (cost=0.29..7.17 rows=4 width=16) (actual time=0.000..0.001 rows=4 loops=120)
+                          Index Cond: (session_id = core_workoutsession.id)
+                          Buffers: shared hit=360
+              ->  Index Only Scan using core_setentry_session_exercise_id_cf141abb on core_setentry  (cost=0.42..0.50 rows=3 width=8) (actual time=0.000..0.001 rows=3 loops=480)
+                    Index Cond: (session_exercise_id = core_sessionexercise.id)
+                    Heap Fetches: 0
+                    Buffers: shared hit=1441
+Planning:
+  Buffers: shared hit=39
+Planning Time: 0.117 ms
+Execution Time: 0.544 ms
+
+-- 0.2 ms when captured
+-- SELECT "authtoken_token"."key", "authtoken_token"."user_id", "authtoken_token"."created", "auth_user"."id", "auth_user"."password", "auth_user"."last_login", "auth_user"."is_superuser", "auth_user"."username", "auth_user"."first_name", "auth_user"."last_name", "auth_user"."email", "auth_user"."is_staff", "auth_user"."is_active", "auth_user"."date_joined" FROM "authtoken_token" INNER JOIN "auth_user" ON ("authtoken_token"."user_id" = "auth_user"."id") WHERE "authtoken_token"."key" = %s LIMIT 21
+Limit  (cost=0.56..16.60 rows=1 width=129) (actual time=0.003..0.004 rows=1 loops=1)
+  Buffers: shared hit=6
+  ->  Nested Loop  (cost=0.56..16.60 rows=1 width=129) (actual time=0.003..0.003 rows=1 loops=1)
+        Buffers: shared hit=6
+        ->  Index Scan using authtoken_token_key_10f0b77e_like on authtoken_token  (cost=0.27..8.29 rows=1 width=53) (actual time=0.002..0.002 rows=1 loops=1)
+              Index Cond: ((key)::text = '46b78a5123a04e0399750a14e4bca98a17e12333'::text)
+              Buffers: shared hit=3
+        ->  Index Scan using auth_user_pkey on auth_user  (cost=0.29..8.30 rows=1 width=76) (actual time=0.001..0.001 rows=1 loops=1)
+              Index Cond: (id = authtoken_token.user_id)
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=7
+Planning Time: 0.053 ms
+Execution Time: 0.008 ms
+
+-- 0.1 ms when captured
+-- UPDATE "core_recentapimetric" SET "requests" = ("core_recentapimetric"."requests" + %s), "client_errors" = ("core_recentapimetric"."client_errors" + %s), "server_errors" = ("core_recentapimetric"."server_errors" + %s), "total_ms" = ("core_recentapimetric"."total_ms" + %s), "max_ms" = GREATEST("core_recentapimetric"."max_ms", %s) WHERE "core_recentapimetric"."id" = %s
+Update on core_recentapimetric  (cost=0.00..1.22 rows=0 width=0)
+  ->  Seq Scan on core_recentapimetric  (cost=0.00..1.22 rows=1 width=46)
+        Filter: (id = 8)
+
+-- 0.1 ms when captured
+-- INSERT INTO "core_dailyapimetric" ("day", "endpoint", "method", "requests", "client_errors", "server_errors", "total_ms", "max_ms") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_dailyapimetric"."id"
+Insert on core_dailyapimetric  (cost=0.00..0.01 rows=1 width=424)
+  ->  Result  (cost=0.00..0.01 rows=1 width=424)
+
+-- 0.1 ms when captured
+-- SELECT "core_recentapimetric"."id", "core_recentapimetric"."bucket", "core_recentapimetric"."endpoint", "core_recentapimetric"."method", "core_recentapimetric"."requests", "core_recentapimetric"."client_errors", "core_recentapimetric"."server_errors", "core_recentapimetric"."total_ms", "core_recentapimetric"."max_ms" FROM "core_recentapimetric" WHERE ("core_recentapimetric"."bucket" = %s AND "core_recentapimetric"."endpoint" = %s AND "core_recentapimetric"."method" = %s) LIMIT 21
+Limit  (cost=0.00..1.30 rows=1 width=428) (actual time=0.002..0.002 rows=1 loops=1)
+  Buffers: shared hit=1
+  ->  Seq Scan on core_recentapimetric  (cost=0.00..1.30 rows=1 width=428) (actual time=0.002..0.002 rows=1 loops=1)
+        Filter: ((bucket = '2026-11-09 21:15:00+00'::timestamp with time zone) AND ((endpoint)::text = 'workoutsession-list'::text) AND ((method)::text = 'GET'::text))
+        Buffers: shared hit=1
+Planning Time: 0.016 ms
+Execution Time: 0.005 ms

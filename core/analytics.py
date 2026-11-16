@@ -8,7 +8,7 @@ from django.contrib.auth.forms import AuthenticationForm
 from django.contrib.auth.views import LoginView, LogoutView
 from django.contrib.auth.decorators import login_required
 from django.core.exceptions import ValidationError
-from django.db import DatabaseError, transaction
+from django.db import transaction
 from django.db.models import Count, F, Max, Q, Sum
 from django.db.models.functions import Greatest
 from django.http import HttpResponseForbidden, HttpResponse
@@ -17,6 +17,7 @@ from django.utils import timezone
 from django.views.decorators.cache import never_cache
 
 from .analytics_models import DailyActiveAccount, DailyApiMetric, RecentApiMetric
+from . import metric_buffer
 from .throttles import sign_in_attempt_refusal
 from .models import RepbaseUser, WorkoutSession, PlannerEntry, FoodMeal
 
@@ -109,6 +110,12 @@ class AnalyticsMiddleware:
         endpoint = (match.view_name if match else 'unmatched')[:160]
         method = request.method if request.method in ('GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS') else 'OTHER'
         elapsed = max(0, min(round((time.perf_counter() - start) * 1000), 86400000))
+        if settings.ANALYTICS_BUFFERED:
+            metric_buffer.record(
+                endpoint, method, response.status_code, elapsed, bucket_for(timezone.now()),
+                self._active_account(request, response),
+            )
+            return response
         day = timezone.now().astimezone(datetime_timezone.utc).date()
         try:
             # Savepoint prevents a metrics failure poisoning an outer transaction.
@@ -129,10 +136,24 @@ class AnalyticsMiddleware:
                 user = getattr(request, 'user', None)
                 if user and user.is_authenticated and not user.is_staff and response.status_code < 400:
                     DailyActiveAccount.objects.get_or_create(day=day, user=user)
-        except DatabaseError:
-            # Observability must never change the result of a user's save.
+        except Exception:  # noqa: BLE001
+            # Observability must never change the result of a user's save, and
+            # the save has already committed by now. Not only DatabaseError: a
+            # connection that closed underneath this raises InterfaceError.
             logger.warning('Analytics write failed; application response preserved.')
         return response
+
+    @staticmethod
+    def _active_account(request, response):
+        """The account to mark active for this request, if any. Reading
+        `request.user` can touch the database, so it can fail."""
+        try:
+            user = getattr(request, 'user', None)
+            if user and user.is_authenticated and not user.is_staff and response.status_code < 400:
+                return user.pk
+        except Exception:  # noqa: BLE001
+            logger.warning('Could not read the account for analytics; application response preserved.')
+        return None
 
 
 # --- Reading the numbers ------------------------------------------------

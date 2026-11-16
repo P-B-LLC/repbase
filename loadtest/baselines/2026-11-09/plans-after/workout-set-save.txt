@@ -1,0 +1,56 @@
+-- 1.9 ms when captured
+-- INSERT INTO "core_workoutsession" ("repbase_user_id", "workout_id", "status", "started_at", "ended_at", "cardio_machine", "cardio_seconds", "cardio_distance_km", "health_external_id", "health_distance_km", "recorded_distance_km", "route_summary", "gear_id", "perceived_effort", "manual_calories_kcal", "manual_distance_km", "notes", "activity_details", "is_manual_entry", "created_at", "updated_at") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_workoutsession"."id"
+Insert on core_workoutsession  (cost=0.00..0.01 rows=1 width=473)
+  ->  Result  (cost=0.00..0.01 rows=1 width=473)
+
+-- 1.4 ms when captured
+-- SELECT COUNT(*) AS "__count" FROM "core_setentry" INNER JOIN "core_sessionexercise" ON ("core_setentry"."session_exercise_id" = "core_sessionexercise"."id") WHERE ("core_sessionexercise"."session_id" = %s AND NOT ("core_setentry"."reps" IS NULL AND "core_setentry"."weight_kg" IS NULL))
+Aggregate  (cost=42.42..42.43 rows=1 width=8) (actual time=0.004..0.004 rows=1 loops=1)
+  Buffers: shared hit=7
+  ->  Nested Loop  (cost=0.72..42.39 rows=12 width=0) (actual time=0.003..0.003 rows=1 loops=1)
+        Buffers: shared hit=7
+        ->  Index Scan using core_sessionexercise_session_id_1fb11aeb on core_sessionexercise  (cost=0.29..8.37 rows=4 width=8) (actual time=0.001..0.001 rows=1 loops=1)
+              Index Cond: (session_id = 244001)
+              Buffers: shared hit=3
+        ->  Index Scan using core_setentry_session_exercise_id_cf141abb on core_setentry  (cost=0.42..8.48 rows=3 width=8) (actual time=0.001..0.002 rows=1 loops=1)
+              Index Cond: (session_exercise_id = core_sessionexercise.id)
+              Filter: ((reps IS NOT NULL) OR (weight_kg IS NOT NULL))
+              Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=18
+Planning Time: 0.062 ms
+Execution Time: 0.009 ms
+
+-- 0.9 ms when captured
+-- SELECT "core_sessionroutepoint"."id", "core_sessionroutepoint"."session_id", "core_sessionroutepoint"."latitude", "core_sessionroutepoint"."longitude", "core_sessionroutepoint"."recorded_at", "core_sessionroutepoint"."speed_mps", "core_sessionroutepoint"."altitude_m", "core_sessionroutepoint"."created_at" FROM "core_sessionroutepoint" WHERE "core_sessionroutepoint"."session_id" = %s ORDER BY "core_sessionroutepoint"."recorded_at" ASC, "core_sessionroutepoint"."id" ASC
+Sort  (cost=0.01..0.02 rows=1 width=88) (actual time=0.001..0.001 rows=0 loops=1)
+  Sort Key: recorded_at, id
+  Sort Method: quicksort  Memory: 25kB
+  ->  Seq Scan on core_sessionroutepoint  (cost=0.00..0.00 rows=1 width=88) (actual time=0.001..0.001 rows=0 loops=1)
+        Filter: (session_id = 244001)
+Planning:
+  Buffers: shared hit=3
+Planning Time: 0.015 ms
+Execution Time: 0.004 ms
+
+-- 0.5 ms when captured
+-- SELECT "core_workoutsession"."id", "core_workoutsession"."repbase_user_id", "core_workoutsession"."workout_id", "core_workoutsession"."status", "core_workoutsession"."started_at", "core_workoutsession"."ended_at", "core_workoutsession"."cardio_machine", "core_workoutsession"."cardio_seconds", "core_workoutsession"."cardio_distance_km", "core_workoutsession"."health_external_id", "core_workoutsession"."health_distance_km", "core_workoutsession"."recorded_distance_km", "core_workoutsession"."route_summary", "core_workoutsession"."gear_id", "core_workoutsession"."perceived_effort", "core_workouts
+Limit  (cost=0.42..8.44 rows=1 width=383) (actual time=0.002..0.002 rows=1 loops=1)
+  Buffers: shared hit=4
+  ->  Index Scan using core_session_pkey on core_workoutsession  (cost=0.42..8.44 rows=1 width=383) (actual time=0.002..0.002 rows=1 loops=1)
+        Index Cond: (id = 244001)
+        Buffers: shared hit=4
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.017 ms
+Execution Time: 0.006 ms
+
+-- 0.5 ms when captured
+-- INSERT INTO "core_sessionexercise" ("session_id", "exercise_id", "order", "notes") VALUES (%s, %s, %s, %s) RETURNING "core_sessionexercise"."id"
+Insert on core_sessionexercise  (cost=0.00..0.01 rows=1 width=544)
+  ->  Result  (cost=0.00..0.01 rows=1 width=544)
+
+-- 0.5 ms when captured
+-- INSERT INTO "core_setentry" ("session_exercise_id", "set_number", "weight_kg", "reps", "distance_km", "completed_at", "set_type", "created_at", "updated_at") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_setentry"."id"
+Insert on core_setentry  (cost=0.00..0.01 rows=1 width=114)
+  ->  Result  (cost=0.00..0.01 rows=1 width=114)

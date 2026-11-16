@@ -6,6 +6,7 @@ from unittest.mock import patch
 from .media_storage import ReservedNameFileSystemStorage, ReservedNameInMemoryStorage
 from django.db import IntegrityError
 from django.utils import timezone
+from django.test import override_settings
 from PIL import Image
 from rest_framework.test import APITransactionTestCase
 
@@ -30,6 +31,28 @@ class BetaPublicationTests(RepbaseAPITestMixin, APITransactionTestCase):
         with patch('core.post_publication.default_storage', self.storage), \
              patch('core.media_cleanup.default_storage', self.storage):
             return self.client.post('/api/v1/social/posts/', self.payload, format='json')
+
+    @override_settings(MEDIA_SCREENING_ENABLED=True, MODERATION_ENABLED=False)
+    def test_image_upload_queues_private_post_without_provider_call(self):
+        from django.conf import settings
+        from .models import MediaScreeningJob
+        self.client.credentials(HTTP_AUTHORIZATION=f'Token {self.profile.user.auth_token.key}',
+            HTTP_X_MODERATION_CONSENT=settings.MODERATION_CONSENT_VERSION)
+        with patch('core.media_screening_jobs.screen_image') as provider:
+            response = self.publish()
+        self.assertEqual(response.status_code, 201, response.data)
+        post = Post.objects.get(pk=response.data['id'])
+        self.assertEqual(post.moderation_status, 'pending')
+        self.assertIsNone(post.published_at)
+        self.assertEqual(MediaScreeningJob.objects.get(post=post).state, 'queued')
+        self.assertEqual(response.data['moderation_status'], 'pending')
+        provider.assert_not_called()
+
+    @override_settings(MEDIA_SCREENING_ENABLED=True, MODERATION_ENABLED=False)
+    def test_async_image_requires_current_consent_before_upload(self):
+        response = self.publish()
+        self.assertGreaterEqual(response.status_code, 400)
+        self.assertFalse(Post.objects.exists())
 
     def test_switch_default_on_create_and_update(self):
         first = self.client.post('/api/v1/gear/', dict(kind='shoe', name='First', is_default=True), format='json')
