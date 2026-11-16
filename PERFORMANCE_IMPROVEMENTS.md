@@ -1,3 +1,223 @@
+# Social Milestone 6: Original Sounds and Takes
+
+**Status:** Done on `feature/social-m6-sounds-takes` (stacked on Milestone 5), awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / sounds, take totals, prompts
+
+## Why
+
+Milestone 2 gave posts a sound reference and take lineage. Nothing could yet create a
+sound, take one down, count takes, or show that all of it stays consistent.
+
+## What Was Changed
+
+- **Sounds** (`core/sounds.py`, `core/sound_views.py`, migration 0099): an author
+  publishes the audio of their own approved clip, on purpose, with a reuse permission.
+  A worker extracts the audio once (`prepare_sounds`); posts reference the row.
+- **Removal**: by the owner or a moderator, as a status. The credit, the audio file,
+  new uses and For You eligibility all follow from the one row, and come back on
+  restore. Only a moderator restores what a moderator removed.
+- **`take_count`** on every post: takes anybody could see, the same for every reader.
+- **Prompts**: a short fixed list to post under and browse by.
+- `deploy/repbase-sounds.service` and `.timer`, with their own CPU and memory limits.
+
+## Verification
+
+31 tests in `core/test_sounds_and_takes.py`, including a table of the exit criterion:
+source deletion, blocks, revoked reuse, sound removal, private accounts and saved
+copies, each read from the feed, the post, the post list, the takes list and the
+sound's posts. Audio extraction is tested with real ffmpeg on a fixture clip.
+
+## Needs To Be Changed / Improved
+
+- Extraction reads the clip from media storage. Clips processed by the object-storage
+  video pipeline (`variants`, no `file`) are not handled yet and stay unprepared.
+- The service file's `ReadWritePaths` names a placeholder media path.
+- Shared-calendar invitations were not built here; the plan puts them after the feed
+  is stable, and calendar sharing already exists on the `work/` branches.
+- `take_count` is a subquery per card. It belongs in the cached engagement counts
+  once takes are common.
+
+---
+
+# Social Milestone 5: Ranking Reads Measured Attention
+
+**Status:** Done on `feature/social-m5-ranking` (stacked on Milestone 3), awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / For You ranking
+
+## Why
+
+The ranking already had the five stages the plan asks for. What it lacked was the new
+evidence: measured watching and reading, hashtags, sounds, formats and take families.
+
+## What Was Changed
+
+- Measured viewing signals, tag and sound relevance, format baselines and a shared
+  candidate cap, each behind a weight that is 0 by default. `MEASURED_VARIANT` turns
+  them on together as one experiment arm. See `RECOMMENDATIONS.md`.
+- A take counts as a strong signal; a page is not filled by one take family or one
+  sound; a post on a removed sound is not eligible.
+- No schema change.
+
+## Verification
+
+31 tests in `core/test_measured_ranking.py`. With every new weight at 0 the existing
+ranking tests, including the simulated community, pass unchanged.
+
+## Needs To Be Changed / Improved
+
+- Nothing here has been run as an experiment. The weights are the plan's starting
+  values and have not been evaluated on real readers.
+- Shared quality figures (`watch`, completions) still come from the legacy columns;
+  moving them needs new columns on `PostEngagementStats`.
+- The learned model's features are unchanged, so it does not see the new parts.
+
+---
+
+# Social Milestone 3: Measured Attention, Safe to Send Twice
+
+**Status:** Done on `feature/social-m3-attention` (stacked on Milestone 2), awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / impression ingestion; iOS / on-device measurement
+
+## Why
+
+The player reported the furthest position it reached, so seeking forward read as
+watching. Batches were also dropped on any failure and could not be retried safely.
+
+## What Was Changed
+
+- **Schema version 2 on `POST /social/impressions/`** (`core/attention.py`): one
+  summary per exposure, with active dwell, playback time, unique coverage, rewatch,
+  attachment reading and playback failure. Every figure is bounded by something the
+  server knows; a figure over its bound is lowered, not refused.
+- **`ImpressionBatchReceipt`** (migration 0098), written in the transaction that adds
+  the batch. A retried batch adds nothing. Receipts are per account and kept 7 days.
+- **Ordering**: totals are sums and coverage a maximum; `skipped` belongs to the
+  exposure observed last, by device time then session and sequence.
+- **Legacy kept apart**: version 1 bodies write only the old columns, as before.
+  Version 2 also feeds those columns their honest equivalents, so the ranking in use
+  keeps working.
+- A 64 kB request limit, and timestamps bounded to 48 hours back and 5 minutes ahead.
+
+## Verification
+
+37 tests in `core/test_attention.py` cover duplicate, reordered, interrupted and
+malicious batches, including four simultaneous deliveries of one batch on PostgreSQL.
+A batch of 38 posts runs the same number of statements as a batch of one.
+1,757 backend tests pass on SQLite and PostgreSQL 16.
+
+## Needs To Be Changed / Improved
+
+- The ranker still reads only the legacy columns. Using the new ones is Milestone 5.
+- Device measurements are tested with a simulated clock only; they have not been
+  checked against known-duration playback on a simulator or an iPhone.
+
+---
+
+# Social Milestone 2: Publication Data and the Post Contract
+
+**Status:** Done on `feature/social-m2-publication-contract` (stacked on Milestone 1), awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / post schema, API contract, feed query cost
+
+## Why
+
+The approved feed has four formats -- gym moment, workout, recipe, Your take -- and
+credits for sources and sounds. All of that has to be in the schema and the contract
+before the apps are built on it, without breaking the apps already installed.
+
+## What Was Changed
+
+- **Lineage on `Post`** (migration 0096): `is_take`, the direct `source_post`, the
+  canonical `original_post`, and the attachment version taken. A take is an ordinary
+  media, workout or meal post, not a new kind.
+- **`Sound`**, referenced by posts and stored once. **`PostHashtag`** rows beside a
+  `hashtags` list on the post, written together by `core.publication.write_hashtags`.
+  `topics`, `language` and `reuse_permission` on the post.
+- **Permissions** (`core/publication.py`): who may take a post or reuse a sound is
+  decided at creation; whether a credit may still be shown is decided per reader at
+  read time, by `visible_posts_for`.
+- **Stored card figures** on `PostWorkout` and `PostMeal` (backfilled by 0097), and
+  `?attachments=summary` on the post list, feed, For You and takes list.
+- **Indexes**: three partial indexes on `Post` and one unique index on `PostHashtag`.
+
+## Verification
+
+Measured on PostgreSQL 16 with 200,000 posts, about 10,000 takes, 8,000 sound uses
+and 140,000 hashtag rows. Buffers read to return one page of 21:
+
+| Query | With the index | Without |
+| ----- | ----- | ----- |
+| Takes of a post, newest first | 6 | 2,266 |
+| Posts using a sound, newest first | 3 | 204 |
+| Posts carrying a hashtag, newest first | 4 | (unique index, always present) |
+| Takes found when an original is deleted | 177 | 4,014 (sequential scan) |
+
+The takes list as the API runs it, visibility rules included, walks `post_takes_newest`
+with no sort. The three partial indexes total 1.3 MB beside a 31 MB table.
+
+A summary page reads no exercise or food rows: up to four fewer queries on a page that has
+workouts, recipes and reposts of them. A page with no takes and no sounds runs no
+extra query for credits; a page with any number of takes runs one.
+
+1,720 backend tests pass on SQLite and PostgreSQL 16. Responses are validated against
+the committed contract and against the contract as it stood before this milestone.
+
+## Needs To Be Changed / Improved
+
+- Two existing `Post` indexes duplicate the leading column of a composite one
+  (`author_id`, and `published_at`): 7.7 MB at this size, written on every post. Left
+  alone here; worth dropping in a migration of their own.
+- Nothing creates a `Sound` yet. Extraction and the removal workflow are Milestone 6.
+- No take count on a card yet. It belongs with the cached engagement counts.
+- Migrations 0095-0102 (Social) follow both `0094_health_workout_summaries` (work) and `0087_link_workout_calendar_tasks` (main); `0095_metric_flush_receipt` depends on both.
+
+---
+
+# Social Milestone 1: A Baseline, and Metrics Out of the Request
+
+**Status:** Done on `feature/social-m1-baseline`, awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / load testing, API metrics, Redis failure handling, feed statistics
+
+## Why
+
+Before Social grows, it has to be able to grow without slowing workout logging, food
+tracking or the planner. Two things stood in the way: nothing measured what a request
+costs under mixed load, and each API request took row locks on shared counter rows.
+An unreachable Redis also turned out to fail every save.
+
+## What Was Changed
+
+- **`loadtest/`**: a repeatable mixed-load harness with configurable budgets, kept out
+  of the running application.
+- **Buffered API metrics** (`core/metric_buffer.py`, `flush_api_metrics`): one Redis
+  call per request, flushed every 30 to 60 seconds with a per-batch receipt so a retry
+  adds nothing. Behind `ANALYTICS_BUFFERED`, off by default.
+- **`core/resilient_cache.py`**: a failed Redis call is a cache miss, with 250 ms
+  timeouts and a circuit breaker. Sign-in, registration and password reset refuse with
+  a 503, and For You sheds itself.
+- **Bounded feed statistics**: stale rows stand in for up to 6 hours, recounts are one
+  request at a time and capped, and readers ask the next job run to repair what they
+  found. Per-reader cache keys carry a ranking version.
+
+## Verification
+
+Full numbers are in `loadtest/baselines/2026-11-09/REPORT.md`. At the expected load,
+analytics SQL went from 5 statements per request to 0 and all SQL from 12.9 to 7.9.
+With Redis unreachable, saves carried on where they had previously all failed.
+Measured on a laptop, so absolute CPU, latency and connection budgets are unproven.
+
+## Needs To Be Changed / Improved
+
+- Run the harness on hardware matching the hosting plan.
+- The core p95 regression budget needs a longer run: at about 500 samples it is noise.
+- `repbase-metrics-flush.timer` must be installed before `ANALYTICS_BUFFERED` is on.
+
+---
+
 # Performance Fix: Repost Feed N+1 Queries
 
 **Status:** Done, committed

@@ -3944,8 +3944,10 @@ paths:
     post:
       operationId: schedules_sync_planner_create
       description: 'Put a planner task on every scheduled day in the range that has
-        not had one yet, and return the tasks that were created. Idempotent: a day
-        whose task already exists, or whose task the user deleted, is left alone.'
+        not had one yet, and on every day from today on that has lost its task, and
+        return the tasks that were created. Idempotent: a day whose task already exists
+        is left alone, and deleting a workout''s task removes the scheduled day as
+        well.'
       tags:
       - schedules
       requestBody:
@@ -5220,6 +5222,26 @@ paths:
               schema:
                 $ref: '#/components/schemas/PostReportResult'
           description: ''
+  /api/v1/social/features/:
+    get:
+      operationId: social_features_retrieve
+      description: Which parts of the new Social this account has been given. The
+        app asks at launch and when it returns to the foreground, and treats a part
+        it is not told about, or a failed request, as off. The server enforces the
+        ones that are its to enforce -- takes, sounds, measurement and ranking --
+        whatever the app does.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SocialFeatures'
+          description: ''
   /api/v1/social/feed/:
     get:
       operationId: social_feed_list
@@ -5237,6 +5259,17 @@ paths:
         post is one deliberately held back, so it stays on the profile list where it
         was put and out of the stream that exists to be shared.
       parameters:
+      - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
       - in: query
         name: cursor
         schema:
@@ -5359,6 +5392,17 @@ paths:
         visibility rules again as it is served.
       parameters:
       - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
+      - in: query
         name: cursor
         schema:
           type: string
@@ -5456,9 +5500,10 @@ paths:
   /api/v1/social/impressions/:
     post:
       operationId: social_impressions_create
-      description: Record a batch of views. Posts the reader cannot see, and their
-        own posts, are ignored rather than refused, so a client does not need to know
-        which of the posts it showed have since gone.
+      description: |-
+        Record a batch of views. Posts the reader cannot see, and their own posts, are ignored rather than refused, so a client does not need to know which of the posts it showed have since gone.
+
+        With `schema_version` 2 each event is a summary of one exposure measured on the device, and the batch carries a `batch_id`: sending the same batch again adds nothing and answers with `duplicate` true. Figures beyond what could have happened are brought down to it, not refused. A body over 64 kB is a 413.
       tags:
       - social
       requestBody:
@@ -5572,6 +5617,17 @@ paths:
         in the set.
       parameters:
       - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
+      - in: query
         name: author
         schema:
           type: integer
@@ -5592,6 +5648,11 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: prompt
+        schema:
+          type: string
+        description: Return only posts answering this prompt, by its code.
       - in: query
         name: search
         schema:
@@ -5689,8 +5750,10 @@ paths:
           description: ''
     patch:
       operationId: social_posts_partial_update
-      description: Change the caption or who can see this post. The snapshot records
-        what happened and is not editable.
+      description: Change the caption, who can see this post, who may post a take
+        of it, its language or its topics. The snapshot records what happened and
+        is not editable, and neither is what the post is a take of. Closing a post
+        to takes stops new ones; takes already posted stay.
       parameters:
       - in: header
         name: X-Moderation-Consent
@@ -6155,6 +6218,100 @@ paths:
               schema:
                 $ref: '#/components/schemas/SavedWorkoutResult'
           description: ''
+  /api/v1/social/posts/{id}/takes/:
+    get:
+      operationId: social_posts_takes_list
+      description: 'The takes people have posted of this post, newest first: the ones
+        that answer it directly, and only those the reader may see. A repost''s id
+        stands for the post it passes on.'
+      parameters:
+      - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
+      - in: query
+        name: cursor
+        schema:
+          type: string
+        description: The position carried by the previous page's `next` link.
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+        description: How many takes to return, at most 50.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedPostList'
+          description: ''
+  /api/v1/social/posts/{id}/tried/:
+    post:
+      operationId: social_posts_tried_create
+      description: 'Say "I tried this" about somebody else''s post. It is the reader''s
+        own statement and is only ever made by this request: nothing they track --
+        a finished workout, a logged meal -- makes it for them. Saying it twice is
+        not an error.'
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
+    delete:
+      operationId: social_posts_tried_destroy
+      description: Take back "I tried this". Answers with the post, not 204.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this post.
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Post'
+          description: ''
   /api/v1/social/posts/{id}/video/:
     post:
       operationId: social_posts_video_create
@@ -6249,6 +6406,201 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UploadResponse'
+          description: ''
+  /api/v1/social/prompts/:
+    get:
+      operationId: social_prompts_list
+      description: The prompts a post can answer. Send a code as `prompt` when creating
+        a post; browse one with `?prompt=` on the post list.
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Prompt'
+          description: ''
+  /api/v1/social/sounds/:
+    post:
+      operationId: social_sounds_create
+      description: Publish the audio of one of your own posts as a sound others may
+        set their clips to. The post needs an approved video with audio. Asking again
+        for the same post answers 200 with the sound already made. The audio is prepared
+        shortly afterwards; until then `audio_url` is null.
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSoundRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/CreateSoundRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateSoundRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+          description: ''
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+          description: ''
+  /api/v1/social/sounds/{id}/:
+    get:
+      operationId: social_sounds_retrieve
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+          description: ''
+    patch:
+      operationId: social_sounds_partial_update
+      description: Rename your sound, or change who may use it. Closing it stops new
+        uses; posts already set to it keep it.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSoundRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSoundRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PatchedUpdateSoundRequest'
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
+          description: ''
+    delete:
+      operationId: social_sounds_destroy
+      description: Take your sound down. Posts set to it stay and lose its credit,
+        its audio stops being served, and nobody new can use it. `restore` puts all
+        of that back.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '204':
+          description: No response body
+  /api/v1/social/sounds/{id}/posts/:
+    get:
+      operationId: social_sounds_posts_list
+      description: The posts set to this sound that the reader may see, newest first.
+        A sound that has been taken down has no such list.
+      parameters:
+      - in: query
+        name: attachments
+        schema:
+          type: string
+          enum:
+          - full
+          - summary
+        description: How much of each posted workout or recipe to send. `full`, the
+          default, sends every exercise and food. `summary` sends the title and totals
+          a card prints and leaves `exercises`, `entries` and `cooking_instructions`
+          empty, with `details_included` false; read the post itself for the rest.
+      - in: query
+        name: cursor
+        schema:
+          type: string
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      - in: query
+        name: page_size
+        schema:
+          type: integer
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Post'
+          description: ''
+  /api/v1/social/sounds/{id}/restore/:
+    post:
+      operationId: social_sounds_restore_create
+      description: Put back a sound you took down. Not one a moderator removed.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        required: true
+      tags:
+      - social
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sound'
           description: ''
   /api/v1/social/spotlight/:
     get:
@@ -7880,8 +8232,91 @@ components:
           description: True when a clip will be uploaded to this post next. Required
             for a media post without a photo, which stays visible only to its author
             until the clip is ready to watch.
+        source_post_id:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+          description: The post this is a take of. It must be one you can see, that
+            everybody can see, and whose author allows takes. A repost's id stands
+            for the post it passes on.
+        sound_id:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+          description: A sound to set this post's clip to, if it uses one.
+        reuse_permission:
+          allOf:
+          - $ref: '#/components/schemas/ReusePermissionEnum'
+          default: everyone
+        language:
+          type: string
+          description: The language the caption is written in, as a tag such as en
+            or pt-BR.
+          maxLength: 16
+        topics:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 40
+          description: 'What the post is about: up to five codes for a type of training
+            (type:running) or a discipline (discipline:powerlifting).'
+          maxItems: 20
+        prompt:
+          type: string
+          maxLength: 24
       required:
       - kind
+    CreateSoundRequest:
+      type: object
+      description: What an author says when they make a post's audio a sound.
+      properties:
+        title:
+          type: string
+          default: ''
+          maxLength: 120
+        reuse_permission:
+          allOf:
+          - $ref: '#/components/schemas/ReusePermissionEnum'
+          default: everyone
+        post:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+      required:
+      - post
+    CreditedPerson:
+      type: object
+      description: |-
+        Whoever a credit line names: enough to print "by Mia Chen" and link to
+        the profile, and nothing a credit does not need. A whole public profile
+        here would be a second author on every card.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        username:
+          type: string
+          readOnly: true
+        first_name:
+          type: string
+          readOnly: true
+        last_name:
+          type: string
+          readOnly: true
+        profile_photo_url:
+          type: string
+          nullable: true
+          readOnly: true
+      required:
+      - first_name
+      - id
+      - last_name
+      - profile_photo_url
+      - username
     CycleActivateRequest:
       type: object
       description: |-
@@ -8670,6 +9105,58 @@ components:
           type: string
           format: date-time
           readOnly: true
+        is_take:
+          type: boolean
+          readOnly: true
+        source:
+          allOf:
+          - $ref: '#/components/schemas/PostSource'
+          nullable: true
+          readOnly: true
+        sound:
+          allOf:
+          - $ref: '#/components/schemas/PostSound'
+          nullable: true
+          readOnly: true
+        hashtags:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        topics:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        language:
+          type: string
+          nullable: true
+          readOnly: true
+        attachment_version:
+          type: integer
+          readOnly: true
+        audience:
+          type: string
+          readOnly: true
+        reuse_permission:
+          type: string
+          readOnly: true
+        prompt:
+          type: string
+          nullable: true
+          readOnly: true
+        viewer_can_take:
+          type: boolean
+          readOnly: true
+        take_count:
+          type: integer
+          readOnly: true
+        tried_count:
+          type: integer
+          readOnly: true
+        viewer_has_tried:
+          type: boolean
+          readOnly: true
         recommendation:
           allOf:
           - $ref: '#/components/schemas/Recommendation'
@@ -9103,6 +9590,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ImpressionRequest'
+        schema_version:
+          type: integer
+          default: 1
+        batch_id:
+          type: string
+          format: uuid
+        session_id:
+          type: string
+          format: uuid
       required:
       - events
     ImpressionRequest:
@@ -9135,6 +9631,44 @@ components:
           allOf:
           - $ref: '#/components/schemas/SurfaceEnum'
           default: other
+        sequence:
+          type: integer
+          maximum: 2000000000
+          minimum: 0
+        observed_at:
+          type: string
+          format: date-time
+        active_dwell_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          default: 0
+        playback_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          nullable: true
+        coverage_ms:
+          type: integer
+          maximum: 3600000
+          minimum: 0
+          nullable: true
+        rewatch_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          nullable: true
+        playback_failed:
+          type: boolean
+          default: false
+        attachment_opened:
+          type: boolean
+          default: false
+        attachment_read_ms:
+          type: integer
+          maximum: 600000
+          minimum: 0
+          default: 0
       required:
       - post
     ImpressionResult:
@@ -9143,6 +9677,10 @@ components:
         recorded:
           type: integer
           readOnly: true
+        duplicate:
+          type: boolean
+          readOnly: true
+          default: false
       required:
       - recorded
     InitialWorkoutExercise:
@@ -10699,17 +11237,46 @@ components:
     PatchedUpdatePostRequest:
       type: object
       description: |-
-        The two things about a post that can still change.
+        What about a post can still change: its words, and who it is for.
 
         The snapshot is not among them. It is the record of what happened, and one
         that could be edited into a different workout after people had read it would
-        be worth nothing as a record.
+        be worth nothing as a record. Nor is what it is a take of, or its sound:
+        those are what it was published as.
+
+        Closing a post to takes stops new ones. The takes already made of it are
+        their authors' own posts and stay.
       properties:
         caption:
           type: string
           maxLength: 300
         visibility:
           $ref: '#/components/schemas/VisibilityEnum'
+        reuse_permission:
+          $ref: '#/components/schemas/ReusePermissionEnum'
+        language:
+          type: string
+          maxLength: 16
+        topics:
+          type: array
+          items:
+            type: string
+            minLength: 1
+            maxLength: 40
+          maxItems: 20
+        prompt:
+          type: string
+          maxLength: 24
+    PatchedUpdateSoundRequest:
+      type: object
+      description: What an author says when they make a post's audio a sound.
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        reuse_permission:
+          $ref: '#/components/schemas/ReusePermissionEnum'
     PatchedWorkoutCycleRequest:
       type: object
       properties:
@@ -11371,6 +11938,58 @@ components:
           type: string
           format: date-time
           readOnly: true
+        is_take:
+          type: boolean
+          readOnly: true
+        source:
+          allOf:
+          - $ref: '#/components/schemas/PostSource'
+          nullable: true
+          readOnly: true
+        sound:
+          allOf:
+          - $ref: '#/components/schemas/PostSound'
+          nullable: true
+          readOnly: true
+        hashtags:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        topics:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        language:
+          type: string
+          nullable: true
+          readOnly: true
+        attachment_version:
+          type: integer
+          readOnly: true
+        audience:
+          type: string
+          readOnly: true
+        reuse_permission:
+          type: string
+          readOnly: true
+        prompt:
+          type: string
+          nullable: true
+          readOnly: true
+        viewer_can_take:
+          type: boolean
+          readOnly: true
+        take_count:
+          type: integer
+          readOnly: true
+        tried_count:
+          type: integer
+          readOnly: true
+        viewer_has_tried:
+          type: boolean
+          readOnly: true
       required:
       - author
       - caption
@@ -11525,6 +12144,12 @@ components:
           type: string
           format: decimal
           pattern: ^-?\d{0,8}(?:\.\d{0,2})?$
+          readOnly: true
+        entry_count:
+          type: integer
+          readOnly: true
+        details_included:
+          type: boolean
           readOnly: true
       required:
       - cooking_instructions
@@ -11726,6 +12351,80 @@ components:
       required:
       - already_reported
       - reason
+    PostSound:
+      type: object
+      description: The sound a post's clip is set to, as its credit line.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        duration_ms:
+          type: integer
+          readOnly: true
+          nullable: true
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/CreditedPerson'
+          readOnly: true
+        is_original:
+          type: boolean
+          readOnly: true
+      required:
+      - duration_ms
+      - id
+      - is_original
+      - owner
+      - title
+    PostSource:
+      type: object
+      description: |-
+        The post a take answers, as its credit line.
+
+        Present on every take and null on everything else. When the reader may
+        not see the source -- it was deleted, taken down, made private, its
+        author blocked them or was suspended -- `available` is false and every
+        other field is null: the card can say the original is unavailable, and
+        nothing here says what it was or whose.
+      properties:
+        available:
+          type: boolean
+          readOnly: true
+        post_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        original_post_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        kind:
+          type: string
+          readOnly: true
+          nullable: true
+        author:
+          allOf:
+          - $ref: '#/components/schemas/CreditedPerson'
+          readOnly: true
+          nullable: true
+        title:
+          type: string
+          readOnly: true
+          nullable: true
+        attachment_version:
+          type: integer
+          readOnly: true
+          nullable: true
+      required:
+      - attachment_version
+      - author
+      - available
+      - kind
+      - original_post_id
+      - post_id
+      - title
     PostVideo:
       type: object
       description: |-
@@ -11866,6 +12565,9 @@ components:
           format: decimal
           pattern: ^-?\d{0,10}(?:\.\d{0,2})?$
           nullable: true
+          readOnly: true
+        details_included:
+          type: boolean
           readOnly: true
       required:
       - cardio_distance_km
@@ -12210,6 +12912,19 @@ components:
           maxItems: 6
       required:
       - social_links
+    Prompt:
+      type: object
+      description: A prompt a post can answer, by its code and the words to show.
+      properties:
+        code:
+          type: string
+          readOnly: true
+        label:
+          type: string
+          readOnly: true
+      required:
+      - code
+      - label
     PublicRepbaseUser:
       type: object
       properties:
@@ -12852,6 +13567,46 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        is_take:
+          type: boolean
+          readOnly: true
+        source:
+          allOf:
+          - $ref: '#/components/schemas/PostSource'
+          nullable: true
+          readOnly: true
+        sound:
+          allOf:
+          - $ref: '#/components/schemas/PostSound'
+          nullable: true
+          readOnly: true
+        hashtags:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        topics:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        language:
+          type: string
+          nullable: true
+          readOnly: true
+        attachment_version:
+          type: integer
+          readOnly: true
+        audience:
+          type: string
+          readOnly: true
+        reuse_permission:
+          type: string
+          readOnly: true
+        prompt:
+          type: string
+          nullable: true
+          readOnly: true
       required:
       - author
       - caption
@@ -12866,6 +13621,16 @@ components:
       - published_at
       - video
       - workout
+    ReusePermissionEnum:
+      enum:
+      - everyone
+      - followers
+      - nobody
+      type: string
+      description: |-
+        * `everyone` - Anyone who can see it
+        * `followers` - People who follow me
+        * `nobody` - Nobody
     SafetyConsent:
       type: object
       properties:
@@ -13517,6 +14282,87 @@ components:
             $ref: '#/components/schemas/SharedCalendarDaySummary'
       required:
       - days
+    SocialFeatures:
+      type: object
+      description: |-
+        Which parts of the new Social are on for the account (`core.rollout`).
+        Every one may be missing from an older server, and missing means off.
+      properties:
+        new_feed:
+          type: boolean
+          readOnly: true
+        autoplay:
+          type: boolean
+          readOnly: true
+        measurement_v2:
+          type: boolean
+          readOnly: true
+        measured_ranking:
+          type: boolean
+          readOnly: true
+        sounds:
+          type: boolean
+          readOnly: true
+        takes:
+          type: boolean
+          readOnly: true
+        ranked_for_you:
+          type: boolean
+          readOnly: true
+    Sound:
+      type: object
+      description: A sound, as anybody who may use or hear it reads it.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        owner:
+          allOf:
+          - $ref: '#/components/schemas/CreditedPerson'
+          readOnly: true
+        duration_ms:
+          type: integer
+          readOnly: true
+          nullable: true
+        reuse_permission:
+          type: string
+          readOnly: true
+        origin_post_id:
+          type: integer
+          readOnly: true
+          nullable: true
+        audio_url:
+          type: string
+          nullable: true
+          readOnly: true
+        use_count:
+          type: integer
+          readOnly: true
+        viewer_is_owner:
+          type: boolean
+          readOnly: true
+        viewer_can_use:
+          type: boolean
+          readOnly: true
+        created_at:
+          type: string
+          format: date-time
+          readOnly: true
+      required:
+      - audio_url
+      - created_at
+      - duration_ms
+      - id
+      - origin_post_id
+      - owner
+      - reuse_permission
+      - title
+      - use_count
+      - viewer_can_use
+      - viewer_is_owner
     StatusEnum:
       enum:
       - planned

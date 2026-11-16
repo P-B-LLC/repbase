@@ -39,13 +39,18 @@ read what it does:
   serving, so the model's view of a post is not just a record of where the
   rules put it.
 
-Privacy: features live on the viewing-history row they belong to, so they are
-pruned with it at 90 days and deleted at once by "start fresh". A model is
+Privacy: features live on the viewing-history row they belong to and are
+cleared from it after TRAINING_SAMPLE_DAYS (14) by `prune_expired_rows`, well
+before the row itself goes at 90 days; "start fresh" deletes both at once.
+`FOR_YOU_TRAINING_SAMPLE_RATE` keeps a fixed share of exposures instead of
+all of them. Only what the ranking itself computed about a post is in a
+sample -- no caption, no private training or nutrition record. A model is
 aggregate numbers only. Nothing is shown to anybody.
 """
 
 import hashlib
 import logging
+from dataclasses import dataclass
 import math
 import random
 import time
@@ -64,6 +69,7 @@ from .models import (
     PostView,
     RankingModel,
     SavedFoodMeal,
+    TRAINING_SAMPLE_DAYS,
     WorkoutTemplate,
 )
 
@@ -88,9 +94,9 @@ RULES = len(FEATURES)
 REJECT_COST = 0.5
 
 #: Training: at most MAX_SAMPLES of the newest labelled impressions from the
-#: last TRAIN_DAYS, none younger than LABEL_DELAY (people need a moment to
+#: last TRAIN_DAYS -- as long as a sample is kept, and no longer -- none younger than LABEL_DELAY (people need a moment to
 #: act on what they saw).
-TRAIN_DAYS = 30
+TRAIN_DAYS = TRAINING_SAMPLE_DAYS
 MAX_SAMPLES = 200_000
 LABEL_DELAY = timedelta(hours=1)
 #: A fifth of readers held out to test on.
@@ -101,6 +107,37 @@ EPOCHS = 4
 LEARNING_RATE = 0.05
 DECAY_STEPS = 20_000
 L2 = 1e-4
+#: The version of the feature list above. Written with every recorded
+#: sample (`serving_context`), so a change to FEATURES is a new number and
+#: samples recorded under the old one are left out by what they say they
+#: are, not by how long they happen to be.
+FEATURE_VERSION = 1
+#: What the labels are made from.
+#:   1 ("legacy")   the furthest position a player reached, which seeking
+#:                  forward reaches with nothing watched, and time on screen.
+#:   2 ("measured") what the device measured (`core.attention`): coverage,
+#:                  active reading, attachment reading, playback failures.
+#: A model is trained on one or the other. They are never added together.
+LABEL_VERSIONS = {"legacy": 1, "measured": 2}
+#: The newest quarter of the period is what a measured model is tested on.
+TEST_PERIOD_SHARE = 0.25
+#: A format that is at least this much of the held-out exposures ...
+FORMAT_SHARE = 0.10
+#: ... needs this many decided ones before the model is judged at all, and
+#: may not order them worse than the rules by more than this.
+MIN_FORMAT_DECIDED = 50
+FORMAT_TOLERANCE = 0.02
+#: The top of the ranking, where a page is filled from: this share of the
+#: held-out exposures, by score.
+TOP_SHARE = 0.2
+#: What the model's top may cost against the rules' top: creators shown,
+#: saves and satisfied views kept to this share; explicit rejection up by
+#: no more than this.
+KEEP_SHARE = 0.95
+REJECTION_SLACK = 0.005
+#: A clip up to this long is "short" in the breakdown.
+SHORT_CLIP_MS = 15_000
+
 #: A model is only made active with at least this much behind it ...
 MIN_TRAIN = 2_000
 MIN_POSITIVES = 100
@@ -206,6 +243,32 @@ def feature_row(raw, discovery=False, position=0):
     ] + [round(float(raw.get("rules", 0.0)), 6)]
 
 
+def sample_rate():
+    """The share of served posts whose features are kept to train on:
+    `FOR_YOU_TRAINING_SAMPLE_RATE`, 1 when not set, 0 to keep none."""
+    from django.conf import settings
+
+    return min(max(float(getattr(settings, "FOR_YOU_TRAINING_SAMPLE_RATE", 1.0)), 0.0), 1.0)
+
+
+def sampled(viewer_id, post_id, row):
+    """`row` if this exposure is one of the sample, else None.
+
+    Decided by a hash of the pair, not a dice roll, so the same exposure is
+    always in or always out: a retried batch cannot add a sample the first
+    delivery left out, and the sample is not tilted toward whoever retries.
+    """
+    if row is None:
+        return None
+    rate = sample_rate()
+    if rate >= 1.0:
+        return row
+    if rate <= 0.0:
+        return None
+    digest = hashlib.sha256(f"training-sample:{viewer_id}:{post_id}".encode()).digest()
+    return row if int.from_bytes(digest[:8], "big") / 2 ** 64 < rate else None
+
+
 def _held_out(viewer_id):
     digest = hashlib.sha256(f"ranking-holdout:{viewer_id}".encode()).digest()
     return int.from_bytes(digest[:8], "big") / 2 ** 64 < HOLDOUT_SHARE
@@ -250,17 +313,264 @@ def labelled_impressions(now=None, days=TRAIN_DAYS, limit=MAX_SAMPLES):
     return found
 
 
+def serving_context(algorithm=None, model_id=None, position=0, sources=(), exploration=False,
+                    post_format=""):
+    """How a post came to be served, as it is recorded beside its features.
+
+    Written when the page is made, before the reader has done anything, so
+    an outcome can never colour the record of how the post got there.
+    Nothing here is about the reader or the post's content.
+    """
+    return {
+        "v": FEATURE_VERSION,
+        # The experiment arm or release ("measured"), "control" otherwise.
+        "algo": str(algorithm or "control")[:40],
+        "model": model_id,
+        "pos": int(position),
+        "src": sorted(str(source) for source in sources)[:8],
+        "explore": bool(exploration),
+        "format": str(post_format or "")[:40],
+    }
+
+
+@dataclass
+class Exposure:
+    """One measured For You exposure and what came of it."""
+
+    viewer: int
+    author: int
+    features: list
+    when: object
+    format: str
+    clip_ms: object
+    position: int
+    exploration: bool
+    #: Watched a clip through, read a post for a while, or read its workout
+    #: or recipe. Judged against the clip's own length, so a long clip is
+    #: not marked down for taking longer.
+    satisfied: bool
+    #: Kept the workout or recipe.
+    saved: bool
+    #: Commented, and the comment still stands.
+    conversed: bool
+    #: Liked, passed on, or asked for more.
+    approved: bool
+    #: Said no: "not interested" or "fewer like this".
+    rejected: bool
+    #: Scrolled past. Weak evidence, and only that.
+    skipped: bool
+
+    @property
+    def positive(self):
+        return self.satisfied or self.saved or self.conversed or self.approved
+
+    @property
+    def negative(self):
+        return not self.positive and (self.rejected or self.skipped)
+
+    def as_sample(self):
+        return (self.viewer, self.features, self.positive, self.negative)
+
+
+def measured_impressions(now=None, days=TRAIN_DAYS, limit=MAX_SAMPLES):
+    """Measured For You exposures with a recorded sample, newest first.
+
+    Only real opportunities are in here. A row is left out when:
+
+    - it was recorded under another feature version, or by an app that does
+      not measure (so legacy furthest-position rows are never mixed in);
+    - the post was never properly on screen and the reader said nothing
+      about it -- not having clicked what you did not see is not a "no";
+    - its clip failed to play and nothing good came of it -- a broken
+      player is not a verdict.
+    """
+    from .recommendations import ATTACHMENT_READ_MS, LONG_VIEW_MS
+
+    now = now or timezone.now()
+    same = {"post": OuterRef("post")}
+
+    def said(*kinds):
+        return Exists(PostFeedback.objects.filter(viewer=OuterRef("viewer"), kind__in=kinds, **same))
+
+    rows = (
+        PostView.objects.filter(
+            surface=PostView.Surface.FOR_YOU, features__isnull=False, served__v=FEATURE_VERSION,
+            last_observed_at__isnull=False,
+            first_seen_at__gte=now - timedelta(days=days), first_seen_at__lte=now - LABEL_DELAY,
+            viewer__user__is_active=True,
+        )
+        .annotate(
+            liked=Exists(PostLike.objects.filter(user=OuterRef("viewer"), **same)),
+            commented=Exists(PostComment.objects.filter(author=OuterRef("viewer"), is_hidden=False, **same)),
+            shared=Exists(Post.objects.filter(author=OuterRef("viewer"), repost_of=OuterRef("post"))),
+            saved_workout=Exists(WorkoutTemplate.objects.filter(owner=OuterRef("viewer"), source_post=OuterRef("post"))),
+            saved_meal=Exists(SavedFoodMeal.objects.filter(owner=OuterRef("viewer"), source_post=OuterRef("post"))),
+            wanted_more=said(PostFeedback.Kind.MORE),
+            turned_down=said(*PostFeedback.REJECTING),
+        )
+        .order_by("-first_seen_at", "-pk")
+        .values_list(
+            "viewer_id", "post__author_id", "features", "served", "first_seen_at",
+            "post__video__duration_ms", "qualified_views", "active_dwell_ms", "coverage_ms",
+            "watched_through", "attachment_read_ms", "playback_failures", "skipped",
+            "liked", "commented", "shared", "saved_workout", "saved_meal", "wanted_more", "turned_down",
+        )[:limit]
+    )
+    found = []
+    for (
+        viewer, author, features, served, when, clip_ms, qualified, active, coverage, through,
+        read_ms, failures, skipped, liked, commented, shared, saved_workout, saved_meal,
+        wanted_more, turned_down,
+    ) in rows:
+        if not isinstance(features, list) or len(features) != RULES + 1 or not isinstance(served, dict):
+            continue
+        read = coverage is None and bool(qualified) and active / qualified >= LONG_VIEW_MS
+        exposure = Exposure(
+            viewer=viewer, author=author, features=features, when=when,
+            format=str(served.get("format") or "other"), clip_ms=clip_ms,
+            position=int(served.get("pos") or 0), exploration=bool(served.get("explore")),
+            satisfied=bool(through or read or read_ms >= ATTACHMENT_READ_MS),
+            saved=bool(saved_workout or saved_meal), conversed=bool(commented),
+            approved=bool(liked or shared or wanted_more),
+            rejected=bool(turned_down), skipped=bool(skipped),
+        )
+        acted = exposure.positive or exposure.rejected
+        if not qualified and not acted:
+            continue
+        if failures and not exposure.positive and not exposure.rejected:
+            continue
+        found.append(exposure)
+    return found
+
+
+def label_source():
+    """Which labels `train` uses when not told: `FOR_YOU_RANKER_LABELS`,
+    `legacy` unless set to `measured`."""
+    from django.conf import settings
+
+    chosen = getattr(settings, "FOR_YOU_RANKER_LABELS", "legacy")
+    return chosen if chosen in LABEL_VERSIONS else "legacy"
+
+
+def _time_cut(exposures):
+    """The moment the test period starts: the newest TEST_PERIOD_SHARE of
+    the exposures are after it."""
+    moments = sorted(exposure.when for exposure in exposures)
+    return moments[min(int(len(moments) * (1 - TEST_PERIOD_SHARE)), len(moments) - 1)]
+
+
+def _top(scores, exposures):
+    """What the top TOP_SHARE by `scores` is made of."""
+    keep = max(1, int(len(exposures) * TOP_SHARE))
+    order = sorted(range(len(exposures)), key=lambda index: (-scores[index], index))[:keep]
+    chosen = [exposures[index] for index in order]
+    return {
+        "exposures": keep,
+        "creators": len({exposure.author for exposure in chosen}),
+        "satisfied_rate": _round(sum(exposure.satisfied for exposure in chosen) / keep),
+        "save_rate": _round(sum(exposure.saved for exposure in chosen) / keep),
+        "conversation_rate": _round(sum(exposure.conversed for exposure in chosen) / keep),
+        "rejection_rate": _round(sum(exposure.rejected for exposure in chosen) / keep),
+    }
+
+
+def judge(exposures, rules, with_model):
+    """How the rules and the rules-plus-model each do on held-out exposures
+    from the later period: by format, by clip length, and at the top.
+
+    A better score for predicting engagement is one line of this. The rest
+    is what that score could have cost: creators shown, saves, satisfied
+    viewing, and how often the top of the page was turned down.
+    """
+    formats = {}
+    for name in sorted({exposure.format for exposure in exposures}):
+        chosen = [index for index, exposure in enumerate(exposures) if exposure.format == name]
+        decided = [index for index in chosen if exposures[index].positive or exposures[index].negative]
+        outcome = [1 if exposures[index].positive else 0 for index in decided]
+        formats[name] = {
+            "exposures": len(chosen),
+            "share": _round(len(chosen) / len(exposures)),
+            "decided": len(decided),
+            "rules_auc": _round(auc([rules[index] for index in decided], outcome)),
+            "model_auc": _round(auc([with_model[index] for index in decided], outcome)),
+        }
+    lengths = {}
+    for name, wanted in (
+        ("short_clip", lambda ms: ms is not None and ms <= SHORT_CLIP_MS),
+        ("long_clip", lambda ms: ms is not None and ms > SHORT_CLIP_MS),
+        ("no_clip", lambda ms: ms is None),
+    ):
+        chosen = [exposure for exposure in exposures if wanted(exposure.clip_ms)]
+        lengths[name] = {
+            "exposures": len(chosen),
+            "satisfied_rate": _round(sum(e.satisfied for e in chosen) / len(chosen)) if chosen else None,
+        }
+    return {
+        "formats": formats, "clip_length": lengths,
+        "top_rules": _top(rules, exposures), "top_model": _top(with_model, exposures),
+    }
+
+
+def _measured_gate(judged):
+    """(passed, why) for what `judge` found, after the AUC gate has passed."""
+    for name, row in judged["formats"].items():
+        if row["share"] < FORMAT_SHARE:
+            continue
+        if row["decided"] < MIN_FORMAT_DECIDED:
+            return False, (
+                f"only {row['decided']} decided {name} exposures held out (needs {MIN_FORMAT_DECIDED}): "
+                "not enough to say what the model does to that format"
+            )
+        if row["model_auc"] is not None and row["rules_auc"] is not None \
+                and row["model_auc"] < row["rules_auc"] - FORMAT_TOLERANCE:
+            return False, f"it orders {name} posts worse than the rules ({row['model_auc']} against {row['rules_auc']})"
+    rules, model = judged["top_rules"], judged["top_model"]
+    if model["creators"] < KEEP_SHARE * rules["creators"]:
+        return False, f"its top shows {model['creators']} creators where the rules' shows {rules['creators']}"
+    if model["rejection_rate"] > rules["rejection_rate"] + REJECTION_SLACK:
+        return False, (
+            f"its top is turned down more often ({model['rejection_rate']} against {rules['rejection_rate']})"
+        )
+    for name, label in (("save_rate", "saves"), ("satisfied_rate", "satisfied views")):
+        if model[name] < KEEP_SHARE * rules[name]:
+            return False, f"its top has fewer {label} ({model[name]} against {rules[name]})"
+    return True, "and kept creators, saves and satisfied views, without more rejection, in every format"
+
+
 # ---------------------------------------------------------------- training
 
-def train(now=None, activate=True, seed=0):
+def train(now=None, activate=True, seed=0, labels=None):
     """Train on the newest labelled impressions, test on held-out readers,
     save the model, and make it active if it earned it. Returns the model,
-    or None when there was nothing to learn from."""
+    or None when there was nothing to learn from.
+
+    `labels` is "legacy" or "measured" (`label_source` when not given). A
+    measured model is trained on the earlier part of the period and tested
+    on held-out readers in the later part, so it is judged on people it has
+    not seen at a time it has not seen, and it has more to answer for
+    (`judge`).
+    """
     started = time.perf_counter()
-    samples = labelled_impressions(now)
-    training = [sample for sample in samples if not _held_out(sample[0])]
-    testing = [sample for sample in samples if _held_out(sample[0])]
+    labels = labels or label_source()
+    held_out_exposures = []
+    if labels == "measured":
+        exposures = measured_impressions(now)
+        samples = [exposure.as_sample() for exposure in exposures]
+        cut = _time_cut(exposures) if exposures else None
+        training = [
+            exposure.as_sample() for exposure in exposures
+            if not _held_out(exposure.viewer) and exposure.when < cut
+        ]
+        held_out_exposures = [
+            exposure for exposure in exposures if _held_out(exposure.viewer) and exposure.when >= cut
+        ]
+        testing = [exposure.as_sample() for exposure in held_out_exposures]
+    else:
+        samples = labelled_impressions(now)
+        training = [sample for sample in samples if not _held_out(sample[0])]
+        testing = [sample for sample in samples if _held_out(sample[0])]
     metrics = {
+        "labels": labels, "label_version": LABEL_VERSIONS[labels], "feature_version": FEATURE_VERSION,
         "samples": len(samples), "train": len(training), "test": len(testing),
         "train_engaged": sum(1 for sample in training if sample[2]),
         "train_turned_down": sum(1 for sample in training if sample[3]),
@@ -308,7 +618,15 @@ def train(now=None, activate=True, seed=0):
             # ... and what the rules plus this model achieve.
             "model_auc": _round(auc(with_model, outcome)),
         })
+        if held_out_exposures:
+            scored = [
+                rules[i] + weight * (p_engage[i] - REJECT_COST * p_reject[i]) for i in range(len(testing))
+            ]
+            metrics["measured"] = judge(held_out_exposures, rules, scored)
     passed, why = _gate(metrics)
+    if passed and labels == "measured":
+        kept, detail = _measured_gate(metrics["measured"])
+        passed, why = kept, (f"{why}, {detail}" if kept else detail)
     metrics["gate"] = why
     metrics["train_seconds"] = round(time.perf_counter() - started, 2)
 

@@ -452,11 +452,14 @@ reads those rows in one query instead of counting during somebody's request.
 Each run rewrites every post acted on since the last run that finished (and,
 for posts under two days old, every one that was seen), and enough of the rest,
 oldest first, that every row in the 30-day window comes round within 15
-minutes however big the window grows. A row is read only while it is under 30
-minutes old and was written by the current way of counting
-(`STATS_VERSION`); anything else is counted on the spot, as before, so a
-stopped job makes the page slower, never wrong, and the deploy check
-`core.W009` says so. Each batch commits on its own; a post deleted while its
+minutes however big the window grows. A row under 30 minutes old and written
+by the current way of counting (`STATS_VERSION`) is simply the answer. When the
+job is late a request does not make up for it: a row up to 6 hours old
+(`FEED_STATS_STALE_SECONDS`) stands in, a post with no usable row counts as one
+with no record yet, and the next run is asked to repair those posts. Only one
+request at a time may count, and only 200 posts that have no row at all, which is
+what lets a small deployment run without the job. A stopped job makes the page a
+little less current, never slower, and the deploy check `core.W009` says so. Each batch commits on its own; a post deleted while its
 batch was counted is left out, not a failed run; and a run stopped half way
 leaves nothing behind, because the next one looks for activity from when the
 last *finished* run started.
@@ -618,7 +621,7 @@ simulated community.
 
 | Timer (in `deploy/`) | Runs | Missing it means |
 | --- | --- | --- |
-| `repbase-feed-stats` | `refresh_feed_stats`, 5 minutes after each run | a slower first page (counted on the spot); `core.W009` warns |
+| `repbase-feed-stats` | `refresh_feed_stats`, 5 minutes after each run | counts up to 6 hours old, then no record; `core.W009` warns |
 | `repbase-ranking-model` | `train_ranking_model`, daily ~04:30 | the active model ages; with none, the rules alone |
 
 Both are installed like the other timers: copy the `.service` and `.timer`
@@ -885,3 +888,92 @@ this".
   server; the client does not send it.
 - Ask for the first page without a cursor on open and on pull to refresh, and
   follow `next` as the reader nears the end of what is loaded.
+
+## Measured attention, tags, sounds and formats (Social Milestone 5)
+
+Everything in this section is off unless a weight turns it on, so the ranking
+described above is the control. `core.recommendations.MEASURED_VARIANT` is all
+of it at its starting values, ready to be one arm of `FOR_YOU_EXPERIMENT`:
+
+```python
+FOR_YOU_EXPERIMENT = {
+    "name": "measured-2026-12",
+    "variants": {"control": {}, "measured": MEASURED_VARIANT},
+}
+```
+
+These are starting values to test, not findings.
+
+| Weight | What it turns on |
+| ----- | ----- |
+| `measured` | A viewing is read from what the device measured, where a row has it: `qualified_completion` (+1.0, natural end and nine tenths covered), half the clip covered (`half_watch`), `genuine_rewatch` (up to +1.0, saturating at once more through), `satisfied_read` (+0.5, once per post with no clip), `attachment_read` (+0.75, three seconds or more in the workout or recipe). A seek to the end is none of these. Rows from older apps are read as before. |
+| `tag` | A post's first three hashtags and its declared topics, matched against those on posts the reader engaged with. The best match, not a sum, and never more than 0.6 of the weight: a stuffed caption buys nothing. |
+| `sound` | The same for the sound a clip is set to, at half the weight of a tag. |
+| `format_prior` | Engagement per view is measured against what posts of the same format usually get (`format_baselines`: kind, and clip or not), so a gym clip is not marked down for having no recipe to save. Baselines are smoothed toward the general rate and kept between 0.02 and 0.5. |
+| `candidate_cap` | One cap on the candidates a ranking considers, shared by `CANDIDATE_SHARES`: of 500, interests 160, followed creators 100, fresh 100, similar taste 60, discovery 60, the reader's own 20. Tag and sound matches join the interest source. Unused room goes to fresh posts. |
+
+Three things are on for everybody, because they do nothing until takes and
+sounds exist:
+
+- posting a take counts as the strongest signal about the post answered
+  (`take`, +4.0);
+- a page is not filled with one family of takes or one sound
+  (`family_repeat`, `sound_repeat`): a soft cost per recent appearance, so a
+  small inventory still fills the page;
+- a post set to a sound that has been taken down is not recommended. It stays
+  on its author's profile. This is eligibility, not a penalty: no score brings
+  it back.
+
+
+## The learned ranker after the beta (Milestone 9)
+
+The rules stay the control and the small learned model stays behind its gate.
+What changed is what a model may learn from and what it has to answer for.
+None of this has been run on real data: it needs a beta sending measured
+attention first.
+
+**What is recorded when a post is served.** Beside its features, each sampled
+For You exposure records how it came to be served (`PostView.served`): the
+feature version, the experiment arm or release, the active model, the
+position, the candidate sources, whether it was an exploration slot, and the
+post's format. It is written when the page is made, before any outcome, kept
+for 14 days and cleared with the sample.
+
+**Two kinds of label, never mixed.** `legacy` reads the furthest position a
+player reached and time on screen. `measured` reads what the device measured,
+and tells apart satisfied viewing or reading, a save, conversation that still
+stands, approval, explicit rejection, and a scroll past. A measured exposure
+is left out when the post was never properly on screen and the reader said
+nothing, or when its clip failed to play: neither is a "no". Rows from an app
+that does not measure, or from another feature version, are not read at all.
+
+`FOR_YOU_RANKER_LABELS=measured` (or `train_ranking_model --labels measured`)
+switches. Leave it on `legacy` until `/insights/social/` shows measured
+exposures arriving in volume.
+
+**How a measured model is judged.** It trains on the earlier three quarters
+of the period and is tested on held-out readers in the last quarter: people
+it has not seen, at a time it has not seen. On top of the existing gate (enough
+data, and a held-out AUC at least 0.01 better than the rules) it must:
+
+- have at least 50 decided held-out exposures in every format that is a tenth
+  or more of the page, and not order any such format worse than the rules;
+- show at least 95% as many creators in its top fifth as the rules do;
+- keep at least 95% of the rules' saves and satisfied views there;
+- not be turned down there more than half a point more often.
+
+A better prediction score that fails any of these is saved, reported with the
+reason, and not made active. The previous model, or none, stays.
+
+**Experiments.** `feed_report` compares each arm with one named `control` by
+the share of *readers* who engaged, since the reader is what was assigned. It
+says `significant` or `no difference found` only when both arms have the
+readers needed to detect a 10% lift; otherwise it says `directional` and
+quotes no p-value. At a 20% base rate that is about 6,500 readers an arm, so a
+small beta will read `directional`: use it beside interviews, not as a result.
+
+**Not done.** Position bias is handled as before (position is a training
+feature, held at its average when serving), not with a propensity model.
+Format and clip length are accounted for in the labels and in the judgement,
+not as model inputs. There is no automatic check of serving latency in the
+gate; the model is two dot products over nineteen numbers.

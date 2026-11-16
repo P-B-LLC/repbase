@@ -1,0 +1,94 @@
+{% extends "insights/base.html" %}
+{% block title %}Rytivo · Social insights{% endblock %}
+{% block header %}<form method="post" action="{% url 'insights-logout' %}">{% csrf_token %}<button type="submit">Sign out</button></form>{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">Social · private</div>
+    <h1>Is it useful, and what does it cost?</h1>
+    {% if snapshot %}<p>{{ since|date:"M j" }} – {{ snapshot.day|date:"M j, Y" }} · UTC · worked out {{ snapshot.computed_at|date:"M j H:i" }}{% if compared_with %} · compared with the {{ days }} days to {{ compared_with.day|date:"M j" }}{% endif %}</p>{% endif %}
+  </div>
+  <nav class="range" aria-label="Reporting period"><a href="?days=7" {% if days == 7 %}class="selected" aria-current="page"{% endif %}>7 days</a><a href="?days=30" {% if days == 30 %}class="selected" aria-current="page"{% endif %}>30 days</a></nav>
+</section>
+<p><a href="{% url 'insights' %}">← API and product overview</a></p>
+
+{% if not snapshot %}
+<div class="notice">No figures yet. They are worked out once a day by <code>roll_up_social_insights</code>; until it has run there is nothing here to read, which is not the same as nothing having happened.</div>
+{% else %}
+<div class="notice">Counts and rates only. Any figure with fewer than {{ small_cohort }} people behind it is withheld, and was never stored. Staff accounts are left out.</div>
+
+<section class="panel wide" aria-label="Usefulness">
+  <h2>Is it useful?</h2>
+  <p class="note">{{ exposures.text }} qualified exposures{% if exposures.note %} ({{ exposures.note }}){% endif %}: a post on screen, uncovered, for at least a second.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Measure</th><th scope="col">Value</th><th scope="col">Behind it</th><th scope="col">Change</th></tr></thead>
+    <tbody>
+    {% for row in product %}<tr><td>{{ row.label }}<br><span class="note">{{ row.help }}</span></td><td>{{ row.text }}</td><td><span class="note">{{ row.note }}</span></td><td>{% if row.change != None %}{{ row.change|stringformat:"+.1f" }} pts{% else %}<span class="note">no baseline</span>{% endif %}</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% if not presence_recorded %}<p class="note">Return rates need API presence, which is recorded only while ANALYTICS_ENABLED is on. It is off, so they will read as nobody returning.</p>{% endif %}
+</section>
+
+<section class="panel wide" aria-label="Playback">
+  <h2>Watching, beside what broke</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Measure</th><th scope="col">Value</th><th scope="col">Behind it</th><th scope="col">Change</th></tr></thead>
+    <tbody>
+    {% for row in playback %}<tr><td>{{ row.label }}<br><span class="note">{{ row.help }}</span></td><td>{{ row.text }}</td><td><span class="note">{{ row.note }}</span></td><td>{% if row.change != None %}{{ row.change|stringformat:"+.1f" }} pts{% else %}<span class="note">no baseline</span>{% endif %}</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+</section>
+
+<section class="panel wide" aria-label="Cost and reliability">
+  <h2>Cost and reliability</h2>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Ranking, last 24 hours</th><th scope="col">Rankings</th><th scope="col">p50 at most</th><th scope="col">p95 at most</th></tr></thead>
+    <tbody>
+    {% for row in latency %}<tr><td>{{ row.label }}</td><td>{{ row.count|default:0 }}</td><td>{% if row.p50_ms_at_most %}{{ row.p50_ms_at_most }} ms{% else %}—{% endif %}</td><td>{% if row.p95_ms_at_most %}{{ row.p95_ms_at_most }} ms{% else %}—{% endif %}</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Route</th><th scope="col">Requests</th><th scope="col">5xx</th><th scope="col">Mean ms</th><th scope="col">Worst ms</th></tr></thead>
+    <tbody>
+    {% for name, row in routes %}<tr{% if row.server_errors %} class="row-error"{% endif %}><td>{{ name }}</td><td>{{ row.requests }}</td><td>{{ row.server_errors }}</td><td>{{ row.mean_ms|default:"—" }}</td><td>{{ row.max_ms }}</td></tr>{% empty %}<tr><td colspan="5">No request observations for the feed routes in this window.</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+  <p{% if stats_stale %} class="do"{% endif %}>Feed statistics: {% if stats_age_minutes == None %}never written{% else %}{{ stats_age_minutes }} minutes old{% if stats_stale %} — past the point the ranking will use them, so it is working the figures out per request{% endif %}{% endif %}.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Background queue</th><th scope="col">Waiting</th><th scope="col">Oldest</th></tr></thead>
+    <tbody>
+    {% for row in queues %}<tr><td>{{ row.name }}</td><td>{{ row.waiting }}</td><td>{% if row.oldest_minutes != None %}{{ row.oldest_minutes }} min{% else %}—{% endif %}</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Attention telemetry</th><th scope="col">In the window</th></tr></thead>
+    <tbody>
+    <tr><td>Batches received</td><td>{{ telemetry.attention_batches }}</td></tr>
+    <tr><td>Batches that had already arrived</td><td>{{ telemetry.attention_duplicate_batches }}{% if duplicate_share != None %} · {{ duplicate_share }}%{% endif %}</td></tr>
+    <tr><td>Summaries received</td><td>{{ telemetry.attention_events }}</td></tr>
+    <tr><td>Summaries not recorded<br><span class="note">Too old, under a quarter of a second, or of a post the reader may not see.</span></td><td>{{ telemetry.attention_events_ignored }}{% if ignored_share != None %} · {{ ignored_share }}%{% endif %}</td></tr>
+    <tr><td>Bodies refused for size</td><td>{{ telemetry.attention_oversize }}</td></tr>
+    <tr><td>Batches set aside while measurement was switched off</td><td>{{ telemetry.attention_batches_switched_off }}</td></tr>
+    <tr><td>API observations lost before they were counted</td><td>{{ telemetry.api_observations_lost }}</td></tr>
+    </tbody>
+  </table></div>
+  <p>Cache hit rate: {% if cache_hit_rate != None %}{{ cache_hit_rate }}% since the previous period's snapshot{% elif cache_measured %}needs a second snapshot to compare against{% else %}not available from this cache{% endif %}.</p>
+  <p>Clips stored: {{ clip_megabytes }} MB, {{ clip_megabytes_added }} MB of it added in this window.</p>
+  {% if database %}
+  <p>Database: {{ database_megabytes }} MB · {{ database.sessions_waiting_on_locks }} sessions waiting on a lock when this was worked out · {{ database.deadlocks_since_reset }} deadlocks since statistics were reset.</p>
+  <div class="table-wrap"><table>
+    <thead><tr><th scope="col">Table</th><th scope="col">Rows</th><th scope="col">Size</th><th scope="col">Grew</th><th scope="col">Dead rows</th><th scope="col">Last vacuum</th></tr></thead>
+    <tbody>
+    {% for row in tables %}<tr{% if row.dead_share > 20 %} class="row-slow"{% endif %}><td>{{ row.name }}</td><td>{{ row.rows }}</td><td>{{ row.megabytes }} MB</td><td>{% if row.grew_megabytes != None %}{{ row.grew_megabytes }} MB{% else %}—{% endif %}</td><td>{{ row.dead_share }}%</td><td>{{ row.last_vacuum|default:"never"|slice:":16" }}</td></tr>{% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <p class="note">Table growth and vacuum figures are read from PostgreSQL; this database is not one.</p>
+  {% endif %}
+  <h2>Not measured here</h2>
+  <ul>{% for line in not_measured %}<li class="note">{{ line }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+<p class="foot">Viewing history is kept for at most 90 days and what the ranking knew about each served post for 14. This page never shows names, captions, posts, planner text, health readings or media addresses, and none of them are read to make it.</p>
+{% endblock %}

@@ -1,0 +1,53 @@
+-- 1.1 ms when captured
+-- SELECT "core_foodsearchcache"."id", "core_foodsearchcache"."term", "core_foodsearchcache"."payload", "core_foodsearchcache"."fetched_at" FROM "core_foodsearchcache" WHERE "core_foodsearchcache"."term" = %s ORDER BY "core_foodsearchcache"."fetched_at" DESC LIMIT 1
+Limit  (cost=2.51..2.51 rows=1 width=339) (actual time=0.004..0.004 rows=1 loops=1)
+  Buffers: shared hit=2
+  ->  Sort  (cost=2.51..2.51 rows=1 width=339) (actual time=0.003..0.003 rows=1 loops=1)
+        Sort Key: fetched_at DESC
+        Sort Method: quicksort  Memory: 25kB
+        Buffers: shared hit=2
+        ->  Seq Scan on core_foodsearchcache  (cost=0.00..2.50 rows=1 width=339) (actual time=0.001..0.003 rows=1 loops=1)
+              Filter: ((term)::text = 'off:v1:search:oats'::text)
+              Rows Removed by Filter: 19
+              Buffers: shared hit=2
+Planning Time: 0.022 ms
+Execution Time: 0.006 ms
+
+-- 0.2 ms when captured
+-- SELECT "authtoken_token"."key", "authtoken_token"."user_id", "authtoken_token"."created", "auth_user"."id", "auth_user"."password", "auth_user"."last_login", "auth_user"."is_superuser", "auth_user"."username", "auth_user"."first_name", "auth_user"."last_name", "auth_user"."email", "auth_user"."is_staff", "auth_user"."is_active", "auth_user"."date_joined" FROM "authtoken_token" INNER JOIN "auth_user" ON ("authtoken_token"."user_id" = "auth_user"."id") WHERE "authtoken_token"."key" = %s LIMIT 21
+Limit  (cost=0.56..16.60 rows=1 width=129) (actual time=0.003..0.003 rows=1 loops=1)
+  Buffers: shared hit=6
+  ->  Nested Loop  (cost=0.56..16.60 rows=1 width=129) (actual time=0.003..0.003 rows=1 loops=1)
+        Buffers: shared hit=6
+        ->  Index Scan using authtoken_token_key_10f0b77e_like on authtoken_token  (cost=0.27..8.29 rows=1 width=53) (actual time=0.001..0.001 rows=1 loops=1)
+              Index Cond: ((key)::text = '46b78a5123a04e0399750a14e4bca98a17e12333'::text)
+              Buffers: shared hit=3
+        ->  Index Scan using auth_user_pkey on auth_user  (cost=0.29..8.30 rows=1 width=76) (actual time=0.001..0.001 rows=1 loops=1)
+              Index Cond: (id = authtoken_token.user_id)
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=7
+Planning Time: 0.051 ms
+Execution Time: 0.008 ms
+
+-- 0.1 ms when captured
+-- INSERT INTO "core_dailyapimetric" ("day", "endpoint", "method", "requests", "client_errors", "server_errors", "total_ms", "max_ms") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_dailyapimetric"."id"
+Insert on core_dailyapimetric  (cost=0.00..0.01 rows=1 width=424)
+  ->  Result  (cost=0.00..0.01 rows=1 width=424)
+
+-- 0.1 ms when captured
+-- INSERT INTO "core_recentapimetric" ("bucket", "endpoint", "method", "requests", "client_errors", "server_errors", "total_ms", "max_ms") VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_recentapimetric"."id"
+Insert on core_recentapimetric  (cost=0.00..0.01 rows=1 width=428)
+  ->  Result  (cost=0.00..0.01 rows=1 width=428)
+
+-- 0.1 ms when captured
+-- UPDATE "core_recentapimetric" SET "requests" = ("core_recentapimetric"."requests" + %s), "client_errors" = ("core_recentapimetric"."client_errors" + %s), "server_errors" = ("core_recentapimetric"."server_errors" + %s), "total_ms" = ("core_recentapimetric"."total_ms" + %s), "max_ms" = GREATEST("core_recentapimetric"."max_ms", %s) WHERE "core_recentapimetric"."id" = %s
+Update on core_recentapimetric  (cost=0.00..1.22 rows=0 width=0)
+  ->  Seq Scan on core_recentapimetric  (cost=0.00..1.22 rows=1 width=46)
+        Filter: (id = 12)
+
+-- 0.1 ms when captured
+-- UPDATE "core_dailyapimetric" SET "requests" = ("core_dailyapimetric"."requests" + %s), "client_errors" = ("core_dailyapimetric"."client_errors" + %s), "server_errors" = ("core_dailyapimetric"."server_errors" + %s), "total_ms" = ("core_dailyapimetric"."total_ms" + %s), "max_ms" = GREATEST("core_dailyapimetric"."max_ms", %s) WHERE "core_dailyapimetric"."id" = %s
+Update on core_dailyapimetric  (cost=0.00..1.24 rows=0 width=0)
+  ->  Seq Scan on core_dailyapimetric  (cost=0.00..1.24 rows=1 width=46)
+        Filter: (id = 12)
