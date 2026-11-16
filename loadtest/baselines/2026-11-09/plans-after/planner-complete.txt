@@ -1,0 +1,71 @@
+-- 0.6 ms when captured
+-- INSERT INTO "core_plannerentry" ("owner_id", "kind", "title", "category", "priority", "scheduled_date", "scheduled_time", "duration_minutes", "completed_at", "workout_id", "source_schedule_id", "notes", "parent_id", "recurrence_id", "is_subtask", "created_at", "updated_at") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING "core_plannerentry"."id"
+Insert on core_plannerentry  (cost=0.00..0.01 rows=1 width=1055)
+  ->  Result  (cost=0.00..0.01 rows=1 width=1055)
+
+-- 0.5 ms when captured
+-- UPDATE "core_plannerentry" SET "owner_id" = %s, "kind" = %s, "title" = %s, "category" = %s, "priority" = %s, "scheduled_date" = %s, "scheduled_time" = %s, "duration_minutes" = %s, "completed_at" = %s, "workout_id" = %s, "source_schedule_id" = %s, "notes" = %s, "parent_id" = %s, "recurrence_id" = %s, "is_subtask" = %s, "created_at" = %s, "updated_at" = %s WHERE "core_plannerentry"."id" = %s
+Update on core_plannerentry  (cost=0.42..8.44 rows=0 width=0)
+  ->  Index Scan using core_plannerentry_pkey on core_plannerentry  (cost=0.42..8.44 rows=1 width=1053)
+        Index Cond: (id = 788001)
+
+-- 0.4 ms when captured
+-- SELECT "core_plannerentry"."id", "core_plannerentry"."owner_id", "core_plannerentry"."kind", "core_plannerentry"."title", "core_plannerentry"."category", "core_plannerentry"."priority", "core_plannerentry"."scheduled_date", "core_plannerentry"."scheduled_time", "core_plannerentry"."duration_minutes", "core_plannerentry"."completed_at", "core_plannerentry"."workout_id", "core_plannerentry"."source_schedule_id", "core_plannerentry"."notes", "core_plannerentry"."parent_id", "core_plannerentry"."recurrence_id", "core_plannerentry"."is_subtask", "core_plannerentry"."created_at", "core_plannerentry"
+Limit  (cost=1.00..33.09 rows=1 width=545) (actual time=0.006..0.007 rows=1 loops=1)
+  Buffers: shared hit=8
+  ->  Nested Loop Left Join  (cost=1.00..33.09 rows=1 width=545) (actual time=0.006..0.007 rows=1 loops=1)
+        Buffers: shared hit=8
+        ->  Nested Loop  (cost=0.71..16.76 rows=1 width=415) (actual time=0.005..0.005 rows=1 loops=1)
+              Buffers: shared hit=8
+              ->  Index Scan using core_plannerentry_pkey on core_plannerentry  (cost=0.42..8.45 rows=1 width=114) (actual time=0.003..0.003 rows=1 loops=1)
+                    Index Cond: (id = 788001)
+                    Filter: (owner_id = 101)
+                    Buffers: shared hit=5
+              ->  Index Scan using core_repbaseuser_pkey on core_repbaseuser  (cost=0.29..8.30 rows=1 width=301) (actual time=0.002..0.002 rows=1 loops=1)
+                    Index Cond: (id = 101)
+                    Buffers: shared hit=3
+        ->  Index Scan using core_workouttemplate_pkey on core_workouttemplate  (cost=0.29..8.31 rows=1 width=130) (actual time=0.000..0.000 rows=0 loops=1)
+              Index Cond: (id = core_plannerentry.workout_id)
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.080 ms
+Execution Time: 0.019 ms
+
+-- 0.3 ms when captured
+-- SELECT "core_plannerentry"."id", "core_plannerentry"."source_schedule_id" FROM "core_plannerentry" WHERE "core_plannerentry"."id" = %s LIMIT 21
+Limit  (cost=0.42..8.44 rows=1 width=16) (actual time=0.002..0.002 rows=1 loops=1)
+  Buffers: shared hit=5
+  ->  Index Scan using core_plannerentry_pkey on core_plannerentry  (cost=0.42..8.44 rows=1 width=16) (actual time=0.002..0.002 rows=1 loops=1)
+        Index Cond: (id = 788001)
+        Buffers: shared hit=5
+Planning:
+  Buffers: shared hit=1
+Planning Time: 0.015 ms
+Execution Time: 0.004 ms
+
+-- 0.2 ms when captured
+-- SELECT "authtoken_token"."key", "authtoken_token"."user_id", "authtoken_token"."created", "auth_user"."id", "auth_user"."password", "auth_user"."last_login", "auth_user"."is_superuser", "auth_user"."username", "auth_user"."first_name", "auth_user"."last_name", "auth_user"."email", "auth_user"."is_staff", "auth_user"."is_active", "auth_user"."date_joined" FROM "authtoken_token" INNER JOIN "auth_user" ON ("authtoken_token"."user_id" = "auth_user"."id") WHERE "authtoken_token"."key" = %s LIMIT 21
+Limit  (cost=0.56..16.60 rows=1 width=129) (actual time=0.003..0.003 rows=1 loops=1)
+  Buffers: shared hit=6
+  ->  Nested Loop  (cost=0.56..16.60 rows=1 width=129) (actual time=0.003..0.003 rows=1 loops=1)
+        Buffers: shared hit=6
+        ->  Index Scan using authtoken_token_key_10f0b77e_like on authtoken_token  (cost=0.27..8.29 rows=1 width=53) (actual time=0.001..0.001 rows=1 loops=1)
+              Index Cond: ((key)::text = '46b78a5123a04e0399750a14e4bca98a17e12333'::text)
+              Buffers: shared hit=3
+        ->  Index Scan using auth_user_pkey on auth_user  (cost=0.29..8.30 rows=1 width=76) (actual time=0.001..0.001 rows=1 loops=1)
+              Index Cond: (id = authtoken_token.user_id)
+              Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=7
+Planning Time: 0.060 ms
+Execution Time: 0.008 ms
+
+-- 0.1 ms when captured
+-- SELECT "core_repbaseuser"."id", "core_repbaseuser"."user_id", "core_repbaseuser"."birthdate", "core_repbaseuser"."height_cm", "core_repbaseuser"."weight_kg", "core_repbaseuser"."target_weight_kg", "core_repbaseuser"."daily_step_goal", "core_repbaseuser"."unit_preference", "core_repbaseuser"."profile_photo", "core_repbaseuser"."bio", "core_repbaseuser"."gym_id", "core_repbaseuser"."time_zone", "core_repbaseuser"."shows_height", "core_repbaseuser"."shows_weight", "core_repbaseuser"."shows_target_weight", "core_repbaseuser"."is_profile_public", "core_repbaseuser"."created_at", "core_repbaseuser".
+Limit  (cost=0.29..8.30 rows=1 width=301) (actual time=0.002..0.002 rows=1 loops=1)
+  Buffers: shared hit=3
+  ->  Index Scan using core_repbaseuser_user_id_key on core_repbaseuser  (cost=0.29..8.30 rows=1 width=301) (actual time=0.002..0.002 rows=1 loops=1)
+        Index Cond: (user_id = 101)
+        Buffers: shared hit=3
+Planning Time: 0.010 ms
+Execution Time: 0.005 ms

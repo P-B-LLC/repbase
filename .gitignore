@@ -53,3 +53,6 @@ Desktop.ini
 # Local database snapshots taken before risky migrations.
 db.sqlite3.backup*
 private-videos/
+
+# Raw load-test output. Reviewed summaries live in loadtest/baselines/.
+loadtest/results/

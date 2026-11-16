@@ -2,6 +2,7 @@ from datetime import timedelta, timezone as datetime_timezone
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 from core.analytics_models import DailyActiveAccount, DailyApiMetric, RecentApiMetric
+from core.metric_buffer import prune_receipts
 
 
 class Command(BaseCommand):
@@ -27,4 +28,5 @@ class Command(BaseCommand):
         activity.delete()
         metrics.delete()
         buckets.delete()
+        prune_receipts(now)
         self.stdout.write('Expired analytics removed; operational app records were not changed.')

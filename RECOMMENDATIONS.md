@@ -452,11 +452,14 @@ reads those rows in one query instead of counting during somebody's request.
 Each run rewrites every post acted on since the last run that finished (and,
 for posts under two days old, every one that was seen), and enough of the rest,
 oldest first, that every row in the 30-day window comes round within 15
-minutes however big the window grows. A row is read only while it is under 30
-minutes old and was written by the current way of counting
-(`STATS_VERSION`); anything else is counted on the spot, as before, so a
-stopped job makes the page slower, never wrong, and the deploy check
-`core.W009` says so. Each batch commits on its own; a post deleted while its
+minutes however big the window grows. A row under 30 minutes old and written
+by the current way of counting (`STATS_VERSION`) is simply the answer. When the
+job is late a request does not make up for it: a row up to 6 hours old
+(`FEED_STATS_STALE_SECONDS`) stands in, a post with no usable row counts as one
+with no record yet, and the next run is asked to repair those posts. Only one
+request at a time may count, and only 200 posts that have no row at all, which is
+what lets a small deployment run without the job. A stopped job makes the page a
+little less current, never slower, and the deploy check `core.W009` says so. Each batch commits on its own; a post deleted while its
 batch was counted is left out, not a failed run; and a run stopped half way
 leaves nothing behind, because the next one looks for activity from when the
 last *finished* run started.
@@ -618,7 +621,7 @@ simulated community.
 
 | Timer (in `deploy/`) | Runs | Missing it means |
 | --- | --- | --- |
-| `repbase-feed-stats` | `refresh_feed_stats`, 5 minutes after each run | a slower first page (counted on the spot); `core.W009` warns |
+| `repbase-feed-stats` | `refresh_feed_stats`, 5 minutes after each run | counts up to 6 hours old, then no record; `core.W009` warns |
 | `repbase-ranking-model` | `train_ranking_model`, daily ~04:30 | the active model ages; with none, the rules alone |
 
 Both are installed like the other timers: copy the `.service` and `.timer`

@@ -33,6 +33,7 @@ from .recommendations import (
     serve_page,
     topic_label,
 )
+from .resilient_cache import cache_is_available
 from .serializers import (
     ForYouPageSerializer,
     ForYouPostSerializer,
@@ -43,6 +44,7 @@ from .serializers import (
     UpdateForYouPreferencesSerializer,
 )
 from .suggestions import MAX_SUGGESTIONS, suggest_people
+from .throttles import CacheUnavailable
 from .views import (
     FeedCursorPagination,
     annotate_social_counts,
@@ -112,6 +114,12 @@ class ForYouView(APIView):
         responses={200: ForYouPageSerializer},
     )
     def get(self, request):
+        # Without the cache every ranking would rebuild the shared lists from
+        # the database, at the moment it can least afford that. Workouts,
+        # meals, the planner and the Following feed need none of this and
+        # carry on; this page says to come back shortly.
+        if not cache_is_available():
+            raise CacheUnavailable()
         viewer = profile_for(request.user)
         size = _page_size(request)
         cursor = request.query_params.get("cursor")

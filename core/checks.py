@@ -313,6 +313,20 @@ def for_you_configuration_is_valid(app_configs, **kwargs):
     return []
 
 
+@register()
+def buffered_analytics_has_shared_redis(app_configs, **kwargs):
+    """Buffered counters live in Redis, so without Redis there are none."""
+    if not (settings.ANALYTICS_ENABLED and settings.ANALYTICS_BUFFERED):
+        return []
+    if settings.CACHES['default']['BACKEND'] == 'core.resilient_cache.ResilientRedisCache':
+        return []
+    return [Error(
+        'ANALYTICS_BUFFERED is on, but the default cache is not Redis.',
+        hint='Set REDIS_URL, or leave ANALYTICS_BUFFERED off so requests write to SQL directly.',
+        id='core.E014',
+    )]
+
+
 @register(deploy=True)
 def feed_stats_are_kept_up(app_configs, **kwargs):
     """The per-post counts table is being refreshed, once it has been set up.

@@ -1,0 +1,563 @@
+-- 33.7 ms when captured
+-- SELECT "core_postlike"."post_id" AS "post_id" FROM "core_postlike" INNER JOIN "core_post" ON ("core_postlike"."post_id" = "core_post"."id") INNER JOIN "core_repbaseuser" ON ("core_postlike"."user_id" = "core_repbaseuser"."id") WHERE ("core_postlike"."created_at" >= %s AND "core_post"."published_at" >= %s AND "core_repbaseuser"."created_at" <= %s AND NOT ("core_postlike"."user_id" IN (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)) AND NOT ("core_postlike"."user_id" = ("core_post"."a
+Limit  (cost=19812.09..19812.84 rows=300 width=16) (actual time=37.930..37.992 rows=300 loops=1)
+  Buffers: shared hit=6343
+  ->  Sort  (cost=19812.09..19895.86 rows=33510 width=16) (actual time=37.930..37.980 rows=300 loops=1)
+        Sort Key: (count(core_postlike.id)) DESC, core_postlike.post_id DESC
+        Sort Method: top-N heapsort  Memory: 44kB
+        Buffers: shared hit=6343
+        ->  Finalize HashAggregate  (cost=17930.70..18265.80 rows=33510 width=16) (actual time=36.088..37.155 rows=17298 loops=1)
+              Group Key: core_postlike.post_id
+              Batches: 1  Memory Usage: 2833kB
+              Buffers: shared hit=6343
+              ->  Gather  (cost=12635.96..17690.03 rows=48134 width=16) (actual time=30.682..32.739 rows=38386 loops=1)
+                    Workers Planned: 2
+                    Workers Launched: 2
+                    Buffers: shared hit=6343
+                    ->  Partial HashAggregate  (cost=11635.96..11876.63 rows=24067 width=16) (actual time=28.069..28.813 rows=12795 loops=3)
+                          Group Key: core_postlike.post_id
+                          Batches: 1  Memory Usage: 1809kB
+                          Buffers: shared hit=6343
+                          Worker 0:  Batches: 1  Memory Usage: 1809kB
+                          Worker 1:  Batches: 1  Memory Usage: 1809kB
+                          ->  Hash Join  (cost=2475.16..11515.62 rows=24067 width=16) (actual time=4.753..24.349 rows=40188 loops=3)
+                                Hash Cond: (core_postlike.user_id = core_repbaseuser.id)
+                                Buffers: shared hit=6343
+                                ->  Parallel Hash Join  (cost=1708.85..10685.95 rows=24133 width=24) (actual time=2.473..18.785 rows=40280 loops=3)
+                                      Hash Cond: (core_postlike.post_id = core_post.id)
+                                      Join Filter: (core_postlike.user_id <> core_post.author_id)
+                                      Buffers: shared hit=5536
+                                      ->  Parallel Seq Scan on core_postlike  (cost=0.10..8787.79 rows=72151 width=24) (actual time=0.005..10.799 rows=57185 loops=3)
+                                            Filter: ((created_at >= '2026-11-02 21:18:56.215523+00'::timestamp with time zone) AND (user_id <> ALL ('{500,1000,1500,2000,2500,3000,3500,4000,4500,5000,5500,6000,6500,7000,7500,8000,8500,9000,9500,10000,10500,11000,11500,12000,12500,13000,13500,14000,14500,15000,15500,16000,16500,17000,17500,18000,18500,19000,19500,20000}'::bigint[])))
+                                            Rows Removed by Filter: 142815
+                                            Buffers: shared hit=4416
+                                      ->  Parallel Hash  (cost=1561.18..1561.18 rows=11806 width=16) (actual time=2.447..2.447 rows=6664 loops=3)
+                                            Buckets: 32768  Batches: 1  Memory Usage: 1216kB
+                                            Buffers: shared hit=1120
+                                            ->  Parallel Seq Scan on core_post  (cost=0.00..1561.18 rows=11806 width=16) (actual time=0.005..2.017 rows=6664 loops=3)
+                                                  Filter: (published_at >= '2026-10-10 21:18:56.215523+00'::timestamp with time zone)
+                                                  Rows Removed by Filter: 13336
+                                                  Buffers: shared hit=1120
+                                ->  Hash  (cost=517.00..517.00 rows=19945 width=8) (actual time=2.262..2.262 rows=19950 loops=3)
+                                      Buckets: 32768  Batches: 1  Memory Usage: 1036kB
+                                      Buffers: shared hit=801
+                                      ->  Seq Scan on core_repbaseuser  (cost=0.00..517.00 rows=19945 width=8) (actual time=0.041..1.318 rows=19950 loops=3)
+                                            Filter: (created_at <= '2026-11-07 21:18:56.215523+00'::timestamp with time zone)
+                                            Rows Removed by Filter: 50
+                                            Buffers: shared hit=801
+Planning:
+  Buffers: shared hit=28
+Planning Time: 0.265 ms
+Execution Time: 38.034 ms
+
+-- 30.6 ms when captured
+-- SELECT DISTINCT "core_postworkoutexercise"."name" AS "name", "core_post"."author_id" AS "post_workout__post__author_id" FROM "core_postworkoutexercise" INNER JOIN "core_postworkout" ON ("core_postworkoutexercise"."post_workout_id" = "core_postworkout"."id") INNER JOIN "core_post" ON ("core_postworkout"."post_id" = "core_post"."id") WHERE "core_post"."published_at" >= %s
+HashAggregate  (cost=6267.44..6670.39 rows=40295 width=19) (actual time=24.902..26.440 rows=35884 loops=1)
+  Group Key: core_postworkoutexercise.name, core_post.author_id
+  Batches: 1  Memory Usage: 3857kB
+  Buffers: shared hit=2639
+  ->  Hash Join  (cost=2865.93..6065.96 rows=40295 width=19) (actual time=7.365..20.347 rows=39992 loops=1)
+        Hash Cond: (core_postworkoutexercise.post_workout_id = core_postworkout.id)
+        Buffers: shared hit=2639
+        ->  Seq Scan on core_postworkoutexercise  (cost=0.00..2372.56 rows=120456 width=19) (actual time=0.001..3.549 rows=120456 loops=1)
+              Buffers: shared hit=1168
+        ->  Hash  (cost=2749.17..2749.17 rows=9341 width=16) (actual time=7.359..7.360 rows=9998 loops=1)
+              Buckets: 16384  Batches: 1  Memory Usage: 597kB
+              Buffers: shared hit=1471
+              ->  Hash Join  (cost=2077.62..2749.17 rows=9341 width=16) (actual time=3.268..6.876 rows=9998 loops=1)
+                    Hash Cond: (core_postworkout.post_id = core_post.id)
+                    Buffers: shared hit=1471
+                    ->  Seq Scan on core_postworkout  (cost=0.00..598.25 rows=27925 width=16) (actual time=0.001..0.939 rows=30114 loops=1)
+                          Buffers: shared hit=319
+                    ->  Hash  (cost=1826.73..1826.73 rows=20071 width=16) (actual time=3.263..3.263 rows=19991 loops=1)
+                          Buckets: 32768  Batches: 1  Memory Usage: 1194kB
+                          Buffers: shared hit=1152
+                          ->  Bitmap Heap Scan on core_post  (cost=455.84..1826.73 rows=20071 width=16) (actual time=0.728..2.367 rows=19991 loops=1)
+                                Recheck Cond: (published_at >= '2026-10-10 21:18:56.23755+00'::timestamp with time zone)
+                                Heap Blocks: exact=1083
+                                Buffers: shared hit=1152
+                                ->  Bitmap Index Scan on core_post_published_at_717e66d9  (cost=0.00..450.82 rows=20071 width=0) (actual time=0.661..0.661 rows=19991 loops=1)
+                                      Index Cond: (published_at >= '2026-10-10 21:18:56.23755+00'::timestamp with time zone)
+                                      Buffers: shared hit=69
+Planning:
+  Buffers: shared hit=24
+Planning Time: 0.146 ms
+Execution Time: 27.151 ms
+
+-- 24.9 ms when captured
+-- SELECT "core_postlike"."user_id" AS "user_id", COUNT("core_postlike"."id") AS "shared" FROM "core_postlike" INNER JOIN "core_repbaseuser" ON ("core_postlike"."user_id" = "core_repbaseuser"."id") INNER JOIN "auth_user" ON ("core_repbaseuser"."user_id" = "auth_user"."id") WHERE ("core_postlike"."post_id" IN (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 
+Limit  (cost=7381.43..7381.68 rows=100 width=16) (actual time=19.360..19.366 rows=100 loops=1)
+  Buffers: shared hit=5146
+  ->  Sort  (cost=7381.43..7390.08 rows=3460 width=16) (actual time=19.360..19.363 rows=100 loops=1)
+        Sort Key: (count(core_postlike.id)) DESC, core_postlike.user_id
+        Sort Method: top-N heapsort  Memory: 31kB
+        Buffers: shared hit=5146
+        ->  HashAggregate  (cost=7119.45..7249.19 rows=3460 width=16) (actual time=18.756..19.208 rows=2578 loops=1)
+              Group Key: core_postlike.user_id
+              Filter: (count(core_postlike.id) >= 2)
+              Batches: 1  Memory Usage: 1425kB
+              Rows Removed by Filter: 10393
+              Buffers: shared hit=5146
+              ->  Nested Loop Anti Join  (cost=1979.05..7043.67 rows=15156 width=16) (actual time=5.113..17.345 rows=16095 loops=1)
+                    Join Filter: ((("U0".blocked_id = core_postlike.user_id) AND ("U0".blocker_id = 101)) OR (("U0".blocked_id = 101) AND ("U0".blocker_id = core_postlike.user_id)))
+                    Buffers: shared hit=5146
+                    ->  Hash Join  (cost=1979.05..6740.55 rows=15156 width=16) (actual time=5.112..11.105 rows=16095 loops=1)
+                          Hash Cond: (core_repbaseuser.user_id = auth_user.id)
+                          Buffers: shared hit=5146
+                          ->  Hash Join  (cost=1257.55..5979.18 rows=15186 width=20) (actual time=2.905..7.615 rows=16122 loops=1)
+                                Hash Cond: (core_postlike.user_id = core_repbaseuser.id)
+                                Buffers: shared hit=4874
+                                ->  Bitmap Heap Scan on core_postlike  (cost=540.55..5222.30 rows=15186 width=16) (actual time=0.837..4.134 rows=16122 loops=1)
+                                      Recheck Cond: (post_id = ANY ('{42172,19280,44418,1,41206,40885,34246,10205,10319,2122,16980,46855,35046,821,47534,8212,8824,52326,52821,17113,19427,7583,4161,59761,59159,12305,21973,49755,42546,19142,6931,19336,10547,30195,51741,24609,53608,34106,9244,6280,16864,6850,53916,59981,23324,52382,46906,5646,3818,32804,5184,19663,36349,8252,49844,39698,17438,36788,23580,22592,26823,29714,11604,7033,33290,54553,53137,20054,25591,19390,32963,13218,17668,43400,45287,40839,30430,46910,40654,12981,38287,1182,16623,52946,59367,28288,47720,32790,4105,42441,32618,57402,21771,4887,34762,49437,37911,1947,51224,58115}'::bigint[]))
+                                      Filter: (user_id <> 101)
+                                      Rows Removed by Filter: 97
+                                      Heap Blocks: exact=4299
+                                      Buffers: shared hit=4607
+                                      ->  Bitmap Index Scan on core_postlike_post_id_304a41d2  (cost=0.00..536.50 rows=15186 width=0) (actual time=0.531..0.531 rows=16219 loops=1)
+                                            Index Cond: (post_id = ANY ('{42172,19280,44418,1,41206,40885,34246,10205,10319,2122,16980,46855,35046,821,47534,8212,8824,52326,52821,17113,19427,7583,4161,59761,59159,12305,21973,49755,42546,19142,6931,19336,10547,30195,51741,24609,53608,34106,9244,6280,16864,6850,53916,59981,23324,52382,46906,5646,3818,32804,5184,19663,36349,8252,49844,39698,17438,36788,23580,22592,26823,29714,11604,7033,33290,54553,53137,20054,25591,19390,32963,13218,17668,43400,45287,40839,30430,46910,40654,12981,38287,1182,16623,52946,59367,28288,47720,32790,4105,42441,32618,57402,21771,4887,34762,49437,37911,1947,51224,58115}'::bigint[]))
+                                            Buffers: shared hit=308
+                                ->  Hash  (cost=467.00..467.00 rows=20000 width=12) (actual time=2.065..2.065 rows=20000 loops=1)
+                                      Buckets: 32768  Batches: 1  Memory Usage: 1116kB
+                                      Buffers: shared hit=267
+                                      ->  Seq Scan on core_repbaseuser  (cost=0.00..467.00 rows=20000 width=12) (actual time=0.001..1.167 rows=20000 loops=1)
+                                            Buffers: shared hit=267
+                          ->  Hash  (cost=472.00..472.00 rows=19960 width=4) (actual time=2.204..2.204 rows=19960 loops=1)
+                                Buckets: 32768  Batches: 1  Memory Usage: 958kB
+                                Buffers: shared hit=272
+                                ->  Seq Scan on auth_user  (cost=0.00..472.00 rows=19960 width=4) (actual time=0.002..1.429 rows=19960 loops=1)
+                                      Filter: is_active
+                                      Rows Removed by Filter: 40
+                                      Buffers: shared hit=272
+                    ->  Seq Scan on core_block "U0"  (cost=0.00..0.00 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=16095)
+                          Filter: ((blocker_id = 101) OR (blocked_id = 101))
+Planning:
+  Buffers: shared hit=31
+Planning Time: 0.369 ms
+Execution Time: 19.398 ms
+
+-- 20.3 ms when captured
+-- SELECT "core_post"."id" AS "pk", "core_post"."author_id" AS "author_id", "core_repbaseuser"."created_at" AS "author__created_at", "core_post"."kind" AS "kind", "core_post"."published_at" AS "published_at", "core_postworkout"."workout_type" AS "workout__workout_type", "core_postplannerentry"."category" AS "planner__category", "core_postvideo"."status" AS "video__status", COALESCE((SELECT COUNT("U0"."id") AS "n" FROM "core_postreport" "U0" WHERE ("U0"."post_id" = ("core_post"."id") AND "U0"."reviewed_at" IS NULL) GROUP BY "U0"."post_id" LIMIT 1), %s) AS "open_reports", "core_post"."caption" AS "
+Limit  (cost=17752.96..17753.22 rows=107 width=85) (actual time=21.051..21.063 rows=150 loops=1)
+  Buffers: shared hit=8056
+  ->  Sort  (cost=17752.96..17753.22 rows=107 width=85) (actual time=21.051..21.057 rows=150 loops=1)
+        Sort Key: core_post.published_at DESC, core_post.id DESC
+        Sort Method: top-N heapsort  Memory: 58kB
+        Buffers: shared hit=8056
+        ->  Nested Loop Anti Join  (cost=1373.73..17749.35 rows=107 width=85) (actual time=5.665..20.904 rows=860 loops=1)
+              Join Filter: ("U0_7".post_id = core_post.id)
+              Buffers: shared hit=8056
+              ->  Nested Loop Anti Join  (cost=1373.73..17648.14 rows=107 width=77) (actual time=5.403..20.068 rows=860 loops=1)
+                    Join Filter: ("U0_6".source_post_id = core_post.id)
+                    Rows Removed by Join Filter: 2580
+                    Buffers: shared hit=7983
+                    ->  Nested Loop Anti Join  (cost=1373.44..17636.60 rows=107 width=77) (actual time=5.399..19.848 rows=860 loops=1)
+                          Join Filter: ("U0_5".source_post_id = core_post.id)
+                          Rows Removed by Join Filter: 3440
+                          Buffers: shared hit=7980
+                          ->  Nested Loop Anti Join  (cost=1373.15..17625.06 rows=107 width=77) (actual time=5.394..19.599 rows=860 loops=1)
+                                Join Filter: ("U0_4".repost_of_id = core_post.id)
+                                Rows Removed by Join Filter: 16340
+                                Buffers: shared hit=7977
+                                ->  Nested Loop Anti Join  (cost=1368.83..17598.98 rows=107 width=77) (actual time=5.379..18.782 rows=860 loops=1)
+                                      Join Filter: ("U0_3".post_id = core_post.id)
+                                      Rows Removed by Join Filter: 3440
+                                      Buffers: shared hit=7956
+                                      ->  Nested Loop Anti Join  (cost=1364.52..17578.39 rows=107 width=77) (actual time=5.373..18.408 rows=860 loops=1)
+                                            Join Filter: ("U0_2".post_id = core_post.id)
+                                            Rows Removed by Join Filter: 192914
+                                            Buffers: shared hit=7950
+                                            ->  Nested Loop Anti Join  (cost=1364.09..17517.97 rows=107 width=77) (actual time=5.328..9.917 rows=863 loops=1)
+                                                  Join Filter: ("U0_1".post_id = core_post.id)
+                                                  Buffers: shared hit=7944
+                                                  ->  Nested Loop Anti Join  (cost=1364.09..17516.63 rows=107 width=77) (actual time=5.328..9.523 rows=863 loops=1)
+                                                        Join Filter: ("U0".post_id = core_post.id)
+                                                        Rows Removed by Join Filter: 863
+                                                        Buffers: shared hit=7944
+                                                        ->  Hash Left Join  (cost=1363.81..17509.09 rows=107 width=77) (actual time=5.323..9.371 rows=863 loops=1)
+                                                              Hash Cond: (core_post.id = core_postvideo.post_id)
+                                                              Buffers: shared hit=7941
+                                                              ->  Nested Loop Left Join  (cost=1245.33..17390.34 rows=107 width=68) (actual time=4.849..8.809 rows=863 loops=1)
+                                                                    Buffers: shared hit=7868
+                                                                    ->  Nested Loop Left Join  (cost=1245.05..17210.65 rows=107 width=62) (actual time=4.848..8.334 rows=863 loops=1)
+                                                                          Buffers: shared hit=6094
+                                                                          ->  Nested Loop  (cost=1244.77..16551.58 rows=107 width=55) (actual time=4.846..7.505 rows=863 loops=1)
+                                                                                Buffers: shared hit=3930
+                                                                                ->  Hash Join  (cost=1244.48..16511.90 rows=107 width=59) (actual time=4.843..6.798 rows=863 loops=1)
+                                                                                      Hash Cond: (core_post.author_id = core_repbaseuser.id)
+                                                                                      Join Filter: ((core_post.author_id = 101) OR ((NOT (SubPlan 2)) AND (core_repbaseuser.is_profile_public OR (hashed SubPlan 4)) AND (((core_post.visibility)::text = 'public'::text) OR ((hashed SubPlan 6) AND ((core_post.visibility)::text = 'followers'::text))) AND (((core_post.kind)::text <> 'media'::text) OR ((core_post.image IS NOT NULL) AND (((core_post.image)::text <> ''::text) OR (core_post.image IS NULL))) OR (hashed SubPlan 8))))
+                                                                                      Buffers: shared hit=1341
+                                                                                      ->  Bitmap Heap Scan on core_post  (cost=527.48..15794.61 rows=110 width=69) (actual time=0.988..2.404 rows=863 loops=1)
+                                                                                            Recheck Cond: ((author_id = ANY ('{17920,1,2,3,4,5,2050,512,8,6,6154,11,10,14,18,21,3606,24,14361,3104,41,47,1584,5685,4150,571,6207,16448,12355,71,17995,76,77,12378,2143,16995,7780,99,14947,2158,9327,5744,113,119,3705,129,1666,16003,135,4235,11918,5263,5262,2203,18587,164,1188,15527,171,12471,5306,13501,14529,19152,3285,8920,217,5850,1256,19696,753,242,11512,248,764,4861,775,265,12045,270,3343,1302,18200,10009,284,7453,5407,288,2850,290,3876,293,6441,16169,15660,302,1328,816,1843,18739,19768,17724,12611,1864,1353,331,1872,8016,340,16732,6497,1383,12137,13168,17786,1405,381,9597,9095,8079,922,8095,3490,3492,7082,2475,18363,444,447,448,4034,5069,981,2007,5591,10724,17897,5614,2543,505}'::bigint[])) AND (published_at IS NOT NULL) AND (published_at >= '2026-10-10 21:18:56.215523+00'::timestamp with time zone))
+                                                                                            Filter: ((NOT is_hidden) AND (NOT moderation_child_hold) AND ((kind)::text <> 'repost'::text) AND ((visibility)::text <> 'private'::text) AND ((moderation_status)::text = 'approved'::text) AND (COALESCE((SubPlan 9), '0'::bigint) < 3) AND ((author_id = 101) OR ((NOT (SubPlan 2)) AND (((visibility)::text = 'public'::text) OR ((hashed SubPlan 6) AND ((visibility)::text = 'followers'::text))) AND (((kind)::text <> 'media'::text) OR ((image IS NOT NULL) AND (((image)::text <> ''::text) OR (image IS NULL))) OR (hashed SubPlan 8)))))
+                                                                                            Rows Removed by Filter: 62
+                                                                                            Heap Blocks: exact=632
+                                                                                            Buffers: shared hit=991
+                                                                                            ->  Bitmap Index Scan on core_post_author__04813d_idx  (cost=0.00..527.10 rows=844 width=0) (actual time=0.212..0.212 rows=925 loops=1)
+                                                                                                  Index Cond: ((author_id = ANY ('{17920,1,2,3,4,5,2050,512,8,6,6154,11,10,14,18,21,3606,24,14361,3104,41,47,1584,5685,4150,571,6207,16448,12355,71,17995,76,77,12378,2143,16995,7780,99,14947,2158,9327,5744,113,119,3705,129,1666,16003,135,4235,11918,5263,5262,2203,18587,164,1188,15527,171,12471,5306,13501,14529,19152,3285,8920,217,5850,1256,19696,753,242,11512,248,764,4861,775,265,12045,270,3343,1302,18200,10009,284,7453,5407,288,2850,290,3876,293,6441,16169,15660,302,1328,816,1843,18739,19768,17724,12611,1864,1353,331,1872,8016,340,16732,6497,1383,12137,13168,17786,1405,381,9597,9095,8079,922,8095,3490,3492,7082,2475,18363,444,447,448,4034,5069,981,2007,5591,10724,17897,5614,2543,505}'::bigint[])) AND (published_at IS NOT NULL) AND (published_at >= '2026-10-10 21:18:56.215523+00'::timestamp with time zone))
+                                                                                                  Buffers: shared hit=281
+                                                                                            SubPlan 9
+                                                                                              ->  Limit  (cost=0.00..0.01 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=863)
+                                                                                                    ->  GroupAggregate  (cost=0.00..0.01 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=863)
+                                                                                                          ->  Seq Scan on core_postreport "U0_13"  (cost=0.00..0.00 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=863)
+                                                                                                                Filter: ((reviewed_at IS NULL) AND (post_id = core_post.id))
+                                                                                            SubPlan 2
+                                                                                              ->  Seq Scan on core_block "U0_9"  (cost=0.00..0.00 rows=1 width=0) (actual time=0.000..0.000 rows=0 loops=1726)
+                                                                                                    Filter: (((blocked_id = core_post.author_id) AND (blocker_id = 101)) OR ((blocked_id = 101) AND (blocker_id = core_post.author_id)))
+                                                                                            SubPlan 6
+                                                                                              ->  Index Scan using core_follow_follower_id_695d5f81 on core_follow "U0_11"  (cost=0.30..12.62 rows=190 width=8) (actual time=0.003..0.011 rows=140 loops=2)
+                                                                                                    Index Cond: (follower_id = 101)
+                                                                                                    Buffers: shared hit=10
+                                                                                            SubPlan 8
+                                                                                              ->  Seq Scan on core_postvideo "U0_12"  (cost=0.00..103.31 rows=2021 width=8) (actual time=0.001..0.456 rows=3543 loops=2)
+                                                                                                    Filter: (((processing_state)::text = 'ready'::text) AND ((status)::text = 'approved'::text))
+                                                                                                    Buffers: shared hit=146
+                                                                                      ->  Hash  (cost=467.00..467.00 rows=20000 width=21) (actual time=3.172..3.172 rows=20000 loops=1)
+                                                                                            Buckets: 32768  Batches: 1  Memory Usage: 1292kB
+                                                                                            Buffers: shared hit=267
+                                                                                            ->  Seq Scan on core_repbaseuser  (cost=0.00..467.00 rows=20000 width=21) (actual time=0.001..2.042 rows=20000 loops=1)
+                                                                                                  Buffers: shared hit=267
+                                                                                      SubPlan 4
+                                                                                        ->  Index Scan using core_follow_follower_id_695d5f81 on core_follow "U0_10"  (cost=0.30..12.62 rows=190 width=8) (actual time=0.001..0.010 rows=140 loops=1)
+                                                                                              Index Cond: (follower_id = 101)
+                                                                                              Buffers: shared hit=5
+                                                                                ->  Index Scan using auth_user_pkey on auth_user  (cost=0.29..0.37 rows=1 width=4) (actual time=0.001..0.001 rows=1 loops=863)
+                                                                                      Index Cond: (id = core_repbaseuser.user_id)
+                                                                                      Filter: is_active
+                                                                                      Buffers: shared hit=2589
+                                                                          ->  Index Scan using core_postworkout_post_id_key on core_postworkout  (cost=0.29..6.16 rows=1 width=15) (actual time=0.001..0.001 rows=1 loops=863)
+                                                                                Index Cond: (post_id = core_post.id)
+                                                                                Buffers: shared hit=2164
+                                                                    ->  Index Scan using core_postplannerentry_post_id_key on core_postplannerentry  (cost=0.28..1.68 rows=1 width=14) (actual time=0.000..0.000 rows=0 loops=863)
+                                                                          Index Cond: (post_id = core_post.id)
+                                                                          Buffers: shared hit=1774
+                                                              ->  Hash  (cost=93.21..93.21 rows=2021 width=17) (actual time=0.468..0.468 rows=3543 loops=1)
+                                                                    Buckets: 4096 (originally 2048)  Batches: 1 (originally 1)  Memory Usage: 226kB
+                                                                    Buffers: shared hit=73
+                                                                    ->  Seq Scan on core_postvideo  (cost=0.00..93.21 rows=2021 width=17) (actual time=0.001..0.293 rows=3543 loops=1)
+                                                                          Buffers: shared hit=73
+                                                        ->  Materialize  (cost=0.29..4.33 rows=2 width=8) (actual time=0.000..0.000 rows=1 loops=863)
+                                                              Buffers: shared hit=3
+                                                              ->  Index Only Scan using one_feedback_per_pair on core_postfeedback "U0"  (cost=0.29..4.32 rows=2 width=8) (actual time=0.003..0.003 rows=1 loops=1)
+                                                                    Index Cond: (viewer_id = 101)
+                                                                    Heap Fetches: 0
+                                                                    Buffers: shared hit=3
+                                                  ->  Seq Scan on core_postreport "U0_1"  (cost=0.00..0.00 rows=1 width=8) (actual time=0.000..0.000 rows=0 loops=863)
+                                                        Filter: (reporter_id = 101)
+                                            ->  Materialize  (cost=0.42..9.15 rows=32 width=8) (actual time=0.000..0.004 rows=224 loops=863)
+                                                  Buffers: shared hit=6
+                                                  ->  Index Scan using core_postlike_user_id_83b4cc30 on core_postlike "U0_2"  (cost=0.42..8.99 rows=32 width=8) (actual time=0.004..0.016 rows=224 loops=1)
+                                                        Index Cond: (user_id = 101)
+                                                        Buffers: shared hit=6
+                                      ->  Materialize  (cost=4.31..15.78 rows=3 width=8) (actual time=0.000..0.000 rows=4 loops=860)
+                                            Buffers: shared hit=6
+                                            ->  Bitmap Heap Scan on core_postcomment "U0_3"  (cost=4.31..15.77 rows=3 width=8) (actual time=0.004..0.006 rows=4 loops=1)
+                                                  Recheck Cond: (author_id = 101)
+                                                  Heap Blocks: exact=4
+                                                  Buffers: shared hit=6
+                                                  ->  Bitmap Index Scan on core_postco_author__6d6dc2_idx  (cost=0.00..4.31 rows=3 width=0) (actual time=0.003..0.003 rows=4 loops=1)
+                                                        Index Cond: (author_id = 101)
+                                                        Buffers: shared hit=2
+                                ->  Materialize  (cost=4.32..19.67 rows=4 width=8) (actual time=0.000..0.000 rows=19 loops=860)
+                                      Buffers: shared hit=21
+                                      ->  Bitmap Heap Scan on core_post "U0_4"  (cost=4.32..19.65 rows=4 width=8) (actual time=0.004..0.013 rows=19 loops=1)
+                                            Recheck Cond: (author_id = 101)
+                                            Heap Blocks: exact=19
+                                            Buffers: shared hit=21
+                                            ->  Bitmap Index Scan on core_post_author__04813d_idx  (cost=0.00..4.32 rows=4 width=0) (actual time=0.002..0.002 rows=19 loops=1)
+                                                  Index Cond: (author_id = 101)
+                                                  Buffers: shared hit=2
+                          ->  Materialize  (cost=0.29..8.33 rows=2 width=8) (actual time=0.000..0.000 rows=4 loops=860)
+                                Buffers: shared hit=3
+                                ->  Index Scan using core_workouttemplate_owner_id_5abff81c on core_workouttemplate "U0_5"  (cost=0.29..8.32 rows=2 width=8) (actual time=0.003..0.004 rows=4 loops=1)
+                                      Index Cond: (owner_id = 101)
+                                      Buffers: shared hit=3
+                    ->  Materialize  (cost=0.29..8.33 rows=2 width=8) (actual time=0.000..0.000 rows=3 loops=860)
+                          Buffers: shared hit=3
+                          ->  Index Scan using core_savedfoodmeal_owner_id_75657c52 on core_savedfoodmeal "U0_6"  (cost=0.29..8.32 rows=2 width=8) (actual time=0.003..0.003 rows=3 loops=1)
+                                Index Cond: (owner_id = 101)
+                                Buffers: shared hit=3
+              ->  Materialize  (cost=0.00..98.27 rows=1 width=8) (actual time=0.000..0.000 rows=0 loops=860)
+                    Buffers: shared hit=73
+                    ->  Seq Scan on core_postvideo "U0_7"  (cost=0.00..98.26 rows=1 width=8) (actual time=0.257..0.257 rows=0 loops=1)
+                          Filter: ((status)::text <> 'approved'::text)
+                          Rows Removed by Filter: 3543
+                          Buffers: shared hit=73
+              SubPlan 1
+                ->  Limit  (cost=0.00..0.01 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=860)
+                      ->  GroupAggregate  (cost=0.00..0.01 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=860)
+                            ->  Seq Scan on core_postreport "U0_8"  (cost=0.00..0.00 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=860)
+                                  Filter: ((reviewed_at IS NULL) AND (post_id = core_post.id))
+Planning:
+  Buffers: shared hit=293
+Planning Time: 5.593 ms
+Execution Time: 21.138 ms
+
+-- 9.5 ms when captured
+-- SELECT "core_post"."id", "core_post"."author_id", "core_post"."kind", "core_post"."caption", "core_post"."image", "core_post"."feed_image", "core_post"."visibility", "core_post"."is_hidden", "core_post"."hidden_at", "core_post"."shows_weights", "core_post"."repost_of_id", "core_post"."source_session_id", "core_post"."source_meal_id", "core_post"."source_planner_entry_id", "core_post"."created_at", "core_post"."updated_at", "core_post"."moderation_status", "core_post"."published_at", "core_post"."reviewed_at", "core_post"."moderation_generation", "core_post"."moderation_child_hold", EXISTS(SELE
+Sort  (cost=974155.39..974155.41 rows=8 width=5525) (actual time=1.455..1.458 rows=20 loops=1)
+  Sort Key: core_post.published_at DESC, core_post.id DESC
+  Sort Method: quicksort  Memory: 32kB
+  Buffers: shared hit=1822
+  ->  Merge Anti Join  (cost=971713.72..974155.27 rows=8 width=5525) (actual time=0.138..1.429 rows=20 loops=1)
+        Merge Cond: (core_post.id = "U0_1".post_id)
+        Buffers: shared hit=1822
+        ->  Nested Loop Anti Join  (cost=971705.39..972787.06 rows=8 width=5496) (actual time=0.046..0.414 rows=20 loops=1)
+              Buffers: shared hit=427
+              ->  Nested Loop Left Join  (cost=971705.11..972721.66 rows=8 width=5496) (actual time=0.044..0.398 rows=20 loops=1)
+                    Buffers: shared hit=387
+                    ->  Nested Loop Left Join  (cost=971704.83..972663.29 rows=8 width=5375) (actual time=0.041..0.368 rows=20 loops=1)
+                          Buffers: shared hit=347
+                          ->  Nested Loop Left Join  (cost=971704.55..972608.91 rows=8 width=5323) (actual time=0.039..0.345 rows=20 loops=1)
+                                Buffers: shared hit=307
+                                ->  Nested Loop Left Join  (cost=971704.27..972542.49 rows=8 width=5296) (actual time=0.035..0.307 rows=20 loops=1)
+                                      Buffers: shared hit=263
+                                      ->  Nested Loop Left Join  (cost=971703.98..972476.05 rows=8 width=5047) (actual time=0.033..0.277 rows=20 loops=1)
+                                            Buffers: shared hit=210
+                                            ->  Nested Loop Left Join  (cost=971703.70..972473.64 rows=8 width=4926) (actual time=0.031..0.267 rows=20 loops=1)
+                                                  Buffers: shared hit=210
+                                                  ->  Nested Loop Left Join  (cost=971703.42..972471.24 rows=8 width=4874) (actual time=0.029..0.257 rows=20 loops=1)
+                                                        Buffers: shared hit=210
+                                                        ->  Nested Loop Left Join  (cost=971703.14..972468.73 rows=8 width=4847) (actual time=0.026..0.246 rows=20 loops=1)
+                                                              Buffers: shared hit=210
+                                                              ->  Nested Loop Left Join  (cost=971702.85..972466.08 rows=8 width=4598) (actual time=0.025..0.237 rows=20 loops=1)
+                                                                    Join Filter: ("T7".gym_id = "T10".id)
+                                                                    Buffers: shared hit=210
+                                                                    ->  Nested Loop Left Join  (cost=971702.85..972465.98 rows=8 width=3276) (actual time=0.023..0.223 rows=20 loops=1)
+                                                                          Join Filter: ("T8".id = "T9".user_id)
+                                                                          Buffers: shared hit=210
+                                                                          ->  Nested Loop Left Join  (cost=971702.85..972465.88 rows=8 width=3055) (actual time=0.021..0.210 rows=20 loops=1)
+                                                                                Buffers: shared hit=210
+                                                                                ->  Nested Loop Left Join  (cost=971702.56..972462.91 rows=8 width=2979) (actual time=0.020..0.202 rows=20 loops=1)
+                                                                                      Buffers: shared hit=210
+                                                                                      ->  Nested Loop Left Join  (cost=971702.27..972460.30 rows=8 width=2678) (actual time=0.019..0.186 rows=20 loops=1)
+                                                                                            Join Filter: (core_repbaseuser.gym_id = core_gym.id)
+                                                                                            Buffers: shared hit=210
+                                                                                            ->  Nested Loop Left Join  (cost=971702.27..972460.20 rows=8 width=1356) (actual time=0.017..0.173 rows=20 loops=1)
+                                                                                                  Join Filter: (auth_user.id = core_accountaccess.user_id)
+                                                                                                  Buffers: shared hit=210
+                                                                                                  ->  Nested Loop Left Join  (cost=971702.27..972460.10 rows=8 width=1135) (actual time=0.016..0.161 rows=20 loops=1)
+                                                                                                        Buffers: shared hit=210
+                                                                                                        ->  Nested Loop  (cost=971701.98..972393.64 rows=8 width=756) (actual time=0.015..0.154 rows=20 loops=1)
+                                                                                                              Buffers: shared hit=210
+                                                                                                              ->  Nested Loop  (cost=971701.70..972390.67 rows=8 width=680) (actual time=0.013..0.133 rows=20 loops=1)
+                                                                                                                    Buffers: shared hit=150
+                                                                                                                    ->  Index Scan Backward using core_post_pkey on core_post  (cost=971701.41..972122.57 rows=8 width=379) (actual time=0.007..0.078 rows=20 loops=1)
+                                                                                                                          Index Cond: (id = ANY ('{22455,20134,39284,50682,36932,21717,52427,21602,11107,19475,55143,11715,35298,46746,1834,7063,32311,27897,56554,4572}'::bigint[]))
+                                                                                                                          Filter: ((NOT is_hidden) AND (NOT moderation_child_hold) AND (published_at IS NOT NULL) AND ((visibility)::text <> 'private'::text) AND ((moderation_status)::text = 'approved'::text) AND (((kind)::text <> 'repost'::text) OR (hashed SubPlan 29)) AND ((author_id = 101) OR ((NOT (SubPlan 15)) AND (((visibility)::text = 'public'::text) OR ((hashed SubPlan 19) AND ((visibility)::text = 'followers'::text))) AND (((kind)::text <> 'media'::text) OR ((image IS NOT NULL) AND (((image)::text <> ''::text) OR (image IS NULL))) OR (hashed SubPlan 21)))))
+                                                                                                                          Buffers: shared hit=85
+                                                                                                                          SubPlan 29
+                                                                                                                            ->  Nested Loop  (cost=717.58..971642.65 rows=23389 width=8) (never executed)
+                                                                                                                                  ->  Hash Join  (cost=717.29..962952.66 rows=23436 width=12) (never executed)
+                                                                                                                                        Hash Cond: ("V0_1".author_id = "V2_1".id)
+                                                                                                                                        Join Filter: (("V0_1".author_id = 101) OR ((NOT (SubPlan 22)) AND ("V2_1".is_profile_public OR (hashed SubPlan 24)) AND ((("V0_1".visibility)::text = 'public'::text) OR ((hashed SubPlan 26) AND (("V0_1".visibility)::text = 'followers'::text))) AND ((("V0_1".kind)::text <> 'media'::text) OR (("V0_1".image IS NOT NULL) AND ((("V0_1".image)::text <> ''::text) OR ("V0_1".image IS NULL))) OR (hashed SubPlan 28))))
+                                                                                                                                        ->  Index Scan using core_post_repost_of_id_da501f18 on core_post "V0_1"  (cost=0.29..962172.56 rows=24037 width=44) (never executed)
+                                                                                                                                              Index Cond: (repost_of_id IS NULL)
+                                                                                                                                              Filter: ((NOT is_hidden) AND (NOT moderation_child_hold) AND (published_at IS NOT NULL) AND ((moderation_status)::text = 'approved'::text) AND ((author_id = 101) OR ((NOT (SubPlan 22)) AND (((visibility)::text = 'public'::text) OR ((hashed SubPlan 26) AND ((visibility)::text = 'followers'::text))) AND (((kind)::text <> 'media'::text) OR ((image IS NOT NULL) AND (((image)::text <> ''::text) OR (image IS NULL))) OR (hashed SubPlan 28)))))
+                                                                                                                                              SubPlan 22
+                                                                                                                                                ->  Seq Scan on core_block "U0_17"  (cost=0.00..0.00 rows=1 width=0) (never executed)
+                                                                                                                                                      Filter: (((blocked_id = "V0_1".author_id) AND (blocker_id = 101)) OR ((blocked_id = 101) AND (blocker_id = "V0_1".author_id)))
+                                                                                                                                              SubPlan 26
+                                                                                                                                                ->  Index Scan using core_follow_follower_id_695d5f81 on core_follow "U0_19"  (cost=0.30..12.62 rows=190 width=8) (never executed)
+                                                                                                                                                      Index Cond: (follower_id = 101)
+                                                                                                                                              SubPlan 28
+                                                                                                                                                ->  Seq Scan on core_postvideo "U0_20"  (cost=0.00..103.31 rows=2021 width=8) (never executed)
+                                                                                                                                                      Filter: (((processing_state)::text = 'ready'::text) AND ((status)::text = 'approved'::text))
+                                                                                                                                        ->  Hash  (cost=467.00..467.00 rows=20000 width=13) (never executed)
+                                                                                                                                              ->  Seq Scan on core_repbaseuser "V2_1"  (cost=0.00..467.00 rows=20000 width=13) (never executed)
+                                                                                                                                        SubPlan 24
+                                                                                                                                          ->  Index Scan using core_follow_follower_id_695d5f81 on core_follow "U0_18"  (cost=0.30..12.62 rows=190 width=8) (never executed)
+                                                                                                                                                Index Cond: (follower_id = 101)
+                                                                                                                                  ->  Index Scan using auth_user_pkey on auth_user "V3"  (cost=0.29..0.37 rows=1 width=4) (never executed)
+                                                                                                                                        Index Cond: (id = "V2_1".user_id)
+                                                                                                                                        Filter: is_active
+                                                                                                                          SubPlan 15
+                                                                                                                            ->  Seq Scan on core_block "U0_12"  (cost=0.00..0.00 rows=1 width=0) (actual time=0.000..0.000 rows=0 loops=40)
+                                                                                                                                  Filter: (((blocked_id = core_post.author_id) AND (blocker_id = 101)) OR ((blocked_id = 101) AND (blocker_id = core_post.author_id)))
+                                                                                                                          SubPlan 19
+                                                                                                                            ->  Index Scan using core_follow_follower_id_695d5f81 on core_follow "U0_14"  (cost=0.30..12.62 rows=190 width=8) (actual time=0.001..0.009 rows=140 loops=2)
+                                                                                                                                  Index Cond: (follower_id = 101)
+                                                                                                                                  Buffers: shared hit=10
+                                                                                                                          SubPlan 21
+                                                                                                                            ->  Seq Scan on core_postvideo "U0_16"  (cost=0.00..103.31 rows=2021 width=8) (never executed)
+                                                                                                                                  Filter: (((processing_state)::text = 'ready'::text) AND ((status)::text = 'approved'::text))
+                                                                                                                    ->  Index Scan using core_repbaseuser_pkey on core_repbaseuser  (cost=0.29..33.50 rows=1 width=301) (actual time=0.002..0.002 rows=1 loops=20)
+                                                                                                                          Index Cond: (id = core_post.author_id)
+                                                                                                                          Filter: ((core_post.author_id = 101) OR ((NOT (SubPlan 15)) AND (is_profile_public OR (hashed SubPlan 17)) AND (((core_post.visibility)::text = 'public'::text) OR ((hashed SubPlan 19) AND ((core_post.visibility)::text = 'followers'::text))) AND (((core_post.kind)::text <> 'media'::text) OR ((core_post.image IS NOT NULL) AND (((core_post.image)::text <> ''::text) OR (core_post.image IS NULL))) OR (SubPlan 20))))
+                                                                                                                          Buffers: shared hit=65
+                                                                                                                          SubPlan 17
+                                                                                                                            ->  Index Scan using core_follow_follower_id_695d5f81 on core_follow "U0_13"  (cost=0.30..12.62 rows=190 width=8) (never executed)
+                                                                                                                                  Index Cond: (follower_id = 101)
+                                                                                                                          SubPlan 20
+                                                                                                                            ->  Index Scan using core_postvideo_post_id_key on core_postvideo "U0_15"  (cost=0.28..8.30 rows=1 width=0) (never executed)
+                                                                                                                                  Index Cond: (post_id = core_post.id)
+                                                                                                                                  Filter: (((processing_state)::text = 'ready'::text) AND ((status)::text = 'approved'::text))
+                                                                                                              ->  Index Scan using auth_user_pkey on auth_user  (cost=0.29..0.37 rows=1 width=76) (actual time=0.001..0.001 rows=1 loops=20)
+                                                                                                                    Index Cond: (id = core_repbaseuser.user_id)
+                                                                                                                    Filter: is_active
+                                                                                                                    Buffers: shared hit=60
+                                                                                                        ->  Index Scan using core_post_pkey on core_post "T4"  (cost=0.29..8.31 rows=1 width=379) (actual time=0.000..0.000 rows=0 loops=20)
+                                                                                                              Index Cond: (id = core_post.repost_of_id)
+                                                                                                  ->  Seq Scan on core_accountaccess  (cost=0.00..0.00 rows=1 width=221) (actual time=0.000..0.000 rows=0 loops=20)
+                                                                                            ->  Seq Scan on core_gym  (cost=0.00..0.00 rows=1 width=1322) (actual time=0.000..0.000 rows=0 loops=20)
+                                                                                      ->  Index Scan using core_repbaseuser_pkey on core_repbaseuser "T7"  (cost=0.29..0.33 rows=1 width=301) (actual time=0.000..0.000 rows=0 loops=20)
+                                                                                            Index Cond: (id = "T4".author_id)
+                                                                                ->  Index Scan using auth_user_pkey on auth_user "T8"  (cost=0.29..0.37 rows=1 width=76) (actual time=0.000..0.000 rows=0 loops=20)
+                                                                                      Index Cond: (id = "T7".user_id)
+                                                                          ->  Seq Scan on core_accountaccess "T9"  (cost=0.00..0.00 rows=1 width=221) (actual time=0.000..0.000 rows=0 loops=20)
+                                                                    ->  Seq Scan on core_gym "T10"  (cost=0.00..0.00 rows=1 width=1322) (actual time=0.000..0.000 rows=0 loops=20)
+                                                              ->  Index Scan using core_postworkout_post_id_key on core_postworkout  (cost=0.29..0.33 rows=1 width=249) (actual time=0.000..0.000 rows=0 loops=20)
+                                                                    Index Cond: (post_id = "T4".id)
+                                                        ->  Index Scan using core_postmeal_post_id_key on core_postmeal  (cost=0.29..0.31 rows=1 width=27) (actual time=0.000..0.000 rows=0 loops=20)
+                                                              Index Cond: (post_id = "T4".id)
+                                                  ->  Index Scan using core_postplannerentry_post_id_key on core_postplannerentry  (cost=0.28..0.30 rows=1 width=52) (actual time=0.000..0.000 rows=0 loops=20)
+                                                        Index Cond: (post_id = "T4".id)
+                                            ->  Index Scan using core_postvideo_post_id_key on core_postvideo  (cost=0.28..0.30 rows=1 width=121) (actual time=0.000..0.000 rows=0 loops=20)
+                                                  Index Cond: (post_id = "T4".id)
+                                      ->  Index Scan using core_postworkout_post_id_key on core_postworkout "T15"  (cost=0.29..8.30 rows=1 width=249) (actual time=0.001..0.001 rows=1 loops=20)
+                                            Index Cond: (post_id = core_post.id)
+                                            Buffers: shared hit=53
+                                ->  Index Scan using core_postmeal_post_id_key on core_postmeal "T16"  (cost=0.29..8.30 rows=1 width=27) (actual time=0.001..0.001 rows=0 loops=20)
+                                      Index Cond: (post_id = core_post.id)
+                                      Buffers: shared hit=44
+                          ->  Index Scan using core_postplannerentry_post_id_key on core_postplannerentry "T17"  (cost=0.28..6.80 rows=1 width=52) (actual time=0.001..0.001 rows=0 loops=20)
+                                Index Cond: (post_id = core_post.id)
+                                Buffers: shared hit=40
+                    ->  Index Scan using core_postvideo_post_id_key on core_postvideo "T18"  (cost=0.28..7.29 rows=1 width=121) (actual time=0.001..0.001 rows=0 loops=20)
+                          Index Cond: (post_id = core_post.id)
+                          Buffers: shared hit=40
+              ->  Index Scan using core_postvideo_post_id_key on core_postvideo "U0"  (cost=0.28..7.30 rows=1 width=8) (actual time=0.000..0.000 rows=0 loops=20)
+                    Index Cond: (post_id = core_post.id)
+                    Filter: ((status)::text <> 'approved'::text)
+                    Buffers: shared hit=40
+        ->  Sort  (cost=8.34..8.34 rows=1 width=8) (actual time=0.005..0.005 rows=1 loops=1)
+              Sort Key: "U0_1".post_id DESC
+              Sort Method: quicksort  Memory: 25kB
+              Buffers: shared hit=3
+              ->  Index Scan using core_postfeedback_viewer_id_4faf0b03 on core_postfeedback "U0_1"  (cost=0.29..8.33 rows=1 width=8) (actual time=0.003..0.003 rows=1 loops=1)
+                    Index Cond: (viewer_id = 101)
+                    Filter: ((kind)::text = ANY ('{not_interested,fewer_like_this}'::text[]))
+                    Buffers: shared hit=3
+        SubPlan 2
+          ->  Index Scan using core_follow_follower_id_695d5f81 on core_follow "U0_2"  (cost=0.30..12.62 rows=190 width=8) (actual time=0.002..0.010 rows=140 loops=1)
+                Index Cond: (follower_id = 101)
+                Buffers: shared hit=5
+        SubPlan 3
+          ->  Seq Scan on core_block "U0_3"  (cost=0.00..0.00 rows=1 width=0) (actual time=0.000..0.000 rows=0 loops=20)
+                Filter: (((blocked_id = core_post.author_id) AND (blocker_id = 101)) OR ((blocked_id = 101) AND (blocker_id = core_post.author_id)))
+        SubPlan 4
+          ->  Limit  (cost=4.56..73.40 rows=1 width=16) (actual time=0.024..0.024 rows=1 loops=20)
+                Buffers: shared hit=747
+                ->  GroupAggregate  (cost=4.56..73.40 rows=1 width=16) (actual time=0.024..0.024 rows=1 loops=20)
+                      Buffers: shared hit=747
+                      ->  Bitmap Heap Scan on core_postlike "U0_4"  (cost=4.56..73.34 rows=18 width=16) (actual time=0.006..0.022 rows=35 loops=20)
+                            Recheck Cond: (post_id = core_post.id)
+                            Heap Blocks: exact=686
+                            Buffers: shared hit=747
+                            ->  Bitmap Index Scan on core_postli_post_id_2992b5_idx  (cost=0.00..4.56 rows=18 width=0) (actual time=0.004..0.004 rows=35 loops=20)
+                                  Index Cond: (post_id = core_post.id)
+                                  Buffers: shared hit=61
+        SubPlan 5
+          ->  Limit  (cost=1.15..46.41 rows=1 width=16) (actual time=0.020..0.020 rows=1 loops=20)
+                Buffers: shared hit=563
+                ->  GroupAggregate  (cost=1.15..46.41 rows=1 width=16) (actual time=0.020..0.020 rows=1 loops=20)
+                      Buffers: shared hit=563
+                      ->  Nested Loop Anti Join  (cost=1.15..46.39 rows=2 width=16) (actual time=0.007..0.020 rows=4 loops=20)
+                            Join Filter: ((("U0_6".blocked_id = "V2".author_id) AND ("U0_6".blocker_id = 101)) OR (("U0_6".blocked_id = 101) AND ("U0_6".blocker_id = "V2".author_id)))
+                            Buffers: shared hit=563
+                            ->  Nested Loop Anti Join  (cost=1.15..46.35 rows=2 width=24) (actual time=0.006..0.018 rows=4 loops=20)
+                                  Join Filter: ((("U0_5".blocked_id = "V0".author_id) AND ("U0_5".blocker_id = 101)) OR (("U0_5".blocked_id = 101) AND ("U0_5".blocker_id = "V0".author_id)))
+                                  Buffers: shared hit=563
+                                  ->  Nested Loop  (cost=1.15..46.31 rows=2 width=32) (actual time=0.005..0.016 rows=4 loops=20)
+                                        Buffers: shared hit=563
+                                        ->  Nested Loop Left Join  (cost=0.87..45.57 rows=2 width=36) (actual time=0.004..0.011 rows=4 loops=20)
+                                              Filter: ((NOT "V2".is_hidden) OR ("V2".is_hidden IS NULL))
+                                              Buffers: shared hit=338
+                                              ->  Nested Loop  (cost=0.58..28.94 rows=2 width=36) (actual time=0.004..0.010 rows=4 loops=20)
+                                                    Buffers: shared hit=338
+                                                    ->  Index Scan using core_postcomment_post_id_dfc9d191 on core_postcomment "V0"  (cost=0.29..12.32 rows=2 width=32) (actual time=0.002..0.004 rows=4 loops=20)
+                                                          Index Cond: (post_id = core_post.id)
+                                                          Filter: (NOT is_hidden)
+                                                          Buffers: shared hit=113
+                                                    ->  Index Scan using core_repbaseuser_pkey on core_repbaseuser "V1"  (cost=0.29..8.30 rows=1 width=12) (actual time=0.001..0.001 rows=1 loops=75)
+                                                          Index Cond: (id = "V0".author_id)
+                                                          Buffers: shared hit=225
+                                              ->  Index Scan using core_postcomment_pkey on core_postcomment "V2"  (cost=0.29..8.31 rows=1 width=17) (actual time=0.000..0.000 rows=0 loops=75)
+                                                    Index Cond: (id = "V0".parent_id)
+                                        ->  Index Scan using auth_user_pkey on auth_user "V4"  (cost=0.29..0.37 rows=1 width=4) (actual time=0.001..0.001 rows=1 loops=75)
+                                              Index Cond: (id = "V1".user_id)
+                                              Filter: is_active
+                                              Buffers: shared hit=225
+                                  ->  Seq Scan on core_block "U0_5"  (cost=0.00..0.00 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=75)
+                                        Filter: ((blocker_id = 101) OR (blocked_id = 101))
+                            ->  Seq Scan on core_block "U0_6"  (cost=0.00..0.00 rows=1 width=16) (actual time=0.000..0.000 rows=0 loops=75)
+                                  Filter: ((blocker_id = 101) OR (blocked_id = 101))
+        SubPlan 6
+          ->  Limit  (cost=0.29..8.32 rows=1 width=16) (actual time=0.001..0.001 rows=0 loops=20)
+                Buffers: shared hit=44
+                ->  GroupAggregate  (cost=0.29..8.32 rows=1 width=16) (actual time=0.001..0.001 rows=0 loops=20)
+                      Buffers: shared hit=44
+                      ->  Index Scan using core_post_repost_of_id_da501f18 on core_post "U0_7"  (cost=0.29..8.31 rows=1 width=16) (actual time=0.001..0.001 rows=0 loops=20)
+                            Index Cond: (repost_of_id = core_post.id)
+                            Buffers: shared hit=44
+        SubPlan 8
+          ->  Index Scan using core_postlike_user_id_83b4cc30 on core_postlike "U0_8"  (cost=0.42..8.99 rows=32 width=8) (actual time=0.002..0.014 rows=224 loops=1)
+                Index Cond: (user_id = 101)
+                Buffers: shared hit=6
+        SubPlan 10
+          ->  Bitmap Heap Scan on core_post "U0_9"  (cost=4.32..19.65 rows=4 width=8) (actual time=0.005..0.010 rows=19 loops=1)
+                Recheck Cond: (author_id = 101)
+                Heap Blocks: exact=19
+                Buffers: shared hit=21
+                ->  Bitmap Index Scan on core_post_author__04813d_idx  (cost=0.00..4.32 rows=4 width=0) (actual time=0.004..0.004 rows=19 loops=1)
+                      Index Cond: (author_id = 101)
+                      Buffers: shared hit=2
+        SubPlan 12
+          ->  Index Scan using core_workouttemplate_owner_id_5abff81c on core_workouttemplate "U0_10"  (cost=0.29..8.32 rows=2 width=8) (actual time=0.002..0.002 rows=4 loops=1)
+                Index Cond: (owner_id = 101)
+                Buffers: shared hit=3
+        SubPlan 14
+          ->  Index Scan using core_savedfoodmeal_owner_id_75657c52 on core_savedfoodmeal "U0_11"  (cost=0.29..8.32 rows=2 width=8) (actual time=0.002..0.002 rows=3 loops=1)
+                Index Cond: (owner_id = 101)
+                Buffers: shared hit=3
+Planning:
+  Buffers: shared hit=334
+Planning Time: 4.300 ms
+Execution Time: 1.696 ms
+
+-- 7.9 ms when captured
+-- SELECT "core_post"."id" AS "pk", "core_post"."author_id" AS "author_id", "core_post"."kind" AS "kind", "core_postworkout"."workout_type" AS "workout__workout_type", "core_postplannerentry"."category" AS "planner__category", "core_postvideo"."status" AS "video__status", "core_postvideo"."duration_ms" AS "video__duration_ms" FROM "core_post" LEFT OUTER JOIN "core_postworkout" ON ("core_post"."id" = "core_postworkout"."post_id") LEFT OUTER JOIN "core_postplannerentry" ON ("core_post"."id" = "core_postplannerentry"."post_id") LEFT OUTER JOIN "core_postvideo" ON ("core_post"."id" = "core_postvideo"
+Sort  (cost=1710.13..1711.37 rows=493 width=56) (actual time=4.318..4.332 rows=493 loops=1)
+  Sort Key: core_post.published_at DESC, core_post.id DESC
+  Sort Method: quicksort  Memory: 55kB
+  Buffers: shared hit=2298
+  ->  Hash Right Join  (cost=1587.12..1688.08 rows=493 width=56) (actual time=3.783..4.257 rows=493 loops=1)
+        Hash Cond: (core_postvideo.post_id = core_post.id)
+        Buffers: shared hit=2298
+        ->  Seq Scan on core_postvideo  (cost=0.00..93.21 rows=2021 width=21) (actual time=0.001..0.294 rows=3543 loops=1)
+              Buffers: shared hit=73
+        ->  Hash  (cost=1580.96..1580.96 rows=493 width=43) (actual time=3.780..3.781 rows=493 loops=1)
+              Buckets: 1024  Batches: 1  Memory Usage: 41kB
+              Buffers: shared hit=2225
+              ->  Hash Right Join  (cost=1512.48..1580.96 rows=493 width=43) (actual time=3.455..3.736 rows=493 loops=1)
+                    Hash Cond: (core_postplannerentry.post_id = core_post.id)
+                    Buffers: shared hit=2225
+                    ->  Seq Scan on core_postplannerentry  (cost=0.00..57.27 rows=2927 width=14) (actual time=0.001..0.082 rows=2927 loops=1)
+                          Buffers: shared hit=28
+                    ->  Hash  (cost=1506.31..1506.31 rows=493 width=37) (actual time=3.423..3.423 rows=493 loops=1)
+                          Buckets: 1024  Batches: 1  Memory Usage: 41kB
+                          Buffers: shared hit=2197
+                          ->  Hash Right Join  (cost=834.76..1506.31 rows=493 width=37) (actual time=0.653..3.379 rows=493 loops=1)
+                                Hash Cond: (core_postworkout.post_id = core_post.id)
+                                Buffers: shared hit=2197
+                                ->  Seq Scan on core_postworkout  (cost=0.00..598.25 rows=27925 width=15) (actual time=0.001..0.896 rows=30114 loops=1)
+                                      Buffers: shared hit=319
+                                ->  Hash  (cost=828.60..828.60 rows=493 width=30) (actual time=0.631..0.631 rows=493 loops=1)
+                                      Buckets: 1024  Batches: 1  Memory Usage: 39kB
+                                      Buffers: shared hit=1878
+                                      ->  Index Scan Backward using core_post_pkey on core_post  (cost=0.29..828.60 rows=493 width=30) (actual time=0.037..0.596 rows=493 loops=1)
+                                            Index Cond: (id = ANY ('{1,51201,14339,26626,57349,4105,16394,47113,40972,58383,44048,12305,52240,20499,8212,28692,32790,29714,51224,33811,37911,56343,28,5147,9244,23580,17438,24609,46110,17439,32804,27681,22566,16425,5164,45102,57391,8239,23602,14390,48183,25656,57402,29755,8252,13373,43071,22592,4161,36927,5184,54338,31813,43080,2122,10319,46166,41050,1124,52326,53351,23661,26734,50287,57457,21618,6260,2170,16509,8324,6280,55432,6282,34953,30860,38029,40082,32916,15514,52382,1182,58530,12451,56482,17574,5287,34990,46254,12467,32949,37046,32951,4282,42172,1215,52415,46274,32963,7364,26823,19663,10448,31951,38095,50387,42201,18654,45280,58597,35046,45287,8424,38125,38126,16623,6383,46321,11505,17651,23796,44276,41206,36082,25848,19699,56571,7420,9471,19711,3329,17668,4357,33030,46341,40198,38148,59659,28940,21771,27916,43284,16663,4375,7447,56599,37147,54553,49437,29988,24869,21802,10547,58675,44340,30008,50489,34106,50491,24896,30019,14664,41292,33104,37201,11604,56664,34140,22880,35171,9573,359,53608,32107,31087,59761,45426,19827,20852,17781,13686,33143,53624,56696,18802,9599,31104,44418,43400,14729,36233,38287,2448,52624,23952,48542,7583,30112,7584,34208,2467,26024,427,17836,37293,47534,33197,32174,34224,23987,38324,17846,47543,445,43460,33221,34246,42438,31176,32200,10698,42441,26059,21961,58830,22991,3534,44496,16844,29140,21973,41431,4568,13783,55774,16864,29152,34272,12771,37349,40421,5607,50665,11756,30195,500,17910,36345,41466,3579,36349,45567,19970,27145,33290,33293,5646,27151,2577,33302,59929,32281,51741,42529,25123,1573,20011,47664,46109,42546,41528,12861,55870,44609,39490,4674,14915,58953,55883,21067,59981,52811,50767,53840,19026,16980,29268,40532,52821,20054,49755,2652,19039,52833,3681,28263,47720,5736,1642,31341,21103,50805,28278,8824,3710,35456,19073,28288,56960,18050,48772,12934,24198,37514,56976,9873,1680,38547,51867,53916,3740,1697,56994,29351,6825,36523,42673,49844,12981,30389,54966,14013,44736,6850,41669,19142,23239,54981,44743,22215,40654,52946,53971,23251,47828,4822,17113,41689,30430,26337,18149,32486,3815,3818,12010,20204,24301,35566,43760,9970,24306,2804,47861,8951,5881,39676,30462,17151,56063,23297,3841,58115,14082,37638,25351,46855,5896,27405,26382,47888,32529,39698,6931,3862,4887,11032,59159,23324,18210,11045,56103,8999,48938,38703,6960,821,23349,45879,42805,38710,59193,46906,46910,12094,40770,45892,3909,59206,36680,41804,19280,56145,27476,44886,31575,11097,16219,59229,31583,59231,34658,36706,32618,39792,14194,57204,1909,36726,20342,888,7033,40824,29563,47995,32633,44922,20358,31623,19336,40839,19344,53137,42900,11160,37785,50074,1947,51100,31647,1951,1953,13218,34723,18341,39848,24813,48043,10157,32689,50099,36788,40885,19386,30652,19390,41920,3011,39877,38854,34762,978,9177,48091,58332,10205,57310,28639,21473,35810,19427,59367,8167,49130,21483,21484,22506,4074,34795,8174,45042,25591,12280,7166,29695}'::bigint[]))
+                                            Buffers: shared hit=1878
+Planning:
+  Buffers: shared hit=72
+Planning Time: 0.409 ms
+Execution Time: 4.362 ms

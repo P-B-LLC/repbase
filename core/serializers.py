@@ -4143,7 +4143,7 @@ class UpdateForYouPreferencesSerializer(serializers.Serializer):
 
         # What is offered changes as exercises come and go from the most
         # posted; one the reader already added stays theirs to keep.
-        offered = set(addable_topics()) | set(self.context.get("added_topics", ()))
+        offered = set(addable_topics(must_answer=True)) | set(self.context.get("added_topics", ()))
         unknown = sorted(set(value) - offered)
         if unknown:
             raise serializers.ValidationError(

@@ -12,7 +12,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 import os
 from pathlib import Path
-from .environment import database
+from .environment import database, redis_cache
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -74,6 +74,14 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'config.urls'
 ANALYTICS_ENABLED = os.getenv('ANALYTICS_ENABLED', 'false').lower() == 'true'
 ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED = os.getenv('ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED', 'false').lower() == 'true'
+# Count API requests in Redis and flush them in batches (core.metric_buffer),
+# rather than updating shared SQL rows during each request. Off until the
+# repbase-metrics-flush timer is installed: without it the dashboard and
+# check_api_health would stop seeing new data.
+ANALYTICS_BUFFERED = os.getenv('ANALYTICS_BUFFERED', 'false').lower() == 'true'
+# How old a For You statistics row may be and still stand in while the job that
+# writes them is late. See core.feed_stats.
+FEED_STATS_STALE_SECONDS = int(os.getenv('FEED_STATS_STALE_SECONDS', str(6 * 60 * 60)))
 # Where API health alerts go. Empty means the approved insights accounts,
 # which are the people already trusted with this data; set it to a pager or
 # shared address when that is not the same thing.
@@ -93,16 +101,7 @@ ANALYTICS_ALERT_EMAILS = os.getenv('ANALYTICS_ALERT_EMAILS', '')
 # for anyone to be on.
 REDIS_URL = os.getenv('REDIS_URL', '')
 if REDIS_URL:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-            'LOCATION': REDIS_URL,
-            'KEY_PREFIX': os.getenv('CACHE_KEY_PREFIX', 'rytivo'),
-            # Short: a cache that hangs should fail the request quickly rather
-            # than holding a worker open waiting for it.
-            'OPTIONS': {'socket_connect_timeout': 3, 'socket_timeout': 3},
-        }
-    }
+    CACHES = {'default': redis_cache(os.environ, REDIS_URL)}
 else:
     # Django's default, with room. Its stock ceiling is 300 entries, and one
     # For You ranking shares counts for several hundred posts through the
@@ -294,7 +293,7 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
-        'rest_framework.throttling.ScopedRateThrottle',
+        'core.throttles.ResilientScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         # Generous for a signed-in person: the app fans out a dozen or so
