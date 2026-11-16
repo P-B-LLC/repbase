@@ -1,0 +1,11 @@
+[Unit]
+Description=Flush Rytivo API metrics thirty seconds after each run
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=30
+AccuracySec=5
+Unit=repbase-metrics-flush.service
+
+[Install]
+WantedBy=timers.target

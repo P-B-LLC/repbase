@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll for Rytivo sounds waiting for their audio
+
+[Timer]
+OnBootSec=60
+OnUnitInactiveSec=60
+Unit=repbase-sounds.service
+
+[Install]
+WantedBy=timers.target

@@ -16,7 +16,9 @@ from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models, transaction
 from django.db.models.functions import Coalesce
 from .video_jobs_models import VideoJob, VideoStoredObject, VideoMetric, VideoDailyUpload  # noqa: F401
-from .analytics_models import AnalyticsAccess, DailyActiveAccount, DailyApiMetric  # noqa: F401
+from .analytics_models import (  # noqa: F401
+    AnalyticsAccess, DailyActiveAccount, DailyApiMetric, SocialDailyCounter, SocialInsightSnapshot,
+)
 from .health_models import AppleHealthConnection, HealthWorkoutRecord  # noqa: F401
 from .access_models import AccountAccess, AccessPolicyLock, AccessAudit, CommunitySpotlight  # noqa: F401
 from .schedule_sync import remove_unfinished_generated_tasks
@@ -741,14 +743,13 @@ class WorkoutSchedule(models.Model):
         blank=True,
     )
     notes = models.CharField(max_length=300, blank=True)
-    #: When this day's planner task was created, if it ever was.
+    #: When this day was first given its planner task, if it ever was.
     #:
-    #: Set once and never cleared, including when the task is deleted. The
-    #: planner task is offered once per scheduled day; deleting it is an
-    #: answer, and without a record of having asked, "no task here" and "the
-    #: user removed the task" look identical and it comes back every launch.
-    #: The same reasoning as source_recurrence above: a day the user clears
-    #: stays cleared.
+    #: Deleting the task removes this day as well (see `core.schedule_sync`),
+    #: so a day ahead that has been offered a task and lost it is repaired by
+    #: the next sync. A day already past is left as it is: this is what tells
+    #: "never offered" from "the task went before deleting it unplanned the
+    #: day", which only the past can still hold.
     planner_synced_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -1917,9 +1918,10 @@ class PlannerEntry(models.Model):
         null=True,
         blank=True,
     )
-    # Only tasks created automatically by sync-planner receive this link.
-    # An existing manually authored task may be adopted for a date but must
-    # never become disposable just because a schedule also uses that date.
+    #: The scheduled day this task stands for, so the calendar and Training
+    #: change together: see `core.schedule_sync`. Written by the server --
+    #: when sync-planner creates or adopts a day's task, and when a workout
+    #: task is written on the calendar -- never by a client.
     source_schedule = models.ForeignKey(
         WorkoutSchedule,
         on_delete=remove_unfinished_generated_tasks,
@@ -2928,6 +2930,19 @@ class Block(models.Model):
         return f"{self.blocker} blocks {self.blocked}"
 
 
+# Every column added to a table the running server already writes carries a
+# default in the database as well as in Python.
+#
+# `deploy.sh` migrates first and restarts last, and stops without restarting
+# if a check in between fails. Until the restart, the code serving requests
+# is the previous release, which does not know these columns exist and
+# leaves them out of its INSERTs. A NOT NULL column with only a Python
+# default would refuse every one of those: nobody could post until the
+# restart, and not at all if the deploy stopped short.
+EMPTY_JSON_LIST = models.Value([], output_field=models.JSONField())
+STORED_TOTAL = dict(max_digits=10, decimal_places=2, db_default=Decimal("0"))
+
+
 def post_photo_path(instance, filename):
     """Where a photo attached to a post lives.
 
@@ -3078,6 +3093,96 @@ class Post(models.Model):
         null=True,
         blank=True,
     )
+    #: Whether this was posted as a response to somebody else's post -- a
+    #: "Your take". Not a kind: a take is a media, workout or meal post like
+    #: any other, with its own caption, clip and snapshot, so a client built
+    #: before takes existed draws it as the ordinary post it also is.
+    #:
+    #: Stored rather than read off `source_post`, which goes null when the
+    #: post answered is deleted. A take whose source is gone is still a take,
+    #: and its card says the original is no longer available rather than
+    #: passing itself off as something made from nothing.
+    is_take = models.BooleanField(default=False, db_default=False)
+    #: The post this take answers, one step back.
+    #:
+    #: The direct source is what a card credits, and it is stored so drawing
+    #: the card never walks a chain: a take of a take of a take reads one row
+    #: for its credit, not three. SET_NULL because the take is its author's
+    #: own work and outlives the thing it answered.
+    #:
+    #: Neither lineage column carries a single-column index. The partial
+    #: indexes in Meta cover the same lookups -- and the delete of a source,
+    #: which has to find its takes -- without a row for every post that is
+    #: not a take, which is nearly all of them.
+    source_post = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="takes",
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+    #: Where the chain started: the first post anybody took. The same as
+    #: `source_post` for a take of an original. Kept so a whole family of
+    #: takes can be recognised -- and stopped from filling a page -- without
+    #: following links.
+    original_post = models.ForeignKey(
+        "self",
+        on_delete=models.SET_NULL,
+        related_name="take_family",
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+    #: Which version of the structured workout or recipe this post carries.
+    #: A snapshot is frozen at publication and so far never rewritten, so
+    #: this is 1 everywhere; it exists so that a take, or a saved copy, can
+    #: say which version it was made from once an author can revise one.
+    attachment_version = models.PositiveSmallIntegerField(default=1, db_default=1)
+    #: The source's `attachment_version` when this take was made. Null for a
+    #: post that is not a take, and for a take of a post with no workout or
+    #: recipe to have a version of.
+    source_attachment_version = models.PositiveSmallIntegerField(null=True, blank=True)
+    #: The sound this post's clip is set to, when it uses one. A reference:
+    #: the audio is stored once, under `Sound`, however many posts use it.
+    sound = models.ForeignKey(
+        "Sound",
+        on_delete=models.SET_NULL,
+        related_name="posts",
+        null=True,
+        blank=True,
+        db_index=False,
+    )
+    #: The hashtags in the caption, normalised, in the order written, as
+    #: `core.publication.hashtags_in` reads them. A list on the row so a card
+    #: prints them without a query; `PostHashtag` holds the same tags as rows
+    #: for the opposite question, which posts carry a tag. Both are written
+    #: by `core.publication.write_hashtags` and by nothing else.
+    hashtags = models.JSONField(default=list, blank=True, db_default=EMPTY_JSON_LIST)
+    #: What the author says the post is about, as topic codes from the
+    #: recommendation catalogue (`core.recommendations`), checked when given.
+    #: Free text never lands here; that is what hashtags are for.
+    topics = models.JSONField(default=list, blank=True, db_default=EMPTY_JSON_LIST)
+    #: The language the caption is written in, as a BCP 47 tag ("en",
+    #: "pt-BR"), when the client said. Blank is "not known", never a guess.
+    language = models.CharField(max_length=16, blank=True, default="", db_default="")
+
+    class Reuse(models.TextChoices):
+        EVERYONE = "everyone", "Anyone who can see it"
+        FOLLOWERS = "followers", "People who follow me"
+        NOBODY = "nobody", "Nobody"
+
+    #: Who may post a take of this. Its author always may. Saving a copy of
+    #: the workout or recipe is not reuse and is not governed by this: a
+    #: saved copy is private to whoever saved it.
+    reuse_permission = models.CharField(
+        max_length=20, choices=Reuse.choices, default=Reuse.EVERYONE,
+        db_default=Reuse.EVERYONE.value,
+    )
+    #: An optional prompt the post answers -- "Gym lore", "Rack taken" -- as
+    #: a code from `core.publication.PROMPTS`. A way into posting and a way
+    #: to browse, not another feed.
+    prompt = models.CharField(max_length=24, blank=True, default="", db_default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     # Existing creation paths stay compatible until asynchronous upload wiring
@@ -3099,10 +3204,138 @@ class Post(models.Model):
         indexes = [
             models.Index(fields=("author", "-published_at", "-id")),
             models.Index(fields=("-published_at", "-id")),
+            # The takes of one post, and the posts using one sound, each
+            # newest first: an equality on the reference and then the same
+            # (published_at, id) walk as the feed, which is the order a
+            # multicolumn B-tree serves from one end. Partial, because all
+            # but a few posts have neither and a NULL entry for each of them
+            # would be most of the index.
+            models.Index(
+                fields=("source_post", "-published_at", "-id"),
+                name="post_takes_newest",
+                condition=models.Q(source_post__isnull=False),
+            ),
+            models.Index(
+                fields=("sound", "-published_at", "-id"),
+                name="post_sound_uses_newest",
+                condition=models.Q(sound__isnull=False),
+            ),
+            # Read only by the delete of an original, to null this column on
+            # its family. Without it that delete scans every post.
+            models.Index(
+                fields=("original_post",),
+                name="post_take_family",
+                condition=models.Q(original_post__isnull=False),
+            ),
+            # The posts answering one prompt, newest first. Partial for the
+            # reason the three above are: most posts answer none.
+            models.Index(
+                fields=("prompt", "-published_at", "-id"),
+                name="post_prompt_newest",
+                condition=~models.Q(prompt=""),
+            ),
         ]
 
     def __str__(self):
         return f"{self.author}: {self.get_kind_display()}"
+
+    @property
+    def is_open_to_everyone(self):
+        """Whether anybody signed in may read this, the author's profile
+        included in the question. What a take may be made of: a post some
+        people cannot see must not be answered in front of them."""
+        return self.visibility == self.Visibility.PUBLIC and self.author.is_profile_public
+
+
+class Sound(models.Model):
+    """Audio a post's clip can be set to, owned by whoever made it.
+
+    One row and one stored file per sound, referenced by every post that uses
+    it, so a sound used a thousand times is stored once and taking it down is
+    one change. Nothing here copies audio.
+
+    A sound is removed by status, not deleted: the posts using it keep their
+    reference, stop showing its credit, and get it back if the removal is
+    reversed. Deleting the owner's account deletes it, and the posts that
+    used it simply have no sound.
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        REMOVED = "removed", "Removed"
+
+    owner = models.ForeignKey(
+        RepbaseUser, on_delete=models.CASCADE, related_name="sounds"
+    )
+    #: The post whose clip this audio came from. Null once that post is
+    #: deleted; the sound is its owner's and carries on.
+    origin_post = models.OneToOneField(
+        Post,
+        on_delete=models.SET_NULL,
+        related_name="original_sound",
+        null=True,
+        blank=True,
+    )
+    title = models.CharField(max_length=120)
+    duration_ms = models.PositiveIntegerField(null=True, blank=True)
+    #: Where the prepared audio is in media storage. Blank until it has been
+    #: extracted, which happens outside any request.
+    audio_key = models.CharField(max_length=255, blank=True, default="")
+    reuse_permission = models.CharField(
+        max_length=20, choices=Post.Reuse.choices, default=Post.Reuse.EVERYONE
+    )
+    status = models.CharField(
+        max_length=10, choices=Status.choices, default=Status.ACTIVE
+    )
+    removed_at = models.DateTimeField(null=True, blank=True)
+    #: Who took it down: its owner, or a moderator. Its owner can put back
+    #: what they took down themselves, and nobody but a moderator can put
+    #: back what a moderator did.
+    removed_by_moderator = models.BooleanField(default=False)
+    #: How many times preparing the audio has been tried, so a clip that
+    #: cannot be read is given up on rather than tried for ever.
+    prepare_attempts = models.PositiveSmallIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            # What the worker asks for: sounds still waiting for their audio.
+            models.Index(
+                fields=("created_at",), name="sound_awaiting_audio",
+                condition=models.Q(audio_key="", status="active"),
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.title} ({self.owner})"
+
+    @property
+    def is_prepared(self):
+        return bool(self.audio_key)
+
+
+class PostHashtag(models.Model):
+    """One hashtag on one post.
+
+    The tag is the normalised text itself rather than a reference to a row
+    of tags: there is nothing else to say about a tag, and a second table
+    would add a lookup and a race to every publication to save a few bytes.
+
+    Unique on (tag, post) in that order, which is also the index the one
+    question asked of this table needs: the posts carrying a tag, newest
+    first -- an equality on the tag, then post ids walked from the top.
+    """
+
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="hashtag_rows")
+    tag = models.CharField(max_length=50)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=("tag", "post"), name="one_row_per_tag_and_post")
+        ]
+
+    def __str__(self):
+        return f"#{self.tag} on post {self.post_id}"
 
 
 class MediaScreeningJob(models.Model):
@@ -3217,9 +3450,34 @@ class PostWorkout(models.Model):
         blank=True,
         validators=[MinValueValidator(0)],
     )
+    # The three figures a card prints, added up once from the exercise rows
+    # when the snapshot is written (`summarise`), so a page of cards can be
+    # drawn without loading any of those rows. The rows cannot change after
+    # publication, so neither can these. A reader who opens the post gets the
+    # rows and figures summed from them, as before.
+    #
+    # A null `exercise_count` means "not added up", and a reader of the
+    # summary then gets the figures from the rows after all. That is the
+    # state of a snapshot written by the previous release between a
+    # migration and the restart that follows it: that code writes the rows
+    # and has never heard of these columns. Zero would be a wrong answer
+    # that looked like a right one.
+    exercise_count = models.PositiveSmallIntegerField(null=True, blank=True)
+    total_set_count = models.PositiveIntegerField(null=True, blank=True)
+    #: Null, not zero, when no exercise logged a load.
+    total_volume_kg = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True
+    )
 
     def __str__(self):
         return self.title
+
+    def summarise(self, exercises):
+        """Set the stored figures from this workout's exercise rows."""
+        volumes = [row.volume_kg for row in exercises if row.volume_kg is not None]
+        self.exercise_count = len(exercises)
+        self.total_set_count = sum(row.set_count for row in exercises)
+        self.total_volume_kg = sum(volumes) if volumes else None
 
 
 class PostWorkoutExercise(models.Model):
@@ -3328,9 +3586,30 @@ class PostMeal(models.Model):
     #: Blank is the normal case. Most meals are assembled rather than cooked,
     #: and a post that says nothing about method is not incomplete.
     cooking_instructions = models.TextField(blank=True)
+    # What a card prints, added up once from the food rows when the snapshot
+    # is written (`summarise`), for the reason PostWorkout's figures are, and
+    # with the same meaning for a null `entry_count`: not added up.
+    entry_count = models.PositiveSmallIntegerField(null=True, blank=True)
+    total_calories = models.DecimalField(default=Decimal("0"), **STORED_TOTAL)
+    total_protein_grams = models.DecimalField(default=Decimal("0"), **STORED_TOTAL)
+    total_carbohydrate_grams = models.DecimalField(default=Decimal("0"), **STORED_TOTAL)
+    total_fat_grams = models.DecimalField(default=Decimal("0"), **STORED_TOTAL)
+
+    SUMMED = ("calories", "protein_grams", "carbohydrate_grams", "fat_grams")
 
     def __str__(self):
         return f"{self.date}: {self.name}"
+
+    def summarise(self, entries):
+        """Set the stored figures from this meal's food rows: per-serving
+        figure times servings, the arithmetic the rendered totals use."""
+        self.entry_count = len(entries)
+        for field in self.SUMMED:
+            total = sum(
+                ((getattr(row, field) or Decimal("0")) * (row.servings or Decimal("0")) for row in entries),
+                Decimal("0"),
+            )
+            setattr(self, f"total_{field}", total.quantize(Decimal("0.01")))
 
 
 class PostMealEntry(FoodNutritionSnapshot):
@@ -3850,6 +4129,82 @@ class PostLike(models.Model):
         return f"like on post {self.post_id}"
 
 
+class PostTried(models.Model):
+    """Somebody saying "I tried this" about a post.
+
+    A statement the person chooses to make, by pressing a button. It is never
+    written from anything they tracked: finishing a workout saved from a post,
+    or logging a meal made from one, does not create a row here, and nothing
+    that reads private training or nutrition records may. The ranking counts
+    it as the reader's own word and nothing else stands in for it.
+
+    A row per person and post, like a like, so it can be taken back and
+    cannot be said twice.
+    """
+
+    post = models.ForeignKey(Post, on_delete=models.CASCADE, related_name="tried")
+    user = models.ForeignKey(RepbaseUser, on_delete=models.CASCADE, related_name="posts_tried")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["post", "user"], name="unique_post_tried")
+        ]
+        indexes = [
+            models.Index(fields=["user", "-created_at"]),
+            models.Index(fields=["created_at"]),
+        ]
+
+    def __str__(self):
+        return f"tried post {self.post_id}"
+
+
+class SocialFlag(models.Model):
+    """The stage one part of the new Social has been released to
+    (`core.rollout`). No row means the default for the deployment."""
+
+    name = models.CharField(max_length=40, unique=True)
+    stage = models.CharField(max_length=10, default="off")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"{self.name}: {self.stage}"
+
+
+class SocialCohortMember(models.Model):
+    """An account invited to what is released to the `cohort` stage."""
+
+    user = models.OneToOneField(RepbaseUser, on_delete=models.CASCADE, related_name="social_cohort")
+    added_at = models.DateTimeField(auto_now_add=True)
+    note = models.CharField(max_length=200, blank=True, default="")
+
+    def __str__(self):
+        return f"cohort member {self.user_id}"
+
+
+class SocialRolloutEvent(models.Model):
+    """One change of stage: what moved, who moved it, the revisions it was
+    tested at, and what the release gates said at that moment. The record
+    the plan asks for, written by the act and not from memory afterwards."""
+
+    flag = models.CharField(max_length=40)
+    from_stage = models.CharField(max_length=10)
+    to_stage = models.CharField(max_length=10)
+    changed_by = models.CharField(max_length=150, blank=True, default="")
+    backend_revision = models.CharField(max_length=64, blank=True, default="")
+    client_build = models.CharField(max_length=64, blank=True, default="")
+    #: Widened although a gate was failing.
+    forced = models.BooleanField(default=False)
+    gates = models.JSONField(default=list)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("-created_at", "-id")
+
+    def __str__(self):
+        return f"{self.flag}: {self.from_stage} -> {self.to_stage}"
+
+
 class PostComment(models.Model):
     """A reply on a post, or on another reply.
 
@@ -3972,8 +4327,52 @@ class PostView(models.Model):
     #: deleted with the row, so it lives no longer than the viewing history
     #: it belongs to.
     features = models.JSONField(null=True, blank=True, default=None)
+    #: How it came to be served, written with `features` and before anything
+    #: the reader did with it: the feature version, which ranking and model
+    #: served it, where on the page, from which candidate sources, whether
+    #: it was an exploration slot, and its format. Kept and cleared with
+    #: `features`. See `core.ranking_model.serving_context`.
+    served = models.JSONField(null=True, blank=True, default=None)
     first_seen_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(default=timezone.now)
+
+    # ---- Measured attention (summaries, schema version 2; `core.attention`).
+    #
+    # Kept apart from `max_watch_ms` and `completed` above, which are what a
+    # version 1 client reports: the furthest position its player reached,
+    # which seeking forward reaches without anything being watched. Nothing
+    # a version 1 client sends is ever written to the columns below, so the
+    # two kinds of evidence are never added together.
+    #
+    # Null means the measurement does not apply -- a photo has no playback --
+    # which is a different thing from a clip nobody played.
+
+    #: Exposures of at least a second: an impression that counts.
+    qualified_views = models.PositiveIntegerField(default=0, db_default=0)
+    #: Time on screen in the foreground with nothing covering the card.
+    active_dwell_ms = models.PositiveBigIntegerField(default=0, db_default=0)
+    #: Time the clip was actually playing, summed. Not buffering or paused.
+    playback_ms = models.PositiveBigIntegerField(null=True, blank=True)
+    #: The most of the clip actually played in one exposure, as the length
+    #: of the union of the intervals played. Seeking adds nothing to it.
+    coverage_ms = models.PositiveIntegerField(null=True, blank=True)
+    #: Time spent playing parts already played, summed, and capped at three
+    #: times the clip so a loop left running cannot grow it without end.
+    rewatch_ms = models.PositiveBigIntegerField(null=True, blank=True)
+    #: Played to its natural end with at least nine tenths of it covered.
+    watched_through = models.BooleanField(default=False, db_default=False)
+    #: The workout or recipe sheet: how often opened, and time spent in it.
+    attachment_opens = models.PositiveIntegerField(default=0, db_default=0)
+    attachment_read_ms = models.PositiveBigIntegerField(default=0, db_default=0)
+    #: Exposures whose clip failed to start or stalled out. Counted so a
+    #: broken player is never read as a reader's dislike.
+    playback_failures = models.PositiveIntegerField(default=0, db_default=0)
+    #: When the latest exposure recorded here ended, by the device's report
+    #: (bounded on arrival), and which exposure it was. `skipped` belongs to
+    #: that exposure: a batch delayed on a train does not overwrite what the
+    #: reader did after it.
+    last_observed_at = models.DateTimeField(null=True, blank=True)
+    last_observed_key = models.CharField(max_length=48, blank=True, default="", db_default="")
 
     class Meta:
         constraints = [
@@ -3982,10 +4381,41 @@ class PostView(models.Model):
         indexes = [
             models.Index(fields=("viewer", "-last_seen_at")),
             models.Index(fields=("surface", "first_seen_at")),
+            # What the retention sweep walks: oldest first, whoever it was.
+            models.Index(fields=("last_seen_at",), name="postview_last_seen"),
         ]
 
     def __str__(self):
         return f"{self.viewer_id} viewed post {self.post_id}"
+
+
+class ImpressionBatchReceipt(models.Model):
+    """One batch of attention summaries that has been added to PostView.
+
+    Written in the transaction that adds the batch, so a batch sent again --
+    the answer was lost, the app was killed mid-flush -- finds this row and
+    adds nothing a second time. Kept for a week, well past the 24 hours a
+    device holds a batch for retry (`prune_expired_rows`).
+    """
+
+    viewer = models.ForeignKey(
+        RepbaseUser, on_delete=models.CASCADE, related_name="impression_receipts"
+    )
+    batch_id = models.UUIDField()
+    #: What the first delivery answered, so a retry answers the same.
+    recorded = models.PositiveSmallIntegerField(default=0)
+    received_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            # Per account: an id is random on the device, and one account
+            # must not be able to spend another's.
+            models.UniqueConstraint(fields=("viewer", "batch_id"), name="one_receipt_per_batch")
+        ]
+
+
+#: How long a receipt is kept. Twice the retry window with room to spare.
+IMPRESSION_RECEIPT_DAYS = 7
 
 
 class PostFeedback(models.Model):
@@ -4027,7 +4457,10 @@ class PostFeedback(models.Model):
         constraints = [
             models.UniqueConstraint(fields=("viewer", "post"), name="one_feedback_per_pair")
         ]
-        indexes = [models.Index(fields=("viewer", "-created_at"))]
+        indexes = [
+            models.Index(fields=("viewer", "-created_at")),
+            models.Index(fields=("created_at",), name="postfeedback_created"),
+        ]
 
     def __str__(self):
         return f"{self.viewer_id}: {self.kind} on post {self.post_id}"
@@ -4037,6 +4470,26 @@ class PostFeedback(models.Model):
 #: back this far and no further, so nothing older does anything but sit there
 #: describing what somebody once looked at. `prune_expired_rows` deletes it.
 RECOMMENDATION_HISTORY_DAYS = 90
+
+
+def recommendation_history_days():
+    """The retention in force: RECOMMENDATION_HISTORY_DAYS, or a shorter
+    policy chosen with the setting of the same name. Never longer -- the
+    ranking reads back no further than the constant, and a larger number
+    would only keep what nothing uses."""
+    from django.conf import settings
+
+    chosen = getattr(settings, "RECOMMENDATION_HISTORY_DAYS", None)
+    if not chosen:
+        return RECOMMENDATION_HISTORY_DAYS
+    return max(1, min(int(chosen), RECOMMENDATION_HISTORY_DAYS))
+
+
+#: How long what the ranking knew about a served post -- the per-exposure
+#: training sample, `PostView.features` -- is kept. Shorter than the viewing
+#: history it sits on: the history is needed to avoid repeating a post, the
+#: sample only to train on, and two weeks of it is what training reads.
+TRAINING_SAMPLE_DAYS = 14
 
 #: How long a dismissed suggestion stays dismissed. Long enough that the same
 #: face does not come back next week; not so long that someone you had no

@@ -41,7 +41,7 @@ List responses are paginated with `count`, `next`, `previous`, and `results` fie
 - `/api/v1/social/posts/` — posts the reader may see; create one from your own session, meal or planner entry, or a photo or video post (`kind: media`, no `source_id`) that is a picture or a clip and a caption. A clip-only media post sends `expects_video: true` and is visible to its author alone until the clip is ready and approved
 - `/api/v1/social/feed/` — the people you follow, newest first (cursor paging)
 - `/api/v1/social/for-you/` — posts picked for you from everyone, each with a `recommendation` saying why (cursor paging)
-- `POST /api/v1/social/impressions/` — what was on screen and for how long, in batches of up to 50
+- `POST /api/v1/social/impressions/` — what was on screen and for how long, in batches of up to 50. With `schema_version: 2` each event is one exposure measured on the device, the batch carries a `batch_id`, and sending it again adds nothing (`duplicate: true`). Figures past what could have happened are brought down to it; a body over 64 kB is a 413. See `core/attention.py`
 - `POST`/`DELETE /api/v1/social/posts/{id}/not-interested/` — dismiss a post from For You, or undo it
 - `GET`/`PATCH /api/v1/social/for-you/preferences/` — what For You has picked up about you, the topics you hid, and whether it is personalised at all
 - `DELETE /api/v1/social/for-you/history/` — start For You fresh: past activity stops counting and viewing history is deleted
@@ -49,6 +49,7 @@ List responses are paginated with `count`, `next`, `previous`, and `results` fie
 - `POST`/`DELETE /api/v1/social/suggested-people/{id}/dismiss/` — stop suggesting somebody for six months, or undo it
 - `POST /api/v1/social/posts/{id}/report/` — report a post to the moderators
 - `POST`/`DELETE /api/v1/social/posts/{id}/video/` — attach or remove a clip on your own post
+- `GET /api/v1/social/posts/{id}/takes/` — the takes posted of this post, newest first (cursor paging)
 
 A clip is sent as the request body itself with a video `Content-Type`, not as
 base64 or multipart. The server reads the file to decide what it is: MP4 or
@@ -57,6 +58,58 @@ QuickTime, H.264 or HEVC, at most 60 seconds and 25 MB by default. It answers
 with a sentence under `video` for anything else. Where moderation is on, a new
 clip has `status: "pending"` and is shown only to its author until approved.
 See [RECOMMENDATIONS.md](RECOMMENDATIONS.md) for how For You ranks.
+
+### Post formats, takes and credits
+
+There are four formats and one `Post`. A gym moment is `kind: media`. A workout
+or a recipe (`kind: workout`, `kind: meal`) carries its frozen snapshot and can
+carry the same short clip. A take is any of those three created with
+`source_post_id`: it has its own caption, media and snapshot, `is_take` is
+true, and `source` is its credit. A take is not a kind, so an app that has
+never heard of takes draws it as the ordinary post it also is.
+
+A take can be made only of a post its maker can see, that everybody can see
+(public, on an open profile), and whose `reuse_permission` allows it
+(`everyone`, `followers` or `nobody`; the author always may).
+`viewer_can_take` says whether the reader could post one now. A repost's id
+stands for the post it passes on.
+
+A take is its author's post and is never removed because of its source. When a
+reader may not see the source -- deleted, taken down, made private, a block, a
+suspended author -- `source` is `{"available": false}` with every other field
+null. Setting `reuse_permission` to `nobody` stops new takes; takes already
+posted stay.
+
+Other fields every post now carries, all optional in the contract so an app
+generated before them still decodes: `hashtags` (read from the caption,
+normalised, ten at most), `topics` and `language` (set on create or `PATCH`),
+`audience` (who is actually reading: `visibility` narrowed by a closed
+profile), `attachment_version`, and `sound` (the credit for the sound a clip is
+set to, null once the sound is removed).
+
+### Sounds, take counts and prompts
+
+- `POST /api/v1/social/sounds/` — publish the audio of one of your own posts as a sound (`post`, optional `title` and `reuse_permission`). The post needs an approved video with audio. The audio is extracted by a worker (`manage.py prepare_sounds`); `audio_url` is null until then
+- `GET`/`PATCH`/`DELETE /api/v1/social/sounds/{id}/` — read a sound; rename it or change who may use it; take it down
+- `POST /api/v1/social/sounds/{id}/restore/` — put back a sound you took down (not one a moderator removed)
+- `GET /api/v1/social/sounds/{id}/posts/` — the posts set to a sound that the reader may see, newest first (cursor paging)
+- `GET /api/v1/social/prompts/` — the prompts a post can answer; send a code as `prompt` on create, browse with `?prompt=` on the post list
+
+Taking a sound down is one change: every post set to it keeps its reference
+and loses the credit, the audio stops being served, nobody new can use it, and
+those posts leave For You. Restoring it reverses all of that.
+
+Every post carries `take_count`: the takes of it that anybody could see.
+It is the same number for every reader.
+
+### Summaries first
+
+The post list, the feed, For You and the takes list accept
+`?attachments=summary`. A workout or recipe then arrives with its title and
+totals, an empty `exercises` or `entries` and `cooking_instructions`, and
+`details_included: false`; `exercise_count` and `entry_count` say how many
+rows there are. `GET /api/v1/social/posts/{id}/` always has the details.
+Without the parameter nothing changes.
 
 ## Session lifecycle
 

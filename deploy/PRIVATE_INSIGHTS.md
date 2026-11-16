@@ -111,11 +111,46 @@ Revocation intentionally does not remove staff status or unrelated permissions.
    It reports nothing while `ANALYTICS_ENABLED` is false: silence from a
    system recording nothing would read as an all-clear.
 8. Smoke-test known successful/rejected requests in staging and compare counters.
-   Measure API latency under expected concurrency before enabling production
-   collection: recording currently performs synchronous, atomic database writes
-   and popular routes share a daily counter row. Database recording failures
+   With `ANALYTICS_BUFFERED` off, recording performs synchronous, atomic database
+   writes and popular routes share a daily counter row. Recording failures
    preserve the application response but may lose observations. Monitor the
    generic analytics-write warning. Collection is not billing-grade telemetry.
+9. To move recording out of requests, install the flush timer **first**, confirm
+   it runs, and only then set `ANALYTICS_BUFFERED=true` and restart. With the flag
+   on and no timer, the dashboard and `check_api_health` stop seeing new data.
+
+   ```sh
+   cp deploy/repbase-metrics-flush.{service,timer} /etc/systemd/system/
+   systemctl daemon-reload && systemctl enable --now repbase-metrics-flush.timer
+   journalctl -u repbase-metrics-flush -n 5    # one line of JSON per run
+   ```
+
+   Requests then make one Redis call, and the totals reach these tables every 30
+   to 60 seconds. It needs Redis 6.2 or later. To go back, set the flag to false
+   and restart; anything still buffered is applied by the timer.
+
+   Observations that cannot be buffered during a Redis outage are counted, logged
+   as "could not be buffered", and recorded per batch in
+   `MetricFlushReceipt.lost_observations`.
+
+## Social insights (`/insights/social/`)
+
+Same sign-in and the same role. Shows whether the social pages are useful
+(qualified exposure to save, save to "I tried this", takes, creator coverage,
+reader-reported satisfaction, day-1 and day-7 return, returns that did
+something), playback beside its failures, and cost (ranking p50/p95, feed
+routes, statistics age, queue lag, telemetry duplicates and drops, cache hit
+rate, clip storage, and on PostgreSQL table growth, dead rows and vacuum).
+
+It reads `SocialInsightSnapshot`, written once a day by
+`roll_up_social_insights`, which `python -m config.deploy maintenance` now
+runs last. Until the first run the page says there are no figures. A figure
+with fewer than five people behind it is withheld before it is stored. Return
+rates need `ANALYTICS_ENABLED=true`. `SOCIAL_PRIVACY.md` lists what is used,
+kept and never read.
+
+Not measured from inside the application, and said so on the page: database
+CPU, per-request SQL time, media bandwidth, and batches a device gave up on.
 
 ## Metric definitions
 
