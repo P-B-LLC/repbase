@@ -786,6 +786,30 @@ paths:
       operationId: exercises_list
       parameters:
       - in: query
+        name: category
+        schema:
+          type: string
+        description: Return only exercises in this library category, ignoring case.
+      - in: query
+        name: equipment
+        schema:
+          type: string
+        description: Return only exercises using this equipment (`barbell`, `dumbbell`,
+          ...), ignoring case.
+      - in: query
+        name: mine
+        schema:
+          type: boolean
+        description: '`true` returns only the exercises the reader created, leaving
+          out the shared catalogue. `false` or omitted returns both. Anything else
+          is a 400.'
+      - in: query
+        name: muscle
+        schema:
+          type: string
+        description: Return only exercises with this among their primary muscles (`chest`,
+          `lats`, ...), ignoring case.
+      - in: query
         name: name
         schema:
           type: string
@@ -798,6 +822,19 @@ paths:
         description: A page number within the paginated result set.
         schema:
           type: integer
+      - in: query
+        name: pattern
+        schema:
+          type: string
+        description: Return only exercises with this movement pattern, ignoring case.
+      - in: query
+        name: search
+        schema:
+          type: string
+        description: Return only exercises whose name or one of whose aliases contains
+          this, ignoring case and surrounding space, for a picker that narrows as
+          the person types. Blank is the same as omitted. Only the first 100 characters
+          are used. Combines with every other filter.
       tags:
       - exercises
       security:
@@ -1645,14 +1682,16 @@ paths:
   /api/v1/food/search/:
     get:
       operationId: food_search_list
-      description: Searches USDA FoodData Central and returns foods in the shape a
-        food entry is logged in. Results are cached for a week.
+      description: Searches Open Food Facts or looks up a product barcode. Only records
+        with complete calories and macros are returned. Results are cached; empty
+        means not found or incomplete nutrition. Attribute Open Food Facts (ODbL).
       parameters:
       - in: query
         name: q
         schema:
           type: string
-        description: What to search for. Two characters or more.
+        description: 'Submit a food/brand search (two characters minimum), or barcode:
+          followed by a GTIN-8/12/13/14 product barcode. Do not search on every keystroke.'
         required: true
       tags:
       - food
@@ -2239,6 +2278,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/MyAccess'
           description: ''
+  /api/v1/me/agreements/:
+    get:
+      operationId: accountAgreementRetrieve
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountAgreement'
+          description: ''
+    put:
+      operationId: accountAgreementUpdate
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/AccountAgreementRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountAgreement'
+          description: ''
   /api/v1/me/highlights/:
     get:
       operationId: me_highlights_list
@@ -2448,6 +2528,47 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/ProfilePrompt'
+          description: ''
+  /api/v1/me/safety-consent/:
+    get:
+      operationId: safetyConsentRetrieve
+      tags:
+      - me
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafetyConsent'
+          description: ''
+    put:
+      operationId: safetyConsentUpdate
+      tags:
+      - me
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SafetyConsentRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SafetyConsent'
           description: ''
   /api/v1/me/social-links/:
     get:
@@ -3211,8 +3332,10 @@ paths:
     post:
       operationId: schedules_sync_planner_create
       description: 'Put a planner task on every scheduled day in the range that has
-        not had one yet, and return the tasks that were created. Idempotent: a day
-        whose task already exists, or whose task the user deleted, is left alone.'
+        not had one yet, and on every day from today on that has lost its task, and
+        return the tasks that were created. Idempotent: a day whose task already exists
+        is left alone, and deleting a workout''s task removes the scheduled day as
+        well.'
       tags:
       - schedules
       requestBody:
@@ -3412,6 +3535,12 @@ paths:
     get:
       operationId: sessions_list
       parameters:
+      - in: query
+        name: activity
+        schema:
+          type: string
+        description: Return only sessions whose workout is this activity (`tennis`,
+          `running`, ...). A slug the server does not know matches nothing.
       - name: page
         required: false
         in: query
@@ -3699,6 +3828,48 @@ paths:
                 items:
                   $ref: '#/components/schemas/PersonalRecord'
           description: ''
+  /api/v1/sessions/{id}/reorder/:
+    post:
+      operationId: sessions_reorder_create
+      description: Put an active session's exercises in a new order, all at once.
+        The body lists every SessionExercise id of the session exactly once; they
+        are renumbered 1 to n in that order and the session's exercises are returned
+        in it. A list that leaves one out, repeats one or names another session's
+        is a 400 and changes nothing, as is a session that is planned or completed.
+        Sending the same list again changes nothing.
+      parameters:
+      - in: path
+        name: id
+        schema:
+          type: integer
+        description: A unique integer value identifying this workout session.
+        required: true
+      tags:
+      - sessions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionReorderRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SessionReorderRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SessionReorderRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SessionExercise'
+          description: ''
   /api/v1/sessions/{id}/route/:
     get:
       operationId: sessions_route_list
@@ -3824,6 +3995,53 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HealthImportResult'
+          description: ''
+  /api/v1/sessions/log/:
+    post:
+      operationId: sessions_log_create
+      description: 'Log a finished session after the fact: an activity, when it started
+        and how long it lasted, with optional effort, calories, distance, details
+        and notes. Creates a completed session marked `is_manual_entry`, ending `duration_seconds`
+        after `started_at` (at most five minutes from now). The workout is `workout`
+        (one of yours, of this activity) or the one named `workout_name`, ignoring
+        case, made with this activity if you have none; a named workout of another
+        activity is a 400. `scheduled_date` also schedules the workout on that day,
+        reusing the day''s entry if there is one. The day''s planner task for the
+        workout is ticked, as finishing a live session does. Send an `Idempotency-Key`
+        to make retries replay the same session instead of logging a second one.'
+      parameters:
+      - in: header
+        name: Idempotency-Key
+        schema:
+          type: string
+          format: uuid
+        description: Persist a fresh UUID per intended create and reuse it with the
+          same JSON body on retry. Successful responses are replayed without a second
+          create. Reusing the key with changed input returns 409. Keys are scoped
+          to the authenticated account and endpoint and retained until account deletion.
+      tags:
+      - sessions
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ActivityLogRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/ActivityLogRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ActivityLogRequest'
+        required: true
+      security:
+      - tokenAuth: []
+      - cookieAuth: []
+      responses:
+        '201':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkoutSession'
           description: ''
   /api/v1/sessions/previous-sets/:
     get:
@@ -4687,11 +4905,24 @@ paths:
   /api/v1/social/notifications/read/:
     post:
       operationId: social_notifications_read_create
-      description: Mark every notification as seen. Answers with what is left unread,
-        which is zero, so the caller has one shape to read whichever of these two
-        it called.
+      description: Mark supplied notification IDs as seen (at most 500). An empty
+        ids list changes nothing; omitting ids preserves legacy mark-all behavior.
+        Only the authenticated recipient's currently visible rows are changed. Returns
+        the actual remaining unread count. Clients must see supports_scoped_read=true
+        in a list response before sending ids.
       tags:
       - social
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationReadRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/NotificationReadRequest'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/NotificationReadRequest'
       security:
       - tokenAuth: []
       - cookieAuth: []
@@ -4776,9 +5007,10 @@ paths:
           description: ''
     post:
       operationId: social_posts_create
-      description: Post a workout, meal or planner entry the requester owns. The server
-        reads the source and builds the snapshot; the request names the object and
-        never carries its contents.
+      description: |-
+        Post a workout, meal or planner entry the requester owns. The server reads the source and builds the snapshot; the request names the object and never carries its contents.
+
+        Or post a photo or a clip on its own, with `kind` `media` and no `source_id`. Send the photo here; send a clip next to `posts/{id}/video/`, saying so with `expects_video`. A media post with nothing yet to show -- its clip uploading, processing or waiting for review -- is visible to its author alone.
       parameters:
       - in: header
         name: X-Moderation-Consent
@@ -6167,6 +6399,110 @@ components:
       - next
       - previous
       - results
+    AccountAgreement:
+      type: object
+      properties:
+        version:
+          type: string
+          maxLength: 100
+        accepted:
+          type: boolean
+      required:
+      - accepted
+      - version
+    AccountAgreementRequest:
+      type: object
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        accepted:
+          type: boolean
+      required:
+      - accepted
+      - version
+    ActivityLogRequest:
+      type: object
+      description: |-
+        A session entered after the fact: what it was, when, and for how long.
+
+        The workout is one of the caller's, by id, or by name -- found ignoring
+        case, or made with this activity when there is none. Either way it must
+        already be this activity: a log never changes what a workout is.
+      properties:
+        workout:
+          type: integer
+          maximum: 9223372036854775807
+          minimum: 1
+          format: int64
+          nullable: true
+          description: One of your workouts. Its activity must equal `activity`.
+        workout_name:
+          type: string
+          nullable: true
+          minLength: 1
+          description: Required when `workout` is absent, ignored when it is given.
+            Matched to your workouts ignoring case; a new workout with this activity
+            is made when none matches.
+          maxLength: 150
+        activity:
+          type: string
+          minLength: 1
+          description: 'What was done: a slug from the activity list.'
+          maxLength: 40
+        scheduled_date:
+          type: string
+          format: date
+          nullable: true
+          description: The day this fulfils on the schedule. The workout is scheduled
+            on it if it was not already.
+        started_at:
+          type: string
+          format: date-time
+        duration_seconds:
+          type: integer
+          maximum: 86400
+          minimum: 60
+          description: How long it lasted. The session ends this long after started_at.
+        perceived_effort:
+          type: integer
+          maximum: 100
+          minimum: 0
+          nullable: true
+          description: How hard it felt, 0 to 100, in the person's own judgement.
+            Never measured.
+        manual_calories_kcal:
+          type: integer
+          maximum: 20000
+          minimum: 1
+          nullable: true
+          description: 'Calories the person entered themselves, e.g. from a machine''s
+            display. Never measured or estimated by Repbase: show it as the person''s
+            own number, not as a reading.'
+        manual_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          nullable: true
+          description: A distance the person typed in, in kilometres. When the session
+            has no GPS or Apple Health distance it also becomes recorded_distance_km,
+            so it counts towards gear and totals; clearing it clears that.
+        activity_details:
+          type: object
+          additionalProperties: {}
+          description: Activity-specific values the person entered (rounds, a style,
+            a pool length). Only the keys the workout's activity allows are accepted;
+            an unknown key or a wrong type is a 400 naming the key. A key sent as
+            null is dropped. The whole object is replaced; send {} to clear it.
+        notes:
+          type: string
+          description: The person's own notes on the session.
+          maxLength: 2000
+      required:
+      - activity
+      - duration_seconds
+      - started_at
     AppRoleEnum:
       enum:
       - superowner
@@ -6501,11 +6837,13 @@ components:
       - workout
       - meal
       - planner
+      - media
       type: string
       description: |-
         * `workout` - Workout
         * `meal` - Meal
         * `planner` - Planner
+        * `media` - Photo or video
     CreatePostRequest:
       type: object
       description: |-
@@ -6515,12 +6853,17 @@ components:
         the snapshot from it, so no client can decide what a post says it did —
         accepting the content here would be accepting a five-hundred-kilogram squat
         from anyone who could type one.
+
+        A `media` post references nothing: it is a photo or a clip and a caption,
+        and since it carries no snapshot it makes no claim to check.
       properties:
         kind:
           $ref: '#/components/schemas/CreatePostKindEnum'
         source_id:
           type: integer
           minimum: 1
+          description: The workout session, meal or planner entry to post. Required
+            for those kinds; leave it out of a media post.
         caption:
           type: string
           default: ''
@@ -6541,9 +6884,14 @@ components:
           type: string
           description: How the meal was made, for a meal post. Ignored for other kinds.
           maxLength: 4000
+        expects_video:
+          type: boolean
+          default: false
+          description: True when a clip will be uploaded to this post next. Required
+            for a media post without a photo, which stays visible only to its author
+            until the clip is ready to watch.
       required:
       - kind
-      - source_id
     CycleActivateRequest:
       type: object
       description: |-
@@ -6743,6 +7091,56 @@ components:
           type: integer
           readOnly: true
           nullable: true
+        slug:
+          type: string
+          readOnly: true
+          nullable: true
+        aliases:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        category:
+          type: string
+          readOnly: true
+        equipment:
+          type: string
+          readOnly: true
+        movement_pattern:
+          type: string
+          readOnly: true
+        level:
+          type: string
+          readOnly: true
+        mechanic:
+          type: string
+          readOnly: true
+        force:
+          type: string
+          readOnly: true
+        family:
+          type: string
+          readOnly: true
+        primary_muscles:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        secondary_muscles:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        disciplines:
+          type: array
+          items:
+            type: string
+          readOnly: true
+        instructions:
+          type: array
+          items:
+            type: string
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -7187,6 +7585,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        moderation_status:
+          type: string
+          readOnly: true
         updated_at:
           type: string
           format: date-time
@@ -7206,7 +7612,9 @@ components:
       - kind
       - like_count
       - meal
+      - moderation_status
       - planner
+      - published_at
       - recommendation
       - repost_count
       - repost_of
@@ -7563,6 +7971,28 @@ components:
         notes:
           type: string
           maxLength: 300
+        rest_seconds:
+          type: integer
+          maximum: 3600
+          minimum: 0
+          nullable: true
+          description: Rest after each set, in seconds. Null uses the person's own
+            default rest; 0 means no rest timer.
+        superset_group:
+          type: integer
+          maximum: 100
+          minimum: 1
+          nullable: true
+          description: Exercises of one workout sharing this number are a superset,
+            performed back to back in their order. Null is not in one.
+        set_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SetTypeEnum'
+          description: The type of each planned set, in order. Empty means every set
+            is normal; sets past the end of the list are normal. Never longer than
+            target_sets.
+          maxItems: 50
       required:
       - exercise
     InitialWorkoutExerciseRequest:
@@ -7594,6 +8024,28 @@ components:
         notes:
           type: string
           maxLength: 300
+        rest_seconds:
+          type: integer
+          maximum: 3600
+          minimum: 0
+          nullable: true
+          description: Rest after each set, in seconds. Null uses the person's own
+            default rest; 0 means no rest timer.
+        superset_group:
+          type: integer
+          maximum: 100
+          minimum: 1
+          nullable: true
+          description: Exercises of one workout sharing this number are a superset,
+            performed back to back in their order. Null is not in one.
+        set_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SetTypeEnum'
+          description: The type of each planned set, in order. Empty means every set
+            is normal; sets past the end of the list are normal. Never longer than
+            target_sets.
+          maxItems: 50
       required:
       - exercise
     Interest:
@@ -7749,9 +8201,21 @@ components:
         is_read:
           type: boolean
           readOnly: true
+        message:
+          type: string
+          nullable: true
+          readOnly: true
         created_at:
           type: string
           format: date-time
+          readOnly: true
+        post_preview:
+          allOf:
+          - $ref: '#/components/schemas/NotificationPostPreview'
+          nullable: true
+          readOnly: true
+        supports_scoped_read:
+          type: boolean
           readOnly: true
       required:
       - actor_first_name
@@ -7764,6 +8228,7 @@ components:
       - id
       - is_read
       - kind
+      - message
     NotificationKindEnum:
       enum:
       - follow
@@ -7772,6 +8237,7 @@ components:
       - like
       - repost
       - comment
+      - moderation_rejected
       type: string
       description: |-
         * `follow` - Started following you
@@ -7780,6 +8246,44 @@ components:
         * `like` - Liked your post
         * `repost` - Reposted your post
         * `comment` - Commented on your post
+        * `moderation_rejected` - Your post was not published
+    NotificationPostPreview:
+      type: object
+      description: Small, recipient-authorized context, never a second full post payload.
+      properties:
+        id:
+          type: integer
+          readOnly: true
+        kind:
+          type: string
+          readOnly: true
+        title:
+          type: string
+          readOnly: true
+        thumbnail_url:
+          type: string
+          readOnly: true
+          nullable: true
+        media_kind:
+          type: string
+          readOnly: true
+      required:
+      - id
+      - kind
+      - media_kind
+      - thumbnail_url
+      - title
+    NotificationReadRequest:
+      type: object
+      properties:
+        ids:
+          type: array
+          items:
+            type: integer
+            minimum: 1
+          description: Mark only these notification IDs as read. An empty list changes
+            nothing. Omit the body/ids for legacy mark-all behavior.
+          maxItems: 500
     NullEnum:
       enum:
       - null
@@ -8779,6 +9283,8 @@ components:
           type: string
           format: date-time
           nullable: true
+        set_type:
+          $ref: '#/components/schemas/SetTypeEnum'
     PatchedUpdateForYouPreferencesRequest:
       type: object
       description: |-
@@ -8873,6 +9379,28 @@ components:
         notes:
           type: string
           maxLength: 300
+        rest_seconds:
+          type: integer
+          maximum: 3600
+          minimum: 0
+          nullable: true
+          description: Rest after each set, in seconds. Null uses the person's own
+            default rest; 0 means no rest timer.
+        superset_group:
+          type: integer
+          maximum: 100
+          minimum: 1
+          nullable: true
+          description: Exercises of one workout sharing this number are a superset,
+            performed back to back in their order. Null is not in one.
+        set_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SetTypeEnum'
+          description: The type of each planned set, in order. Empty means every set
+            is normal; sets past the end of the list are normal. Never longer than
+            target_sets.
+          maxItems: 50
     PatchedWorkoutScheduleRequest:
       type: object
       properties:
@@ -8893,6 +9421,40 @@ components:
         gear:
           type: integer
           nullable: true
+        perceived_effort:
+          type: integer
+          maximum: 100
+          minimum: 0
+          nullable: true
+          description: How hard it felt, 0 to 100, in the person's own judgement.
+            Never measured.
+        manual_calories_kcal:
+          type: integer
+          maximum: 20000
+          minimum: 1
+          nullable: true
+          description: 'Calories the person entered themselves, e.g. from a machine''s
+            display. Never measured or estimated by Repbase: show it as the person''s
+            own number, not as a reading.'
+        manual_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          nullable: true
+          description: A distance the person typed in, in kilometres. When the session
+            has no GPS or Apple Health distance it also becomes recorded_distance_km,
+            so it counts towards gear and totals; clearing it clears that.
+        notes:
+          type: string
+          description: The person's own notes on the session.
+          maxLength: 2000
+        activity_details:
+          type: object
+          additionalProperties: {}
+          description: Activity-specific values the person entered (rounds, a style,
+            a pool length). Only the keys the workout's activity allows are accepted;
+            an unknown key or a wrong type is a 400 naming the key. A key sent as
+            null is dropped. The whole object is replaced; send {} to clear it.
     PatchedWorkoutTemplateRequest:
       type: object
       properties:
@@ -8902,6 +9464,14 @@ components:
           maxLength: 150
         workout_type:
           $ref: '#/components/schemas/WorkoutTypeEnum'
+        activity:
+          type: string
+          minLength: 1
+          description: 'What the workout is: a slug from the server''s activity list
+            (weightlifting, running, tennis, yoga, ...). Setting it also sets workout_type
+            to the activity''s family. Always present in responses; treat a slug you
+            do not know as `other`.'
+          maxLength: 40
         cardio_machine:
           nullable: true
           oneOf:
@@ -9368,6 +9938,14 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
+        moderation_status:
+          type: string
+          readOnly: true
         updated_at:
           type: string
           format: date-time
@@ -9383,7 +9961,9 @@ components:
       - kind
       - like_count
       - meal
+      - moderation_status
       - planner
+      - published_at
       - repost_count
       - repost_of
       - shows_weights
@@ -9772,6 +10352,10 @@ components:
           type: string
           readOnly: true
           nullable: true
+        activity:
+          type: string
+          readOnly: true
+          nullable: true
         performed_at:
           type: string
           format: date-time
@@ -9919,6 +10503,10 @@ components:
           format: date-time
           readOnly: true
           nullable: true
+        set_type:
+          allOf:
+          - $ref: '#/components/schemas/SetTypeEnum'
+          readOnly: true
       required:
       - exercise
       - performed_at
@@ -10259,6 +10847,9 @@ components:
         viewer_has_requested:
           type: boolean
           readOnly: true
+        follows_viewer:
+          type: boolean
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -10445,6 +11036,13 @@ components:
     RegisterRequest:
       type: object
       properties:
+        agreement_version:
+          type: string
+          minLength: 1
+          description: Version explicitly accepted using the signup Privacy Policy
+            and agreements control. Omit for legacy clients; omission never records
+            agreement acceptance.
+          maxLength: 100
         username:
           type: string
           minLength: 1
@@ -10748,6 +11346,11 @@ components:
           type: string
           format: date-time
           readOnly: true
+        published_at:
+          type: string
+          format: date-time
+          readOnly: true
+          nullable: true
       required:
       - author
       - caption
@@ -10758,8 +11361,32 @@ components:
       - kind
       - meal
       - planner
+      - published_at
       - video
       - workout
+    SafetyConsent:
+      type: object
+      properties:
+        version:
+          type: string
+          maxLength: 100
+        granted:
+          type: boolean
+      required:
+      - granted
+      - version
+    SafetyConsentRequest:
+      type: object
+      properties:
+        version:
+          type: string
+          minLength: 1
+          maxLength: 100
+        granted:
+          type: boolean
+      required:
+      - granted
+      - version
     SavedFoodIngredient:
       type: object
       properties:
@@ -11017,6 +11644,29 @@ components:
           type: string
           format: date-time
           description: Original device finish time; omit for server time.
+    SessionReorderRequest:
+      type: object
+      description: |-
+        A session's exercises, in the order they should now be in.
+
+        The whole list rather than a move of one row. The app holds the order it
+        is drawing, so it can say it in full, and a full list can be checked: it
+        must be exactly this session's exercises, each once, or it is refused --
+        which means a stale screen fails loudly instead of quietly shuffling rows
+        it never saw.
+      properties:
+        session_exercises:
+          type: array
+          items:
+            type: integer
+            maximum: 9223372036854775807
+            minimum: 1
+            format: int64
+          description: Every SessionExercise id of this session, each exactly once,
+            in the new order. The first becomes order 1.
+          maxItems: 200
+      required:
+      - session_exercises
     SessionRoutePoint:
       type: object
       properties:
@@ -11143,6 +11793,8 @@ components:
           type: string
           format: date-time
           nullable: true
+        set_type:
+          $ref: '#/components/schemas/SetTypeEnum'
         created_at:
           type: string
           format: date-time
@@ -11187,9 +11839,23 @@ components:
           type: string
           format: date-time
           nullable: true
+        set_type:
+          $ref: '#/components/schemas/SetTypeEnum'
       required:
       - session_exercise
       - set_number
+    SetTypeEnum:
+      enum:
+      - normal
+      - warmup
+      - drop
+      - failure
+      type: string
+      description: |-
+        * `normal` - Normal
+        * `warmup` - Warm-up
+        * `drop` - Drop set
+        * `failure` - Failure
     StatusEnum:
       enum:
       - planned
@@ -11556,6 +12222,28 @@ components:
         notes:
           type: string
           maxLength: 300
+        rest_seconds:
+          type: integer
+          maximum: 3600
+          minimum: 0
+          nullable: true
+          description: Rest after each set, in seconds. Null uses the person's own
+            default rest; 0 means no rest timer.
+        superset_group:
+          type: integer
+          maximum: 100
+          minimum: 1
+          nullable: true
+          description: Exercises of one workout sharing this number are a superset,
+            performed back to back in their order. Null is not in one.
+        set_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SetTypeEnum'
+          description: The type of each planned set, in order. Empty means every set
+            is normal; sets past the end of the list are normal. Never longer than
+            target_sets.
+          maxItems: 50
       required:
       - exercise
       - exercise_name
@@ -11593,6 +12281,28 @@ components:
         notes:
           type: string
           maxLength: 300
+        rest_seconds:
+          type: integer
+          maximum: 3600
+          minimum: 0
+          nullable: true
+          description: Rest after each set, in seconds. Null uses the person's own
+            default rest; 0 means no rest timer.
+        superset_group:
+          type: integer
+          maximum: 100
+          minimum: 1
+          nullable: true
+          description: Exercises of one workout sharing this number are a superset,
+            performed back to back in their order. Null is not in one.
+        set_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SetTypeEnum'
+          description: The type of each planned set, in order. Empty means every set
+            is normal; sets past the end of the list are normal. Never longer than
+            target_sets.
+          maxItems: 50
       required:
       - exercise
       - workout
@@ -11627,6 +12337,28 @@ components:
         notes:
           type: string
           maxLength: 300
+        rest_seconds:
+          type: integer
+          maximum: 3600
+          minimum: 0
+          nullable: true
+          description: Rest after each set, in seconds. Null uses the person's own
+            default rest; 0 means no rest timer.
+        superset_group:
+          type: integer
+          maximum: 100
+          minimum: 1
+          nullable: true
+          description: Exercises of one workout sharing this number are a superset,
+            performed back to back in their order. Null is not in one.
+        set_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SetTypeEnum'
+          description: The type of each planned set, in order. Empty means every set
+            is normal; sets past the end of the list are normal. Never longer than
+            target_sets.
+          maxItems: 50
       required:
       - exercise
       - order
@@ -11661,6 +12393,28 @@ components:
         notes:
           type: string
           maxLength: 300
+        rest_seconds:
+          type: integer
+          maximum: 3600
+          minimum: 0
+          nullable: true
+          description: Rest after each set, in seconds. Null uses the person's own
+            default rest; 0 means no rest timer.
+        superset_group:
+          type: integer
+          maximum: 100
+          minimum: 1
+          nullable: true
+          description: Exercises of one workout sharing this number are a superset,
+            performed back to back in their order. Null is not in one.
+        set_types:
+          type: array
+          items:
+            $ref: '#/components/schemas/SetTypeEnum'
+          description: The type of each planned set, in order. Empty means every set
+            is normal; sets past the end of the list are normal. Never longer than
+            target_sets.
+          maxItems: 50
       required:
       - exercise
       - order
@@ -11807,6 +12561,10 @@ components:
           type: string
           readOnly: true
           nullable: true
+        activity:
+          type: string
+          readOnly: true
+          nullable: true
         status:
           allOf:
           - $ref: '#/components/schemas/StatusEnum'
@@ -11905,6 +12663,43 @@ components:
         logged_set_count:
           type: integer
           readOnly: true
+        perceived_effort:
+          type: integer
+          maximum: 100
+          minimum: 0
+          nullable: true
+          description: How hard it felt, 0 to 100, in the person's own judgement.
+            Never measured.
+        manual_calories_kcal:
+          type: integer
+          maximum: 20000
+          minimum: 1
+          nullable: true
+          description: 'Calories the person entered themselves, e.g. from a machine''s
+            display. Never measured or estimated by Repbase: show it as the person''s
+            own number, not as a reading.'
+        manual_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          nullable: true
+          description: A distance the person typed in, in kilometres. When the session
+            has no GPS or Apple Health distance it also becomes recorded_distance_km,
+            so it counts towards gear and totals; clearing it clears that.
+        notes:
+          type: string
+          description: The person's own notes on the session.
+          maxLength: 2000
+        activity_details:
+          type: object
+          additionalProperties: {}
+          description: Activity-specific values the person entered (rounds, a style,
+            a pool length). Only the keys the workout's activity allows are accepted;
+            an unknown key or a wrong type is a 400 naming the key. A key sent as
+            null is dropped. The whole object is replaced; send {} to clear it.
+        is_manual_entry:
+          type: boolean
+          readOnly: true
         created_at:
           type: string
           format: date-time
@@ -11948,6 +12743,40 @@ components:
         gear:
           type: integer
           nullable: true
+        perceived_effort:
+          type: integer
+          maximum: 100
+          minimum: 0
+          nullable: true
+          description: How hard it felt, 0 to 100, in the person's own judgement.
+            Never measured.
+        manual_calories_kcal:
+          type: integer
+          maximum: 20000
+          minimum: 1
+          nullable: true
+          description: 'Calories the person entered themselves, e.g. from a machine''s
+            display. Never measured or estimated by Repbase: show it as the person''s
+            own number, not as a reading.'
+        manual_distance_km:
+          type: string
+          format: decimal
+          pattern: ^-?\d{0,4}(?:\.\d{0,3})?$
+          nullable: true
+          description: A distance the person typed in, in kilometres. When the session
+            has no GPS or Apple Health distance it also becomes recorded_distance_km,
+            so it counts towards gear and totals; clearing it clears that.
+        notes:
+          type: string
+          description: The person's own notes on the session.
+          maxLength: 2000
+        activity_details:
+          type: object
+          additionalProperties: {}
+          description: Activity-specific values the person entered (rounds, a style,
+            a pool length). Only the keys the workout's activity allows are accepted;
+            an unknown key or a wrong type is a 400 naming the key. A key sent as
+            null is dropped. The whole object is replaced; send {} to clear it.
     WorkoutTemplate:
       type: object
       properties:
@@ -11962,6 +12791,13 @@ components:
           maxLength: 150
         workout_type:
           $ref: '#/components/schemas/WorkoutTypeEnum'
+        activity:
+          type: string
+          description: 'What the workout is: a slug from the server''s activity list
+            (weightlifting, running, tennis, yoga, ...). Setting it also sets workout_type
+            to the activity''s family. Always present in responses; treat a slug you
+            do not know as `other`.'
+          maxLength: 40
         cardio_machine:
           nullable: true
           oneOf:
@@ -11979,6 +12815,11 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/WorkoutExercise'
+          readOnly: true
+        last_performed_at:
+          type: string
+          format: date-time
+          nullable: true
           readOnly: true
         created_at:
           type: string
@@ -12004,6 +12845,14 @@ components:
           maxLength: 150
         workout_type:
           $ref: '#/components/schemas/WorkoutTypeEnum'
+        activity:
+          type: string
+          minLength: 1
+          description: 'What the workout is: a slug from the server''s activity list
+            (weightlifting, running, tennis, yoga, ...). Setting it also sets workout_type
+            to the activity''s family. Always present in responses; treat a slug you
+            do not know as `other`.'
+          maxLength: 40
         cardio_machine:
           nullable: true
           oneOf:

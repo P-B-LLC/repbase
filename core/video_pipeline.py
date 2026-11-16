@@ -22,13 +22,13 @@ def fail_upload(job):
         VideoStoredObject.objects.filter(job=job, retained=False).update(expires_at=timezone.now())
 
 
-def queue_local(post, received):
+def queue_local(post, received, *, consent_version=None):
     """Store a bounded raw upload. Encoding only happens in the worker."""
     from rest_framework.exceptions import ValidationError
     from .post_publication import PublicationMediaError
     job = None
     try:
-        job, _ = begin(post, received.size, received.declared_type)
+        job, _ = begin(post, received.size, received.declared_type, consent_version=consent_version)
         metric('upload_started')
         store.write(job.source_key, received.file)
         complete(job.pk, post.author.user_id)
@@ -56,7 +56,7 @@ def metric(event, milliseconds=0, size=0):
 
 
 @transaction.atomic
-def begin(post, size, content_type):
+def begin(post, size, content_type, *, consent_version=None):
     if not 0 < size <= settings.VIDEO_DIRECT_MAX_BYTES:
         raise ValueError('The clip exceeds the video size limit.')
     if settings.VIDEO_STORAGE_BACKEND == 'local':
@@ -74,6 +74,12 @@ def begin(post, size, content_type):
     from django.contrib.auth import get_user_model
     get_user_model().objects.select_for_update().get(pk=post.author.user_id)
     post = Post.objects.select_for_update().get(pk=post.pk)
+    if settings.MEDIA_SCREENING_ENABLED:
+        from .media_screening_jobs import enqueue
+        screening = enqueue(post.pk, consent_version=consent_version,
+                            threshold=settings.MEDIA_SCREENING_THRESHOLD)
+        screening.state = 'waiting'
+        screening.save(update_fields=['state'])
     if post.kind == Post.Kind.REPOST or PostVideo.objects.filter(post=post).exists():
         raise ValueError('Remove the existing clip before adding another.')
     active = VideoJob.objects.filter(video__post__author=post.author,
@@ -167,7 +173,7 @@ def process(job):
                 current = VideoJob.objects.select_for_update().filter(pk=job.pk, state='processing', lease=lease).first()
                 if current is None:
                     return False  # Deleted or reclaimed; reserved outputs get cleaned.
-                approved = settings.VIDEO_MODERATION_BYPASS
+                approved = settings.VIDEO_MODERATION_BYPASS and not settings.MEDIA_SCREENING_ENABLED
                 video = current.video
                 video.processing_state = 'ready'
                 video.processing_error = ''
@@ -183,6 +189,10 @@ def process(job):
                 current.error_code = ''
                 current.save(update_fields=['state', 'finished_at', 'error_code'])
                 VideoStoredObject.objects.filter(job=current, key__in=[v['key'] for v in variants] + [thumb_key]).update(retained=True)
+                if settings.MEDIA_SCREENING_ENABLED:
+                    from .models import MediaScreeningJob
+                    MediaScreeningJob.objects.filter(post_id=video.post_id, state='waiting').update(
+                        state='queued', next_attempt_at=timezone.now())
             elapsed = round((timezone.now() - started).total_seconds() * 1000)
             metric('processing_ready', elapsed, video.size_bytes)
             if approved:

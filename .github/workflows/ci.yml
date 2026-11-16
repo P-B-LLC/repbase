@@ -47,9 +47,18 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 5s
           --health-timeout 5s --health-retries 10
+      # What makes a flushed metric batch atomic is Redis itself, so the
+      # buffered-metrics tests run against a real server here.
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s
+          --health-timeout 5s --health-retries 10
     env:
       DJANGO_SETTINGS_MODULE: config.test_postgres
       TEST_POSTGRES_PASSWORD: local-ci-only
+      TEST_REDIS_URL: redis://127.0.0.1:6379/15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -10,9 +10,9 @@ from rest_framework import serializers
 from rest_framework.exceptions import ValidationError, APIException
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
 from .models import Post, PostVideo
+from .throttles import ResilientScopedRateThrottle
 from .views import visible_posts_for
 from .video_jobs_models import VideoJob
 from .video_pipeline import begin, complete, metric
@@ -38,7 +38,7 @@ class VideoUnavailable(APIException):
 
 class UploadStart(APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
     throttle_scope = 'upload'
 
     @extend_schema(request=UploadRequest, responses={201: UploadResponse})
@@ -48,8 +48,12 @@ class UploadStart(APIView):
         post = get_object_or_404(Post, pk=post_id, author__user=request.user)
         data = UploadRequest(data=request.data)
         data.is_valid(raise_exception=True)
+        consent = None
+        if settings.MEDIA_SCREENING_ENABLED:
+            from .media_screening_jobs import submission_consent
+            consent = submission_consent(request)
         try:
-            job, policy = begin(post, data.validated_data['size_bytes'], data.validated_data['content_type'])
+            job, policy = begin(post, data.validated_data['size_bytes'], data.validated_data['content_type'], consent_version=consent)
         except ValueError as error:
             raise ValidationError(str(error))
         except Exception:
@@ -61,7 +65,7 @@ class UploadStart(APIView):
 
 class UploadFinish(APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
     throttle_scope = 'upload'
 
     @extend_schema(request=None, responses={202: UploadResponse})
@@ -136,7 +140,7 @@ class PlaybackEventRequest(serializers.Serializer):
 
 class PlaybackEvent(APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [ScopedRateThrottle]
+    throttle_classes = [ResilientScopedRateThrottle]
     # Not 'upload': the app sends one of these per clip played, and sharing
     # that budget meant watching twenty clips in an hour refused the next
     # real upload with 429.

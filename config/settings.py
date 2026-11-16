@@ -12,7 +12,7 @@ https://docs.djangoproject.com/en/6.1/ref/settings/
 
 import os
 from pathlib import Path
-from .environment import database
+from .environment import database, redis_cache
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -74,6 +74,14 @@ MIDDLEWARE = [
 ROOT_URLCONF = 'config.urls'
 ANALYTICS_ENABLED = os.getenv('ANALYTICS_ENABLED', 'false').lower() == 'true'
 ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED = os.getenv('ANALYTICS_LOGIN_SHARED_LIMIT_CONFIRMED', 'false').lower() == 'true'
+# Count API requests in Redis and flush them in batches (core.metric_buffer),
+# rather than updating shared SQL rows during each request. Off until the
+# repbase-metrics-flush timer is installed: without it the dashboard and
+# check_api_health would stop seeing new data.
+ANALYTICS_BUFFERED = os.getenv('ANALYTICS_BUFFERED', 'false').lower() == 'true'
+# How old a For You statistics row may be and still stand in while the job that
+# writes them is late. See core.feed_stats.
+FEED_STATS_STALE_SECONDS = int(os.getenv('FEED_STATS_STALE_SECONDS', str(6 * 60 * 60)))
 # Where API health alerts go. Empty means the approved insights accounts,
 # which are the people already trusted with this data; set it to a pager or
 # shared address when that is not the same thing.
@@ -93,16 +101,7 @@ ANALYTICS_ALERT_EMAILS = os.getenv('ANALYTICS_ALERT_EMAILS', '')
 # for anyone to be on.
 REDIS_URL = os.getenv('REDIS_URL', '')
 if REDIS_URL:
-    CACHES = {
-        'default': {
-            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
-            'LOCATION': REDIS_URL,
-            'KEY_PREFIX': os.getenv('CACHE_KEY_PREFIX', 'rytivo'),
-            # Short: a cache that hangs should fail the request quickly rather
-            # than holding a worker open waiting for it.
-            'OPTIONS': {'socket_connect_timeout': 3, 'socket_timeout': 3},
-        }
-    }
+    CACHES = {'default': redis_cache(os.environ, REDIS_URL)}
 else:
     # Django's default, with room. Its stock ceiling is 300 entries, and one
     # For You ranking shares counts for several hundred posts through the
@@ -139,6 +138,14 @@ WSGI_APPLICATION = 'config.wsgi.application'
 # No URL keeps existing local development unchanged. Hosted entry points use
 # config.production, where PostgreSQL and verified TLS are mandatory.
 DATABASES = {'default': database(os.environ, BASE_DIR)}
+
+# Whether `migrate` loads core/data/exercise_library.json into the shared
+# exercise catalogue (migration 0085; `manage.py sync_exercise_library` does
+# the same on demand). On everywhere except test databases, which the test
+# runner below builds with it off so no test depends on what the library
+# holds today. See core.exercise_library.
+EXERCISE_LIBRARY_SYNC_ON_MIGRATE = True
+TEST_RUNNER = 'config.test_runner.RepbaseTestRunner'
 
 
 # Password validation
@@ -280,11 +287,13 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_PAGINATION_CLASS': 'rest_framework.pagination.PageNumberPagination',
     'PAGE_SIZE': 50,
-    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+    # drf-spectacular's, plus `optional_response_fields`: see core.schema for
+    # why a field added to a response must not be documented as required.
+    'DEFAULT_SCHEMA_CLASS': 'core.schema.AutoSchema',
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
-        'rest_framework.throttling.ScopedRateThrottle',
+        'core.throttles.ResilientScopedRateThrottle',
     ],
     'DEFAULT_THROTTLE_RATES': {
         # Generous for a signed-in person: the app fans out a dozen or so
@@ -307,7 +316,7 @@ REST_FRAMEWORK = {
         # attempt and expensive to get wrong, and neither is something a
         # person does repeatedly.
         'password_reset': os.environ.get('REPBASE_THROTTLE_RESET', '6/hour'),
-        # Per person, so one of them cannot spend the FoodData Central
+        # Per person, so one of them cannot spend the Open Food Facts
         # allowance the whole userbase shares. Generous, because the
         # cache absorbs anything anyone has searched for lately.
         'food_search': os.environ.get('REPBASE_THROTTLE_FOOD', '120/hour'),
@@ -414,6 +423,10 @@ SPECTACULAR_SETTINGS = {
         'AssignableAppRoleEnum': 'core.access.ROLES',
         'WorkoutTypeEnum': 'core.models.WorkoutTypeChoices.choices',
         'CardioMachineEnum': 'core.models.CardioMachine.choices',
+        # A logged set's `set_type` and a planned exercise's `set_types` are
+        # one choice set under two field names, which would otherwise be
+        # SetTypeEnum and SetTypesEnum: two Swift types for one idea.
+        'SetTypeEnum': 'core.models.SetType.choices',
     },
     # Pinned. The default is `swagger-ui-dist@latest`, which runs whatever
     # was published most recently on this origin's docs page -- with the
@@ -500,12 +513,10 @@ else:
         },
     }
 
-# FoodData Central. Free, and rate limited per IP -- which is one IP for
-# everybody once the lookup is proxied through here, so FoodSearchCache is
-# what keeps the allowance from being spent by a handful of people.
-# DEMO_KEY works without signing up and allows 30 requests an hour, which
-# is enough to develop against and not enough to ship on.
-USDA_FDC_API_KEY = os.getenv("USDA_FDC_API_KEY", "DEMO_KEY")
+# Open Food Facts: no API key. Shared database gates bound upstream requests
+# across workers; cached lookups do not consume provider allowance.
+OPEN_FOOD_FACTS_ORIGIN = os.getenv("OPEN_FOOD_FACTS_ORIGIN", "https://world.openfoodfacts.org")
+OPEN_FOOD_FACTS_USER_AGENT = os.getenv("OPEN_FOOD_FACTS_USER_AGENT", "Rytivo/1.0 (support@rytivo.app)")
 
 DEFAULT_FROM_EMAIL = os.getenv('DEFAULT_FROM_EMAIL', 'noreply@repbase.local')
 
@@ -517,7 +528,9 @@ MODERATION_CONTACT_EMAIL = os.getenv('MODERATION_CONTACT_EMAIL', 'support@rytivo
 # Bumped when what the consent dialog discloses changes. A client sending an
 # older version is refused, because agreement to the previous wording is not
 # agreement to this one.
-MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-09-15')
+MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-10-16')
+MODERATION_ACCOUNT_CONSENT_VERSION = '2026-10-17'
+ACCOUNT_AGREEMENT_VERSION = '2026-10-17'
 # How long a worker may be held waiting for the classifier.
 #
 # This is a capacity setting, not a patience setting. The provider call is
@@ -529,3 +542,6 @@ MODERATION_CONSENT_VERSION = os.getenv('MODERATION_CONSENT_VERSION', '2026-09-15
 # Size it with WEB_CONCURRENCY together, not separately. See
 # HOSTED_CONFIGURATION.md.
 MODERATION_TIMEOUT_SECONDS = min(max(int(os.getenv('MODERATION_TIMEOUT_SECONDS', '8')), 1), 60)
+# Opt-in only after worker, client status UI, and private delivery validation.
+MEDIA_SCREENING_ENABLED = os.getenv('MEDIA_SCREENING_ENABLED', 'false').lower() == 'true'
+MEDIA_SCREENING_THRESHOLD = float(os.getenv('MEDIA_SCREENING_THRESHOLD', '0.5'))

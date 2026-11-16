@@ -88,7 +88,7 @@ Examples include:
 - Barbell Row — Back
 - Overhead Press — Shoulders
 
-You can review available exercises through `GET /api/v1/exercises/`.
+You can review available exercises through `GET /api/v1/exercises/`. Add `?search=bench` to find exercises whose name contains a word, or `?mine=true` to see only the exercises you created.
 
 ## 5. Build a workout
 
@@ -109,6 +109,9 @@ For each entry, choose:
 - Target repetitions
 - Optional target weight
 - Optional notes
+- Optional rest after each set, in seconds (leave it empty to use your usual rest; `0` turns the rest timer off)
+- Optional superset number: exercises in the same workout with the same number are done back to back
+- Optional set types, one per planned set in order: `normal`, `warmup`, `drop` or `failure` (leave it empty for all normal sets)
 
 The workout is a reusable plan. Completing a workout session does not overwrite the plan.
 
@@ -136,6 +139,8 @@ Replace `{session_id}` with the number of your session. The session will change 
 
 First, use `GET /api/v1/session-exercises/` to find the session exercise you are performing.
 
+During an active session you can add an exercise with `POST /api/v1/session-exercises/` (give it the next free position), remove one with `DELETE /api/v1/session-exercises/{id}/` (its sets go with it), and put the session's exercises in a new order with `POST /api/v1/sessions/{session_id}/reorder/`, listing every session exercise once in the order you want.
+
 Use `POST /api/v1/set-entries/` after completing a set. Record:
 
 - The session exercise
@@ -143,6 +148,7 @@ Use `POST /api/v1/set-entries/` after completing a set. Record:
 - Weight used
 - Repetitions completed
 - Completion time
+- Optional set type: `normal` (the default), `warmup`, `drop` or `failure`
 
 Create a separate entry for each set. For example, a three-set squat exercise should have set numbers 1, 2, and 3.
 
@@ -174,6 +180,8 @@ Progress information includes:
 - Total training volume for the set
 
 Training volume is calculated by multiplying weight by repetitions.
+
+Warm-up sets are left out of progress, personal records and the best lifts shown on your profile, because they are light on purpose. They still count as logged sets.
 
 ## 11. Track body weight
 

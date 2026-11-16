@@ -107,7 +107,7 @@ def review_required():
     return settings.MODERATION_ENABLED if configured is None else bool(configured)
 
 
-def attach_video(post, received):
+def attach_video(post, received, *, consent_version=None):
     """Check a received clip and make it the post's video.
 
     Replaces any clip already there. The old file is queued for deletion only
@@ -125,13 +125,16 @@ def attach_video(post, received):
     finally:
         received.file.close()
 
-    approved = not review_required()
+    approved = not review_required() and not settings.MEDIA_SCREENING_ENABLED
     name = f"post-videos/{uuid.uuid4().hex}{info.extension}"
     try:
         size = clean.seek(0, 2)
         clean.seek(0)
         with staged_files([("file", name, File(clean, name=name))]) as stored:
             with transaction.atomic():
+                if settings.MEDIA_SCREENING_ENABLED:
+                    from .media_screening_jobs import enqueue
+                    enqueue(post.pk, consent_version=consent_version, threshold=settings.MEDIA_SCREENING_THRESHOLD)
                 previous = PostVideo.objects.select_for_update().filter(post=post).first()
                 if previous is not None:
                     # Deleting the row queues its file through the same
@@ -155,9 +158,21 @@ def attach_video(post, received):
     return video
 
 
+@transaction.atomic
 def remove_video(post):
     """Take the clip off a post. Nothing to remove is not an error."""
+    from .models import Post, MediaScreeningJob
+    post = Post.objects.select_for_update().get(pk=post.pk)
+    if not PostVideo.objects.filter(post=post).exists():
+        return
     PostVideo.objects.filter(post=post).delete()
+    if settings.MEDIA_SCREENING_ENABLED:
+        # Revoke in-flight results and review forms for the previous media.
+        # Removing a rejected clip must never itself approve its post.
+        post.moderation_generation = uuid.uuid4()
+        post.save(update_fields=['moderation_generation'])
+        MediaScreeningJob.objects.filter(post=post).update(
+            state='cancelled', lease=None, lease_until=None, error_code='content_changed')
 
 
 def set_review(videos, status_value, reviewer):

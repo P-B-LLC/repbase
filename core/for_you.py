@@ -18,7 +18,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import PostFeedback, PostView, RecommendationPreferences, RepbaseUser, SuggestionDismissal
+from .models import Post, PostFeedback, PostVideo, PostView, RecommendationPreferences, RepbaseUser, SuggestionDismissal
 from .recommendations import (
     HIDEABLE_TOPICS,
     addable_topics,
@@ -33,6 +33,7 @@ from .recommendations import (
     serve_page,
     topic_label,
 )
+from .resilient_cache import cache_is_available
 from .serializers import (
     ForYouPageSerializer,
     ForYouPostSerializer,
@@ -43,6 +44,7 @@ from .serializers import (
     UpdateForYouPreferencesSerializer,
 )
 from .suggestions import MAX_SUGGESTIONS, suggest_people
+from .throttles import CacheUnavailable
 from .views import (
     FeedCursorPagination,
     annotate_social_counts,
@@ -112,6 +114,12 @@ class ForYouView(APIView):
         responses={200: ForYouPageSerializer},
     )
     def get(self, request):
+        # Without the cache every ranking would rebuild the shared lists from
+        # the database, at the moment it can least afford that. Workouts,
+        # meals, the planner and the Following feed need none of this and
+        # carry on; this page says to come back shortly.
+        if not cache_is_available():
+            raise CacheUnavailable()
         viewer = profile_for(request.user)
         size = _page_size(request)
         cursor = request.query_params.get("cursor")
@@ -127,6 +135,12 @@ class ForYouView(APIView):
         servable = annotate_social_counts(
             viewer,
             visible_posts_for(viewer, posts_for_cards().filter(pk__in=wanted)),
+        ).exclude(
+            # A published own post can be made private after this ranking.
+            # General author access must not keep it on the shared feed.
+            visibility=Post.Visibility.PRIVATE,
+        ).exclude(
+            Exists(PostVideo.objects.filter(post=OuterRef("pk")).exclude(status=PostVideo.Status.APPROVED))
         ).exclude(
             # Turned down since it was ranked. "More like this" stays where it
             # is: the reader wants it, and a retried page should show it.

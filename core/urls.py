@@ -1,4 +1,5 @@
 from django.urls import path
+from .consent_views import SafetyConsentView, AccountAgreementView
 from .video_pipeline_views import UploadStart, UploadFinish, PlaybackEvent, serve_asset
 from rest_framework.routers import DefaultRouter
 from .access_views import (MyAccessView, AccessUsersView, UserAccessView, UserStatusView,
@@ -96,6 +97,8 @@ router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
 urlpatterns = [
+    path('me/agreements/', AccountAgreementView.as_view(), name='account-agreements'),
+    path('me/safety-consent/', SafetyConsentView.as_view(), name='safety-consent'),
     path('social/posts/<int:post_id>/video-upload/', UploadStart.as_view(), name='video-upload-start'),
     path('video-uploads/<uuid:job_id>/complete/', UploadFinish.as_view(), name='video-upload-complete'),
     path('video-events/', PlaybackEvent.as_view(), name='video-event'),

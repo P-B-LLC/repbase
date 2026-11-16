@@ -4,9 +4,10 @@ The remote classifier supplements human reports; it is not an Apple approval
 guarantee. Only explicitly public-facing text and uploaded photos are sent.
 
 Consent is checked here rather than trusted from the client's behaviour. The
-app asks per submission, but a build from last month, a script, or curl does
+legacy app asks per submission, but a build from last month, a script, or curl does
 not -- and "the app shows a dialog" is not a property the server can rely on.
-So a submission has to carry the consent version this server requires, and a
+New clients save a versioned account choice; withdrawal overrides old headers.
+Otherwise a submission has to carry the consent version this server requires, and a
 request without it is refused before anything leaves the machine. Bumping
 MODERATION_CONSENT_VERSION invalidates every older client at once, which is
 the point of versioning it: if what is disclosed changes, agreement to the
@@ -46,8 +47,8 @@ class ModerationUnavailable(APIException):
 class ModerationConsentRequired(PermissionDenied):
     default_detail = {
         'detail': (
-            'This submission needs permission for safety review before it can be sent. '
-            'Update the app, then try again.'
+            'Review your account agreements or safety-review settings before sharing. '
+            'Nothing was submitted for review.'
         ),
         'code': 'moderation_consent_required',
     }
@@ -64,9 +65,15 @@ CONSENT_HEADER = 'HTTP_' + CONSENT_HEADER_NAME.upper().replace('-', '_')
 
 
 def consent_given(request):
-    """Whether this request carries agreement to the current disclosure."""
+    """Saved account choice takes precedence over legacy per-submission headers."""
     if request is None:
         return False
+    user = getattr(request, 'user', None)
+    if user is not None and user.is_authenticated:
+        from .models import ModerationConsent
+        choice = ModerationConsent.objects.filter(user=user).first()
+        if choice is not None:
+            return choice.granted and choice.version == settings.MODERATION_ACCOUNT_CONSENT_VERSION
     supplied = (request.META.get(CONSENT_HEADER) or '').strip()
     return bool(supplied) and supplied == settings.MODERATION_CONSENT_VERSION
 

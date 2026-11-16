@@ -52,6 +52,21 @@ class RecentApiMetric(models.Model):
         constraints = [models.UniqueConstraint(fields=['bucket', 'endpoint', 'method'], name='unique_recent_api_metric')]
 
 
+class MetricFlushReceipt(models.Model):
+    """One batch of buffered API metrics that has reached the tables above.
+
+    Written in the same transaction as the counts, so a flush retried after any
+    failure finds this row and adds nothing a second time. See
+    `core.metric_buffer`.
+    """
+
+    batch_id = models.CharField(max_length=32, unique=True)
+    applied_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    requests = models.PositiveBigIntegerField(default=0)
+    #: Observations web workers could not buffer and reported with this batch.
+    lost_observations = models.PositiveBigIntegerField(default=0)
+
+
 class ApiAlert(models.Model):
     """One ongoing problem with one route, from opened to resolved.
 

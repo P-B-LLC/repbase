@@ -1,3 +1,45 @@
+# Social Milestone 1: A Baseline, and Metrics Out of the Request
+
+**Status:** Done on `feature/social-m1-baseline`, awaiting review; not deployed
+**Date:** 2026-11-09
+**Area:** Backend / load testing, API metrics, Redis failure handling, feed statistics
+
+## Why
+
+Before Social grows, it has to be able to grow without slowing workout logging, food
+tracking or the planner. Two things stood in the way: nothing measured what a request
+costs under mixed load, and each API request took row locks on shared counter rows.
+An unreachable Redis also turned out to fail every save.
+
+## What Was Changed
+
+- **`loadtest/`**: a repeatable mixed-load harness with configurable budgets, kept out
+  of the running application.
+- **Buffered API metrics** (`core/metric_buffer.py`, `flush_api_metrics`): one Redis
+  call per request, flushed every 30 to 60 seconds with a per-batch receipt so a retry
+  adds nothing. Behind `ANALYTICS_BUFFERED`, off by default.
+- **`core/resilient_cache.py`**: a failed Redis call is a cache miss, with 250 ms
+  timeouts and a circuit breaker. Sign-in, registration and password reset refuse with
+  a 503, and For You sheds itself.
+- **Bounded feed statistics**: stale rows stand in for up to 6 hours, recounts are one
+  request at a time and capped, and readers ask the next job run to repair what they
+  found. Per-reader cache keys carry a ranking version.
+
+## Verification
+
+Full numbers are in `loadtest/baselines/2026-11-09/REPORT.md`. At the expected load,
+analytics SQL went from 5 statements per request to 0 and all SQL from 12.9 to 7.9.
+With Redis unreachable, saves carried on where they had previously all failed.
+Measured on a laptop, so absolute CPU, latency and connection budgets are unproven.
+
+## Needs To Be Changed / Improved
+
+- Run the harness on hardware matching the hosting plan.
+- The core p95 regression budget needs a longer run: at about 500 samples it is noise.
+- `repbase-metrics-flush.timer` must be installed before `ANALYTICS_BUFFERED` is on.
+
+---
+
 # Performance Fix: Repost Feed N+1 Queries
 
 **Status:** Done, committed

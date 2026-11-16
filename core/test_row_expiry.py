@@ -66,7 +66,7 @@ class SearchingStillFallsBackAfterPruningTests(RepbaseAPITestMixin, APITestCase)
 
     def test_an_outage_serves_the_stale_entry_a_prune_left_behind(self):
         entry = FoodSearchCache.objects.create(
-            term="oats", payload=[{"description": "Oats, rolled"}]
+            term="off:v1:search:oats", payload=[{"description": "Oats, rolled"}]
         )
         aged(entry, "fetched_at", FoodSearchCache.LIFETIME + timedelta(days=1))
         FoodSearchCache.prune()

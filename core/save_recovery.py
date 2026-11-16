@@ -12,20 +12,37 @@ from rest_framework.response import Response
 from .models import RepbaseUser, SaveReceipt
 
 
+#: The header documented on every create that replays. A module constant so
+#: an action that creates (`/sessions/log/`) documents exactly the same thing.
+IDEMPOTENCY_KEY_PARAMETER = OpenApiParameter(
+    name="Idempotency-Key", type=OpenApiTypes.UUID, location=OpenApiParameter.HEADER,
+    required=False, description=(
+        "Persist a fresh UUID per intended create and reuse it with the same JSON "
+        "body on retry. Successful responses are replayed without a second create. "
+        "Reusing the key with changed input returns 409. Keys are scoped to the "
+        "authenticated account and endpoint and retained until account deletion."
+    ),
+)
+
+
 class IdempotentCreateMixin:
-    @extend_schema(parameters=[OpenApiParameter(
-        name="Idempotency-Key", type=OpenApiTypes.UUID, location=OpenApiParameter.HEADER,
-        required=False, description=(
-            "Persist a fresh UUID per intended create and reuse it with the same JSON "
-            "body on retry. Successful responses are replayed without a second create. "
-            "Reusing the key with changed input returns 409. Keys are scoped to the "
-            "authenticated account and endpoint and retained until account deletion."
-        ),
-    )])
+    @extend_schema(parameters=[IDEMPOTENCY_KEY_PARAMETER])
     def create(self, request, *args, **kwargs):
+        create = super().create
+        return self.idempotent(request, lambda: create(request, *args, **kwargs))
+
+    def idempotent(self, request, perform):
+        """`perform()`'s response, replayed from its receipt on a retry.
+
+        `create` above is the ordinary use. An action that creates something
+        calls this with its own work, and gets the same guarantees: the
+        receipt is keyed by account, path and key, written in the same
+        transaction as whatever `perform` writes, and a changed body under a
+        used key is a 409. Without a key, `perform` simply runs.
+        """
         raw_key = request.headers.get("Idempotency-Key")
         if not raw_key:
-            return super().create(request, *args, **kwargs)
+            return perform()
         try:
             key = uuid.UUID(raw_key)
         except (ValueError, AttributeError):
@@ -54,7 +71,7 @@ class IdempotentCreateMixin:
                 if receipt.request_hash != fingerprint:
                     return Response({"detail": "This save key was already used with different values."}, status=409)
                 return Response(receipt.response, status=receipt.status_code)
-            response = super().create(request, *args, **kwargs)
+            response = perform()
             if 200 <= response.status_code < 300:
                 SaveReceipt.objects.create(
                     owner=owner, path=request.path, key=key, request_hash=fingerprint,
