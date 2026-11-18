@@ -1292,9 +1292,17 @@ class IndexPlanTests(TestCase):
                 source_post=cls.source, original_post=cls.source, sound=cls.sound,
             )
             PostHashtag.objects.create(post=post, tag="legday")
+        # Rows the queries must skip. With only matching rows, a planner with
+        # fresh statistics rightly walks any index and filters, and which one
+        # it picked depended on what the rest of the suite left behind.
+        for n in range(300):
+            other = Post.objects.create(author=cls.author, kind=Post.Kind.MEDIA)
+            PostHashtag.objects.create(post=other, tag=f"other{n % 10}")
 
     def plan(self, queryset):
         with connection.cursor() as cursor:
+            # Fresh statistics, as a long-lived table would have.
+            cursor.execute("ANALYZE core_post, core_posthashtag")
             cursor.execute("SET LOCAL enable_seqscan = off")
             cursor.execute("SET LOCAL enable_bitmapscan = off")
         return queryset.explain()
