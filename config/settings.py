@@ -86,6 +86,20 @@ FEED_STATS_STALE_SECONDS = int(os.getenv('FEED_STATS_STALE_SECONDS', str(6 * 60 
 # which are the people already trusted with this data; set it to a pager or
 # shared address when that is not the same thing.
 ANALYTICS_ALERT_EMAILS = os.getenv('ANALYTICS_ALERT_EMAILS', '')
+# What the learned ranking model reads outcomes from: legacy (the furthest
+# position a player reached) or measured (what the device measured). Change
+# it only once measured attention is arriving; see RECOMMENDATIONS.md.
+FOR_YOU_RANKER_LABELS = os.getenv('FOR_YOU_RANKER_LABELS', 'legacy')
+# The stage a part of the new Social is at when nobody has set one
+# (core.rollout): off, staff, cohort or everyone. Everything in development,
+# nothing in production until `social_rollout set` releases it.
+SOCIAL_ROLLOUT_DEFAULT = os.getenv('SOCIAL_ROLLOUT_DEFAULT', 'everyone' if DEBUG else 'off')
+# A shorter retention for viewing history and "not interested" than the 90
+# days the ranking reads back. Empty keeps 90; a larger number is ignored.
+RECOMMENDATION_HISTORY_DAYS = int(os.getenv('RECOMMENDATION_HISTORY_DAYS') or 0) or None
+# The share of For You exposures whose ranking features are kept, for 14 days,
+# to train the learned model on. 1 keeps all of them, 0 none.
+FOR_YOU_TRAINING_SAMPLE_RATE = float(os.getenv('FOR_YOU_TRAINING_SAMPLE_RATE', '1'))
 
 # The cache is where the insights login's rate limit is counted, so what backs
 # it decides whether that limit means anything.
@@ -320,6 +334,9 @@ REST_FRAMEWORK = {
         # allowance the whole userbase shares. Generous, because the
         # cache absorbs anything anyone has searched for lately.
         'food_search': os.environ.get('REPBASE_THROTTLE_FOOD', '120/hour'),
+        # HealthKit anchored pages are bounded separately (500 workouts).
+        # Retries must not become an unlimited account-locked write loop.
+        'health_import': os.environ.get('REPBASE_THROTTLE_HEALTH_IMPORT', '120/hour'),
         # Wider, because a person who mistypes a code needs several
         # tries and the code itself only allows five before it is
         # spent. Five tries at six codes is the honest ceiling.
@@ -357,6 +374,9 @@ REST_FRAMEWORK = {
         # Following is how spam accounts announce themselves to everybody at
         # once. Generous for a person, tight for a script.
         'follow': os.environ.get('REPBASE_THROTTLE_FOLLOW', '200/hour'),
+        # Invitations target at most 20 followers each; an explicit grant cap
+        # bounds projection work independently of this per-owner write limit.
+        'calendar_invite': os.environ.get('REPBASE_THROTTLE_CALENDAR_INVITE', '30/hour'),
         # Reports reach a human queue. A person files a few; a flood is an
         # attempt to bury the queue or to get something taken down by volume.
         'report': os.environ.get('REPBASE_THROTTLE_REPORT', '30/hour'),
@@ -508,8 +528,9 @@ else:
         },
     }
 
-# Open Food Facts: no API key. Shared database gates bound upstream requests
-# across workers; cached lookups do not consume provider allowance.
+# Open Food Facts: no API key. Shared rolling-minute gates permit a modest
+# burst (10 searches / 15 product reads) across workers; cached lookups do not
+# consume provider allowance. Discovery uses a separately pinned public host.
 OPEN_FOOD_FACTS_ORIGIN = os.getenv("OPEN_FOOD_FACTS_ORIGIN", "https://world.openfoodfacts.org")
 OPEN_FOOD_FACTS_USER_AGENT = os.getenv("OPEN_FOOD_FACTS_USER_AGENT", "Rytivo/1.0 (support@rytivo.app)")
 

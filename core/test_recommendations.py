@@ -45,6 +45,7 @@ from .fixtures_for_tests import (
     workout_post,
 )
 from .models import (
+    Cookbook,
     Block,
     Follow,
     Personalization,
@@ -355,7 +356,13 @@ class ExperimentTests(SimpleTestCase):
 
     def test_without_an_experiment_everyone_gets_the_settings(self):
         self.assertEqual(experiment_variant(7), (None, {}))
-        self.assertEqual(FeedWeights.for_viewer(7), (FeedWeights.from_settings(), None))
+        # With nothing released to anybody (`core.rollout`), which is the
+        # default; the stages themselves are read from the database.
+        from . import rollout
+
+        stages = {name: "off" for name in rollout.FLAGS}
+        with mock.patch.object(rollout, "stages", return_value=stages):
+            self.assertEqual(FeedWeights.for_viewer(7), (FeedWeights.from_settings(), None))
 
     def test_readers_split_evenly_and_stay_put(self):
         with override_settings(FOR_YOU_EXPERIMENT=self.config):
@@ -701,7 +708,7 @@ class RespondingToFeedbackTests(ForYouTestCase):
         PostLike.objects.create(post=liked, user=reader)
         PostComment.objects.create(post=commented, author=reader, body="nice")
         Post.objects.create(author=reader, kind=Post.Kind.REPOST, repost_of=reposted)
-        SavedFoodMeal.objects.create(owner=reader, name="Copy", source_post=saved_meal)
+        SavedFoodMeal.objects.create(cookbook=Cookbook.objects.create(owner=reader, name="Recipes"), owner=reader, name="Copy", source_post=saved_meal)
         WorkoutTemplate.objects.create(owner=reader, name="Copy", workout_type="lifting", source_post=saved_workout)
         shown = set(self.ids(self.feed(token, page_size=50)))
         for post in (liked, commented, reposted, saved_meal, saved_workout):

@@ -1,5 +1,8 @@
 from django.urls import path
 from .consent_views import SafetyConsentView, AccountAgreementView
+from .cookbook_views import CookbookViewSet
+from .calendar_sharing_views import (CalendarInvitationViewSet, CalendarShareRecipientViewSet,
+                                     CalendarShareViewSet, SharedCalendarViewSet)
 from .video_pipeline_views import UploadStart, UploadFinish, PlaybackEvent, serve_asset
 from rest_framework.routers import DefaultRouter
 from .access_views import (MyAccessView, AccessUsersView, UserAccessView, UserStatusView,
@@ -7,12 +10,14 @@ from .access_views import (MyAccessView, AccessUsersView, UserAccessView, UserSt
 from .push_views import PushDeviceRegistrationView
 from .community_views import CommunitySpotlightView
 from .web_auth import BrowserSessionView, BrowserLoginView, BrowserRegisterView, BrowserLogoutView
+from .health_views import AppleHealthConnectionView, HealthWorkoutListView
 
 from .for_you import (
     ForYouHistoryView,
     ForYouPreferencesView,
     ForYouView,
     ImpressionsView,
+    SocialFeaturesView,
     SuggestedPeopleView,
     SuggestionDismissalView,
 )
@@ -48,6 +53,7 @@ from .views import (
     RegisterView,
     RepbaseUserViewSet,
     FoodSearchView,
+    FoodDiscoverView,
     PersonalizationView,
     PasswordResetConfirmView,
     PasswordResetRequestView,
@@ -71,10 +77,15 @@ router.register("workout-exercises", WorkoutExerciseViewSet)
 router.register("schedules", WorkoutScheduleViewSet)
 router.register("recurrences", WorkoutRecurrenceViewSet)
 router.register("planner", PlannerEntryViewSet)
+router.register("calendar/shares", CalendarShareViewSet, basename="calendar-share")
+router.register("calendar/invitations", CalendarInvitationViewSet, basename="calendar-invitation")
+router.register("calendar/share-recipients", CalendarShareRecipientViewSet, basename="calendar-share-recipient")
+router.register("calendar/shared", SharedCalendarViewSet, basename="shared-calendar")
 router.register("gyms", GymViewSet)
 router.register("food/meals", FoodMealViewSet)
 router.register("food/entries", FoodEntryViewSet)
 router.register("food/saved-meals", SavedFoodMealViewSet)
+router.register("food/cookbooks", CookbookViewSet)
 router.register("social/posts", PostViewSet)
 router.register("social/comments", PostCommentViewSet)
 # An explicit basename: this viewset is a second view over Post, and the
@@ -96,7 +107,11 @@ router.register("cycles", WorkoutCycleViewSet, basename="cycle")
 router.register("body-weight", BodyWeightEntryViewSet)
 router.register("step-counts", DailyStepCountViewSet, basename="step-count")
 
+from .sound_views import PromptsView, RestoreSoundView, SoundPostsView, SoundsView, SoundView  # noqa: E402
+
 urlpatterns = [
+    path("integrations/apple-health/", AppleHealthConnectionView.as_view(), name="apple-health-connection"),
+    path("integrations/workouts/", HealthWorkoutListView.as_view(), name="health-workouts"),
     path('me/agreements/', AccountAgreementView.as_view(), name='account-agreements'),
     path('me/safety-consent/', SafetyConsentView.as_view(), name='safety-consent'),
     path('social/posts/<int:post_id>/video-upload/', UploadStart.as_view(), name='video-upload-start'),
@@ -107,6 +122,11 @@ urlpatterns = [
     path('web/login/', BrowserLoginView.as_view(), name='web-login'),
     path('web/register/', BrowserRegisterView.as_view(), name='web-register'),
     path('web/logout/', BrowserLogoutView.as_view(), name='web-logout'),
+    path('social/sounds/', SoundsView.as_view(), name='sounds'),
+    path('social/sounds/<int:pk>/', SoundView.as_view(), name='sound'),
+    path('social/sounds/<int:pk>/restore/', RestoreSoundView.as_view(), name='sound-restore'),
+    path('social/sounds/<int:pk>/posts/', SoundPostsView.as_view(), name='sound-posts'),
+    path('social/prompts/', PromptsView.as_view(), name='post-prompts'),
     path('social/spotlight/', CommunitySpotlightView.as_view(), name='community-spotlight'),
     path('me/access/', MyAccessView.as_view(), name='my-access'),
     path('administration/users/', AccessUsersView.as_view(), name='access-users'),
@@ -122,6 +142,7 @@ urlpatterns = [
     ),
     path("social/for-you/", ForYouView.as_view(), name="for-you"),
     path("social/impressions/", ImpressionsView.as_view(), name="impressions"),
+    path("social/features/", SocialFeaturesView.as_view(), name="social-features"),
     path(
         "social/for-you/preferences/",
         ForYouPreferencesView.as_view(),
@@ -141,6 +162,7 @@ urlpatterns = [
     path("auth/register/", RegisterView.as_view(), name="register"),
     path("auth/login/", LoginView.as_view(), name="login"),
     path("food/search/", FoodSearchView.as_view(), name="food-search"),
+    path("food/discover/", FoodDiscoverView.as_view(), name="food-discover"),
     path(
         "me/personalization/",
         PersonalizationView.as_view(),

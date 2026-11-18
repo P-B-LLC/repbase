@@ -33,6 +33,8 @@ def main():
         call_command('prune_expired_rows')
         call_command('retry_media_deletions')
         call_command('transfer_media', audit=True)
+        # Last, so it counts what the cleanup above left.
+        call_command('roll_up_social_insights')
 
 
 if __name__ == '__main__':

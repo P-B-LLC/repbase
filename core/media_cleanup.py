@@ -8,7 +8,7 @@ from django.db.models import Q
 from django.db.models.signals import post_delete
 from django.dispatch import receiver
 
-from .models import PendingMediaDeletion, Post, PostVideo, RepbaseUser
+from .models import PendingMediaDeletion, Post, PostVideo, RepbaseUser, Sound
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,8 @@ def _delete_pending_media(job_id, using):
     # Never remove a file that another surviving row still references.
     if (RepbaseUser.objects.using(using).filter(profile_photo=job.name).exists()
             or Post.objects.using(using).filter(Q(image=job.name) | Q(feed_image=job.name)).exists()
-            or PostVideo.objects.using(using).filter(file=job.name).exists()):
+            or PostVideo.objects.using(using).filter(file=job.name).exists()
+            or Sound.objects.using(using).filter(audio_key=job.name).exists()):
         job.delete(using=using)
         return True
     try:
@@ -74,3 +75,13 @@ def queue_deleted_media(sender, instance, using, **kwargs):
         name = uploaded.name
         uploaded.close()
         queue_media_deletion(name, using)
+
+
+@receiver(post_delete, sender=Sound)
+def queue_deleted_sound_audio(sender, instance, using, **kwargs):
+    # A sound's audio is a stored name rather than a file field, so it has a
+    # receiver of its own. Deleted with its owner's account; a sound that is
+    # only taken down keeps its file, so the removal can be reversed.
+    if instance.audio_key:
+        queue_media_deletion(instance.audio_key, using)
+

@@ -582,7 +582,7 @@ class BatchSizeTests(RepbaseAPITestMixin, APITestCase):
         ingredients = [{"name": f"Thing {n}"} for n in range(101)]
         response = self.client.post(
             "/api/v1/food/saved-meals/",
-            {"name": "Feast", "ingredients": ingredients},
+            {**self.recipe_destination(), "name": "Feast", "ingredients": ingredients},
             format="json",
         )
         self.assertEqual(response.status_code, 400)
@@ -606,6 +606,8 @@ class BatchSizeTests(RepbaseAPITestMixin, APITestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_ordinary_batches_still_work(self):
+        self.client.patch("/api/v1/integrations/apple-health/", {
+            "enabled": True, "consent_version": "apple-health-v1"}, format="json")
         days = [{"day": "2026-01-01", "steps": 9000}, {"day": "2026-01-02", "steps": 12000}]
         response = self.client.post("/api/v1/step-counts/record/", {"days": days}, format="json")
         self.assertEqual(response.status_code, 204)

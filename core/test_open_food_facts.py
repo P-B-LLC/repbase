@@ -78,7 +78,8 @@ class OpenFoodFactsTests(TestCase):
                 off.barcode(code)
 
     def test_global_request_gate_is_shared_and_separate_by_kind(self):
-        off._reserve_slot("search")
+        for _ in range(10):
+            off._reserve_slot("search")
         with self.assertRaises(off.FoodSourceUnavailable):
             off._reserve_slot("search")
         off._reserve_slot("barcode")
@@ -117,7 +118,7 @@ class OpenFoodFactsTests(TestCase):
 
     def test_oversized_response_is_unavailable(self):
         response = mock.MagicMock()
-        response.__enter__.return_value.read.return_value = b" " * (off.MAX_BYTES + 1)
+        response.__enter__.return_value.read1.return_value = b" " * (off.MAX_BYTES + 1)
         with mock.patch.object(off.urllib.request, "build_opener") as opener:
             opener.return_value.open.return_value = response
             with self.assertRaises(off.FoodSourceUnavailable):
@@ -133,15 +134,16 @@ class OpenFoodFactsTests(TestCase):
     @override_settings(OPEN_FOOD_FACTS_ORIGIN="https://world.openfoodfacts.net")
     def test_transport_has_identity_timeout_and_bounded_read(self):
         response = mock.MagicMock()
-        response.__enter__.return_value.read.return_value = json.dumps({"products": []}).encode()
+        response.__enter__.return_value.read1.side_effect = [json.dumps({"products": []}).encode(), b""]
         with mock.patch.object(off.urllib.request, "build_opener") as opener:
             opener.return_value.open.return_value = response
             self.assertEqual(off.search("oats"), [])
         request = opener.return_value.open.call_args.args[0]
         self.assertTrue(request.full_url.startswith("https://world.openfoodfacts.net/"))
         self.assertIn("Rytivo", request.get_header("User-agent"))
-        self.assertEqual(opener.return_value.open.call_args.kwargs["timeout"], 8)
-        response.__enter__.return_value.read.assert_called_once_with(off.MAX_BYTES + 1)
+        self.assertGreater(opener.return_value.open.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(opener.return_value.open.call_args.kwargs["timeout"], 2)
+        response.__enter__.return_value.read1.assert_has_calls([mock.call(65536), mock.call(65536)])
 
 
 class OpenFoodFactsAPITests(RepbaseAPITestMixin, APITestCase):

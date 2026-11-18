@@ -334,6 +334,8 @@ class TemplateActivityTests(Authenticated):
         self.assertTrue(all(row["activity"] for row in listed.data["results"]))
 
     def test_health_imports_are_their_familys_default(self):
+        self.client.patch("/api/v1/integrations/apple-health/", {
+            "enabled": True, "consent_version": "apple-health-v1"}, format="json")
         started = timezone.now() - timedelta(hours=2)
         response = self.client.post("/api/v1/sessions/import-health/", {"workouts": [{
             "external_id": "abc", "activity": "biking",

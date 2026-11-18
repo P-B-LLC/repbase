@@ -7,10 +7,12 @@ over their page, and impressions.
 
 from urllib.parse import urlencode
 
+from django.core import signing
 from django.db import transaction
-from django.db.models import Exists, OuterRef
+from django.db.models import Exists, OuterRef, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
@@ -18,6 +20,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import rollout, social_insights
+from .attention import MAX_BODY_BYTES, record_summaries
 from .models import Post, PostFeedback, PostVideo, PostView, RecommendationPreferences, RepbaseUser, SuggestionDismissal
 from .recommendations import (
     HIDEABLE_TOPICS,
@@ -40,15 +44,19 @@ from .serializers import (
     ForYouPreferencesSerializer,
     ImpressionBatchSerializer,
     ImpressionResultSerializer,
+    SocialFeaturesSerializer,
     SuggestedPersonSerializer,
     UpdateForYouPreferencesSerializer,
 )
 from .suggestions import MAX_SUGGESTIONS, suggest_people
 from .throttles import CacheUnavailable
 from .views import (
+    ATTACHMENTS_PARAMETER,
+    PUBLIC_AND_STANDING,
     FeedCursorPagination,
     annotate_social_counts,
     posts_for_cards,
+    wants_summaries,
     profile_for,
     visible_posts_for,
     without_blocked_authors,
@@ -110,19 +118,24 @@ class ForYouView(APIView):
                     "for more is refused rather than reduced."
                 ),
             ),
+            ATTACHMENTS_PARAMETER,
         ],
         responses={200: ForYouPageSerializer},
     )
     def get(self, request):
+        viewer = profile_for(request.user)
+        size = _page_size(request)
+        cursor = request.query_params.get("cursor")
+        # The ranking switched off, or a page of the plain list being
+        # continued: newest first, from the database alone.
+        if (cursor or "").startswith(_RECENT_PREFIX) or not rollout.enabled("ranked_for_you", viewer):
+            return self._recent(request, viewer, size, cursor)
         # Without the cache every ranking would rebuild the shared lists from
         # the database, at the moment it can least afford that. Workouts,
         # meals, the planner and the Following feed need none of this and
         # carry on; this page says to come back shortly.
         if not cache_is_available():
             raise CacheUnavailable()
-        viewer = profile_for(request.user)
-        size = _page_size(request)
-        cursor = request.query_params.get("cursor")
         session, offset = None, 0
         if cursor:
             try:
@@ -130,11 +143,12 @@ class ForYouView(APIView):
             except BadCursor:
                 raise ValidationError({"cursor": "That cursor is not one this feed issued."})
 
+        summary = wants_summaries(request)
         page = serve_page(viewer, session, offset, size)
         wanted = [item.pk for item in page.items]
         servable = annotate_social_counts(
             viewer,
-            visible_posts_for(viewer, posts_for_cards().filter(pk__in=wanted)),
+            visible_posts_for(viewer, posts_for_cards(summary=summary).filter(pk__in=wanted)),
         ).exclude(
             # A published own post can be made private after this ranking.
             # General author access must not keep it on the shared feed.
@@ -161,7 +175,8 @@ class ForYouView(APIView):
             next_link = request.build_absolute_uri(
                 request.path + "?" + _query(make_cursor(page.session, page.next_offset), request)
             )
-        data = ForYouPostSerializer(posts, many=True, context={"request": request}).data
+        context = {"request": request, **({"attachments": "summary"} if summary else {})}
+        data = ForYouPostSerializer(posts, many=True, context=context).data
         response = Response({"next": next_link, "previous": None, "results": data})
         if page.duration_ms is not None:
             # Visible in any browser's network panel, and to anything in front
@@ -170,10 +185,73 @@ class ForYouView(APIView):
         return response
 
 
+    def _recent(self, request, viewer, size, cursor):
+        """The newest public posts, in order: the page with the ranking off.
+
+        No cache, no statistics, no session -- one indexed query and the
+        same visibility rules as every other feed, so it works when the
+        ranking is the thing that is broken. Not personalised, and nothing
+        the reader turned down is shown.
+        """
+        before = None
+        if cursor and cursor.startswith(_RECENT_PREFIX):
+            try:
+                data = signing.loads(cursor[len(_RECENT_PREFIX):], salt=_RECENT_SALT)
+                before = (parse_datetime(data["p"]), int(data["i"]))
+            except (signing.BadSignature, KeyError, TypeError, ValueError):
+                before = None
+            if before is None or before[0] is None:
+                raise ValidationError({"cursor": "That cursor is not one this feed issued."})
+        elif cursor:
+            # A cursor from a ranking that has since been switched off: start
+            # the plain list from the top, not refuse the page.
+            before = None
+
+        summary = wants_summaries(request)
+        rows = annotate_social_counts(
+            viewer,
+            visible_posts_for(viewer, posts_for_cards(summary=summary), include_reposts=False),
+        ).filter(PUBLIC_AND_STANDING).exclude(author=viewer).exclude(
+            Exists(PostVideo.objects.filter(post=OuterRef("pk")).exclude(status=PostVideo.Status.APPROVED))
+        ).exclude(
+            Exists(PostFeedback.objects.filter(
+                viewer=viewer, post=OuterRef("pk"), kind__in=PostFeedback.REJECTING
+            ))
+        )
+        if before is not None:
+            rows = rows.filter(
+                Q(published_at__lt=before[0]) | Q(published_at=before[0], pk__lt=before[1])
+            )
+        posts = list(rows.order_by("-published_at", "-pk")[:size + 1])
+        more = len(posts) > size
+        posts = posts[:size]
+        for post in posts:
+            post._recommendation = ("fresh", "New in the community")
+        next_link = None
+        if more:
+            last = posts[-1]
+            token = _RECENT_PREFIX + signing.dumps(
+                {"p": last.published_at.isoformat(), "i": last.pk}, salt=_RECENT_SALT, compress=False
+            )
+            next_link = request.build_absolute_uri(request.path + "?" + _query(token, request))
+        context = {"request": request, **({"attachments": "summary"} if summary else {})}
+        data = ForYouPostSerializer(posts, many=True, context=context).data
+        return Response({"next": next_link, "previous": None, "results": data})
+
+
+#: Marks a cursor of the plain list, so a page of it is never mistaken for a
+#: position in a ranking, or the other way round.
+_RECENT_PREFIX = "recent."
+_RECENT_SALT = "for-you-recent"
+
+
 def _query(cursor, request):
     params = {"cursor": cursor}
-    if "page_size" in request.query_params:
-        params["page_size"] = request.query_params["page_size"]
+    # Carried forward, as a cursor link from the other feeds carries its
+    # query: the next page should be the page the client was reading.
+    for name in ("page_size", "attachments"):
+        if name in request.query_params:
+            params[name] = request.query_params[name]
     return urlencode(params)
 
 
@@ -194,15 +272,51 @@ class ImpressionsView(APIView):
         description=(
             "Record a batch of views. Posts the reader cannot see, and their "
             "own posts, are ignored rather than refused, so a client does not "
-            "need to know which of the posts it showed have since gone."
+            "need to know which of the posts it showed have since gone.\n\n"
+            "With `schema_version` 2 each event is a summary of one exposure "
+            "measured on the device, and the batch carries a `batch_id`: "
+            "sending the same batch again adds nothing and answers with "
+            "`duplicate` true. Figures beyond what could have happened are "
+            "brought down to it, not refused. A body over 64 kB is a 413."
         ),
     )
     def post(self, request):
+        # Before the body is parsed: fifty summaries are a few kilobytes, and
+        # nothing larger is one of these.
+        try:
+            declared = int(request.META.get("CONTENT_LENGTH") or 0)
+        except ValueError:
+            declared = 0
+        if declared > MAX_BODY_BYTES or (not declared and len(request.body) > MAX_BODY_BYTES):
+            social_insights.count("attention_oversize")
+            return Response(
+                {"detail": "That batch is too large. Send at most 50 events."},
+                status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            )
         body = ImpressionBatchSerializer(data=request.data)
         body.is_valid(raise_exception=True)
-        recorded = record_impressions(profile_for(request.user), body.validated_data["events"])
+        batch = body.validated_data
+        viewer = profile_for(request.user)
+        duplicate = False
+        if batch["schema_version"] == 2 and not rollout.enabled("measurement_v2", viewer):
+            # Switched off for this account. Accepted, so an app that has
+            # not heard yet does not retry for a day, and set aside.
+            social_insights.count("attention_batches_switched_off")
+            return Response(
+                ImpressionResultSerializer({"recorded": 0, "duplicate": False}).data,
+                status=status.HTTP_202_ACCEPTED,
+            )
+        if batch["schema_version"] == 2:
+            recorded, duplicate = record_summaries(
+                viewer, batch["batch_id"], batch["session_id"], batch["events"]
+            )
+            social_insights.count("attention_batches")
+            if duplicate:
+                social_insights.count("attention_duplicate_batches")
+        else:
+            recorded = record_impressions(viewer, batch["events"])
         return Response(
-            ImpressionResultSerializer({"recorded": recorded}).data,
+            ImpressionResultSerializer({"recorded": recorded, "duplicate": duplicate}).data,
             status=status.HTTP_202_ACCEPTED,
         )
 
@@ -321,6 +435,26 @@ class ForYouHistoryView(WritesAreSocialMixin, APIView):
             PostView.objects.filter(viewer=viewer).delete()
         forget_reasons(viewer)
         return Response(_preferences_payload(viewer, preferences))
+
+
+class SocialFeaturesView(APIView):
+    """Which parts of the new Social are on for this account."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="social_features_retrieve",
+        responses={200: SocialFeaturesSerializer},
+        description=(
+            "Which parts of the new Social this account has been given. The "
+            "app asks at launch and when it returns to the foreground, and "
+            "treats a part it is not told about, or a failed request, as off. "
+            "The server enforces the ones that are its to enforce -- takes, "
+            "sounds, measurement and ranking -- whatever the app does."
+        ),
+    )
+    def get(self, request):
+        return Response(SocialFeaturesSerializer(rollout.features_for(profile_for(request.user))).data)
 
 
 class SuggestedPeopleView(APIView):

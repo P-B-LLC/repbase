@@ -6,6 +6,8 @@ __pycache__/
 
 # Virtual environments
 .venv/
+.venv-local-workout/
+.local-workout-testing/
 venv/
 env/
 ENV/

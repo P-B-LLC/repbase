@@ -110,3 +110,41 @@ class DailyActiveAccount(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=['day', 'user'], name='unique_daily_active_account')]
+
+
+class SocialDailyCounter(models.Model):
+    """One day's count of one operational event on the social pages.
+
+    How many attention batches arrived, how many were repeats, how many
+    events were turned away: counted in the cache as they happen and written
+    here by `roll_up_social_insights`, so a figure outlives the cache and the
+    rows it was counted from. A name and a number -- nothing here says whose.
+    """
+
+    day = models.DateField(db_index=True)
+    name = models.CharField(max_length=60)
+    value = models.PositiveBigIntegerField(default=0)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["day", "name"], name="unique_social_daily_counter")]
+
+
+class SocialInsightSnapshot(models.Model):
+    """The social figures for the `window_days` ending on `day`, as written
+    by `roll_up_social_insights`.
+
+    The insights page reads these and never the rows behind them, so opening
+    it costs one indexed read whatever the size of the community. A figure
+    with fewer than `core.social_insights.SMALL_COHORT` people behind it is
+    left out before the row is written: what was never stored cannot be read
+    by the next person given access. Counts and rates only.
+    """
+
+    day = models.DateField()
+    window_days = models.PositiveSmallIntegerField()
+    figures = models.JSONField(default=dict)
+    computed_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["day", "window_days"], name="unique_social_snapshot")]
+        ordering = ("-day",)

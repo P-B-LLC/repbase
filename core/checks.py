@@ -209,34 +209,22 @@ def email_can_reach_a_real_person(app_configs, **kwargs):
     return problems
 
 
-@register(deploy=True)
-def scheduled_cleanup_is_running(app_configs, **kwargs):
-    """Are there rows a daily maintenance run would already have removed?
-
-    Three things have to happen on a clock rather than on a request, and
-    nothing in the application can make them happen -- `config.deploy
-    maintenance` does, and something has to call it. The failure mode is
-    silence: tables grow, storage keeps files no row points at, and the first
-    sign is a disk bill or a photo that outlived the account that uploaded it.
-
-    So this asks about the outcome rather than the ceremony. A job that runs
-    on a schedule and does nothing would satisfy "did it run"; it cannot
-    satisfy "is there anything left that it should have taken". Warnings
-    rather than errors, because a deployment that is a day old legitimately
-    has none of this, and an overdue row is a thing to fix rather than a
-    reason to refuse to start.
-    """
+def cleanup_is_overdue():
+    """What a daily maintenance run would already have removed, as phrases.
+    Empty when it is keeping up, and before the first migrate."""
     from datetime import timedelta
 
     from django.utils import timezone
 
     from .models import (
-        RECOMMENDATION_HISTORY_DAYS,
         FoodSearchCache,
         PendingMediaDeletion,
         PostView,
         SaveReceipt,
+        recommendation_history_days,
     )
+
+    RECOMMENDATION_HISTORY_DAYS = recommendation_history_days()
 
     now = timezone.now()
     overdue = []
@@ -271,6 +259,27 @@ def scheduled_cleanup_is_running(app_configs, **kwargs):
     if stale_views:
         overdue.append(f'{stale_views} viewing-history rows past the {RECOMMENDATION_HISTORY_DAYS}-day retention')
 
+    return overdue
+
+
+@register(deploy=True)
+def scheduled_cleanup_is_running(app_configs, **kwargs):
+    """Are there rows a daily maintenance run would already have removed?
+
+    Three things have to happen on a clock rather than on a request, and
+    nothing in the application can make them happen -- `config.deploy
+    maintenance` does, and something has to call it. The failure mode is
+    silence: tables grow, storage keeps files no row points at, and the first
+    sign is a disk bill or a photo that outlived the account that uploaded it.
+
+    So this asks about the outcome rather than the ceremony. A job that runs
+    on a schedule and does nothing would satisfy "did it run"; it cannot
+    satisfy "is there anything left that it should have taken". Warnings
+    rather than errors, because a deployment that is a day old legitimately
+    has none of this, and an overdue row is a thing to fix rather than a
+    reason to refuse to start.
+    """
+    overdue = cleanup_is_overdue()
     if not overdue:
         return []
     return [

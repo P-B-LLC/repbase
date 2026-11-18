@@ -7,6 +7,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ('core', '0087_link_workout_calendar_tasks'),
+        ('core', '0094_health_workout_summaries'),
     ]
 
     operations = [

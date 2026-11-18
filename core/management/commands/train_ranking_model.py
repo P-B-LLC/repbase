@@ -24,8 +24,16 @@ class Command(BaseCommand):
             help="Train and report, but leave the active model as it is.",
         )
 
+        parser.add_argument(
+            "--labels", choices=("legacy", "measured"), default=None,
+            help=(
+                "What outcomes are read from. Default: FOR_YOU_RANKER_LABELS, else legacy. "
+                "Use measured once the app is sending measured attention."
+            ),
+        )
+
     def handle(self, *args, **options):
-        model = train(activate=not options["no_activate"])
+        model = train(activate=not options["no_activate"], labels=options["labels"])
         if model is None:
             self.stdout.write(json.dumps({"trained": False, "reason": "nothing to learn from yet"}))
             return

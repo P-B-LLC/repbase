@@ -388,3 +388,23 @@ def dashboard(request):
             owner__user__is_staff=False).distinct().count(),
         'rows': rows, 'trend': trend,
     })
+
+
+@never_cache
+@login_required(login_url='/insights/login/')
+def social_dashboard(request):
+    """The social pages: whether they are useful and what they cost.
+
+    Reads `SocialInsightSnapshot` only -- figures worked out once a day by
+    `roll_up_social_insights`, with small groups already left out -- so this
+    page gives nobody a view of what one account did.
+    """
+    if not allowed(request.user):
+        return HttpResponseForbidden('Access denied.')
+    period = request.GET.get('days', '7')
+    if period not in ('7', '30'):
+        return HttpResponse('Choose a 7- or 30-day period.', status=400)
+    from .social_insights import page_context
+    return render(request, 'insights/social.html', {
+        **page_context(int(period)), 'presence_recorded': settings.ANALYTICS_ENABLED,
+    })

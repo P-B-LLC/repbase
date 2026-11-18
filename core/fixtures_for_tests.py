@@ -149,7 +149,10 @@ def workout_post(author, workout_type="lifting", caption="", hours_ago=1, visibi
         post=post, title=f"{workout_type.title()} session", workout_type=workout_type,
         performed_at=timezone.now(),
     )
-    PostWorkoutExercise.objects.create(post_workout=snapshot, name=exercise, order=1, set_count=3)
+    row = PostWorkoutExercise.objects.create(post_workout=snapshot, name=exercise, order=1, set_count=3)
+    # As the real publication path leaves it: the card figures stored.
+    snapshot.summarise([row])
+    snapshot.save()
     return aged(post, hours=hours_ago)
 
 
@@ -158,7 +161,9 @@ def meal_post(author, caption="", hours_ago=1, visibility="public"):
         author=author, kind=Post.Kind.MEAL, caption=caption or "lunch", visibility=visibility
     )
     snapshot = PostMeal.objects.create(post=post, name="Lunch", date=timezone.now().date())
-    PostMealEntry.objects.create(post_meal=snapshot, name="Rice", calories=Decimal("200.00"))
+    row = PostMealEntry.objects.create(post_meal=snapshot, name="Rice", calories=Decimal("200.00"))
+    snapshot.summarise([row])
+    snapshot.save()
     return aged(post, hours=hours_ago)
 
 

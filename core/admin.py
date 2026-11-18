@@ -32,6 +32,10 @@ from .models import (
     Exercise,
     Post,
     PostVideo,
+    SocialCohortMember,
+    SocialFlag,
+    SocialRolloutEvent,
+    Sound,
     PostComment,
     CommentReport,
     PostReport,
@@ -261,7 +265,15 @@ class PostAdmin(admin.ModelAdmin):
     inlines = (PostReportInline,)
     actions = ("hide_posts", "unhide_posts")
     # Set with is_hidden, never by hand: the moderation cooldown counts from it.
-    readonly_fields = ("hidden_at", "published_at")
+    # The rest is what the post was published as -- what it answers, its
+    # sound, the tags read out of its caption -- which is shown and not
+    # edited: a moderator hides a post, and does not rewrite its lineage. It
+    # also keeps two pickers listing every post there is off this page.
+    readonly_fields = (
+        "hidden_at", "published_at",
+        "is_take", "source_post", "original_post", "source_attachment_version",
+        "attachment_version", "sound", "hashtags", "topics",
+    )
 
     def get_queryset(self, request):
         return (
@@ -326,6 +338,42 @@ class PendingClipFilter(admin.SimpleListFilter):
 
     def value(self):
         return super().value() or ("waiting" if "review" not in self.used_parameters else None)
+
+
+@admin.register(Sound)
+class SoundAdmin(admin.ModelAdmin):
+    """Where a moderator takes a sound down, or puts one back.
+
+    One change removes it everywhere: the credit on every post using it, the
+    audio file, the ability to use it, and those posts from For You."""
+
+    list_display = ("title", "owner", "status", "removed_by_moderator", "reuse_permission", "created_at")
+    list_filter = ("status", "removed_by_moderator")
+    search_fields = ("title", "owner__user__username")
+    list_select_related = ("owner__user",)
+    actions = ("remove_sounds", "restore_sounds")
+    # Changed through the actions, which record who did it, and never by hand.
+    readonly_fields = (
+        "owner", "origin_post", "audio_key", "duration_ms", "status", "removed_at",
+        "removed_by_moderator", "prepare_attempts", "created_at",
+    )
+
+    def has_add_permission(self, request):
+        return False
+
+    @admin.action(description="Remove", permissions=["change"])
+    def remove_sounds(self, request, queryset):
+        from .sounds import set_removed
+
+        changed = sum(set_removed(sound, True, by_moderator=True) for sound in queryset)
+        self.message_user(request, f"Removed {changed} sounds.")
+
+    @admin.action(description="Restore", permissions=["change"])
+    def restore_sounds(self, request, queryset):
+        from .sounds import set_removed
+
+        changed = sum(set_removed(sound, False, by_moderator=True) for sound in queryset)
+        self.message_user(request, f"Restored {changed} sounds.")
 
 
 @admin.register(PostVideo)
@@ -447,4 +495,41 @@ class BlockAdmin(admin.ModelAdmin):
         return False
 
     def has_change_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SocialFlag)
+class SocialFlagAdmin(admin.ModelAdmin):
+    """Read here, changed with `manage.py social_rollout set`, which checks
+    the release gates and records the change. An edit here would do neither."""
+
+    list_display = ("name", "stage", "updated_at")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(SocialCohortMember)
+class SocialCohortMemberAdmin(admin.ModelAdmin):
+    list_display = ("user", "added_at", "note")
+    raw_id_fields = ("user",)
+
+
+@admin.register(SocialRolloutEvent)
+class SocialRolloutEventAdmin(admin.ModelAdmin):
+    list_display = ("created_at", "flag", "from_stage", "to_stage", "forced", "backend_revision", "client_build")
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
         return False

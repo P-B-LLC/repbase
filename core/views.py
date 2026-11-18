@@ -9,7 +9,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.hashers import check_password, make_password
 from django.core.mail import send_mail
 from django.contrib.auth import get_user_model
-from django.db import models, transaction
+from django.db import IntegrityError, models, transaction
 from django.db.models import (
     Case,
     Count,
@@ -48,10 +48,14 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.generics import RetrieveUpdateDestroyAPIView
 
+from . import rollout
 from . import food_sources
+from .food_nutrition import food_metadata_snapshot
 from .post_publication import publication_media, PublicationMediaError, remove_profile_photo
 from .moderation import CONSENT_HEADER_NAME, check_public_content
 from .save_recovery import IDEMPOTENCY_KEY_PARAMETER, IdempotentCreateMixin
+from .cookbook_serializers import (CookbookDestinationSerializer, CookbookSerializer,
+                                   PublishedCookbookSerializer)
 from .activities import ACTIVITIES, label as activity_label, session_trained
 from .schedule_sync import (
     delete_schedule_rows,
@@ -64,8 +68,9 @@ from .schedule_sync import (
     schedules_missing_tasks,
     unplan_workout_task,
 )
-from .serializers import SessionFinishSerializer
+from .serializers import SessionFinishSerializer, WorkoutCapabilitiesSerializer
 from .params import date_param, id_param
+from .health_imports import import_health_workouts, lock_health_owner, require_health_connection
 from .throttles import (
     FailedSignInLimit,
     ResilientScopedRateThrottle,
@@ -74,7 +79,17 @@ from .throttles import (
     ThrottleByActionMixin,
 )
 from .videos import ReceivedVideo, VideoUploadParser, attach_video, remove_video
+from .publication import (
+    PROMPTS,
+    checked_prompt,
+    hashtags_in,
+    lineage_from,
+    sound_for,
+    take_source_for,
+    write_hashtags,
+)
 from .models import (
+    Cookbook,
     CYCLE_MATERIALIZE_DAYS,
     BodyWeightEntry,
     DailyStepCount,
@@ -116,6 +131,7 @@ from .models import (
     CommentReport,
     PostFeedback,
     PostLike,
+    PostTried,
     PostMeal,
     PostMealEntry,
     PostPlannerEntry,
@@ -131,6 +147,8 @@ from .models import (
     sync_parent_completion,
     PlannerRecurrence,
     PlannerRecurrenceStep,
+    EVENT_CATEGORIES,
+    TASK_CATEGORIES,
     PLANNER_REPEAT_HORIZON_DAYS,
     SetType,
     performed_sessions,
@@ -203,6 +221,7 @@ from .serializers import (
     CreatePostSerializer,
     PostCommentSerializer,
     FoodSearchResultSerializer,
+    FoodDiscoveryResultSerializer,
     PasswordResetConfirmSerializer,
     PersonalizationSerializer,
     PasswordResetRequestSerializer,
@@ -421,6 +440,51 @@ class PersonalizationView(APIView):
         return record
 
 
+class FoodDiscoverView(APIView):
+    """Discover public products; fetch authoritative barcode details on selection."""
+
+    permission_classes = [IsAuthenticated]
+    throttle_scope = "food_search"
+    throttle_classes = [ResilientScopedRateThrottle]
+
+    @extend_schema(
+        operation_id="food_discover_list",
+        parameters=[OpenApiParameter(
+            name="q", type=str, location=OpenApiParameter.QUERY, required=True,
+            description="Submit a food/brand search (two characters minimum), not every keystroke.",
+        )],
+        responses={200: FoodDiscoveryResultSerializer(many=True)},
+        description=(
+            "Searches the Open Food Facts index for product identities only. "
+            "Candidates contain no nutrition or serving basis. Before offering portions "
+            "or logging, resolve the source_id barcode with food/search. Attribute Open Food Facts (ODbL)."
+        ),
+    )
+    def get(self, request):
+        term = FoodSearchCache.normalize(request.query_params.get("q", ""))[:100].strip()
+        if len(term) < 2:
+            return Response([])
+        try:
+            foods = food_sources.cached_lookup(term, discovery=True)
+        except food_sources.FoodSourceUnavailable as error:
+            return food_unavailable(error)
+        return Response(FoodDiscoveryResultSerializer(foods, many=True).data)
+
+
+def food_unavailable(error):
+    detail = (
+        "The food database is busy. Please retry shortly, or reuse a food you "
+        "have logged before."
+    ) if error.retry_after is not None else (
+        "The food database could not be reached. You can still reuse a "
+        "food you have logged before, or enter one by hand."
+    )
+    response = Response({"detail": detail}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+    if error.retry_after is not None:
+        response["Retry-After"] = str(error.retry_after)
+    return response
+
+
 class FoodSearchView(APIView):
     """Cached Open Food Facts search/barcodes without forwarding user identity."""
 
@@ -454,32 +518,15 @@ class FoodSearchView(APIView):
             return Response([])
 
         try:
-            key = food_sources.cache_key(term)
+            food_sources.cache_key(term)
         except ValueError as error:
             raise ValidationError({"q": str(error)})
 
-        cached = FoodSearchCache.objects.filter(term=key).first()
-        if cached is not None and cached.is_fresh:
-            return Response(cached.payload)
-
         try:
-            foods = food_sources.search(term)
-        except food_sources.FoodSourceUnavailable:
-            # A stale answer beats no answer: the figures are reference data,
-            # and a week-old calorie count for oats is still the calorie count
-            # for oats.
-            if cached is not None and timezone.now() - cached.fetched_at < FoodSearchCache.RETENTION:
-                return Response(cached.payload)
-            raise ServiceUnavailable(
-                "The food database could not be reached. You can still reuse a "
-                "food you have logged before, or enter one by hand."
-            )
-
-        payload = FoodSearchResultSerializer(foods, many=True).data
-        FoodSearchCache.objects.update_or_create(
-            term=key, defaults={"payload": payload}
-        )
-        return Response(payload)
+            foods = food_sources.cached_lookup(term)
+        except food_sources.FoodSourceUnavailable as error:
+            return food_unavailable(error)
+        return Response(FoodSearchResultSerializer(foods, many=True).data)
 
 
 class AfterResponse(Response):
@@ -1428,11 +1475,21 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
     serializer_class = WorkoutTemplateSerializer
     permission_classes = [IsAuthenticated]
 
+    @extend_schema(operation_id="workouts_capabilities_retrieve", responses=WorkoutCapabilitiesSerializer)
+    @action(detail=False, methods=["get"])
+    def capabilities(self, request):
+        return Response({"planned_sets_version": 1})
+
     def perform_update(self, serializer):
         with transaction.atomic():
             lock_schedule_rows(WorkoutSchedule.objects.filter(
                 owner=serializer.instance.owner, workout=serializer.instance
             ))
+            # Schedule editing locks its schedules/planner rows first. Keep
+            # that order before taking the parent lock shared with session
+            # snapshots and exercise-plan writes; never wait on a schedule
+            # while already holding its parent template lock.
+            get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=serializer.instance.pk)
             old_name = WorkoutTemplate.objects.values_list("name", flat=True).get(pk=serializer.instance.pk)
             saved = serializer.save()
             # The calendar shows the workout by name. A title somebody chose
@@ -1501,9 +1558,10 @@ class WorkoutTemplateViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.
                 }
             )
         with transaction.atomic():
-            delete_schedule_rows(WorkoutSchedule.objects.filter(
-                owner=instance.owner, workout=instance
-            ))
+            schedule_rows = WorkoutSchedule.objects.filter(owner=instance.owner, workout=instance)
+            lock_schedule_rows(schedule_rows)
+            get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=instance.pk)
+            delete_schedule_rows(schedule_rows)
             # A task for this workout on a day it was never planned on, as
             # the calendar could write before every workout task had a day.
             PlannerEntry.objects.filter(
@@ -1543,6 +1601,11 @@ class WorkoutExerciseViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
 
     def get_queryset(self):
         return self.scope_to_owner(super().get_queryset())
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=instance.workout_id)
+        instance.delete()
 
 
 @extend_schema_view(
@@ -1900,6 +1963,7 @@ class FoodMealViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
                         carbohydrate_grams=entry.carbohydrate_grams,
                         fat_grams=entry.fat_grams,
                         position=position,
+                        **food_metadata_snapshot(entry),
                     )
                     for position, entry in enumerate(
                         source_meal.entries.all(), start=1
@@ -1963,6 +2027,9 @@ class NutritionGoalView(APIView):
         return Response(serializer.data)
 
 
+@extend_schema_view(list=extend_schema(parameters=[OpenApiParameter(
+    name="cookbook", type=int, location=OpenApiParameter.QUERY,
+    description="Only recipes in this owned cookbook; omitted returns the owner's complete recipe library.")]))
 class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Meals kept to reuse."""
 
@@ -1971,10 +2038,20 @@ class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mo
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return self.scope_to_owner(super().get_queryset())
+        queryset = self.scope_to_owner(super().get_queryset())
+        cookbook_id = id_param(self.request, "cookbook")
+        return queryset.filter(cookbook_id=cookbook_id) if cookbook_id else queryset
 
     def perform_create(self, serializer):
         serializer.save(owner=self.owner_profile())
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        from .cookbooks import lock_owner, touch
+        lock_owner(self.owner_profile())
+        cookbook_id = instance.cookbook_id
+        instance.delete()
+        touch([cookbook_id])
 
     @extend_schema(
         request=ApplySavedMealSerializer,
@@ -2022,6 +2099,7 @@ class SavedFoodMealViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mo
                         carbohydrate_grams=ingredient.carbohydrate_grams,
                         fat_grams=ingredient.fat_grams,
                         position=used + offset + 1,
+                        **food_metadata_snapshot(ingredient),
                     )
                     for offset, ingredient in enumerate(ingredients)
                 ])
@@ -2201,21 +2279,34 @@ class GymViewSet(viewsets.ModelViewSet):
             ),
         ]
     ),
+    update=extend_schema(
+        parameters=[OpenApiParameter(
+            name="scope", type=str, location=OpenApiParameter.QUERY,
+            enum=["occurrence", "following"], default="occurrence",
+            description="Occurrence edits one entry. Following splits its repeat from this original occurrence onward; earlier and completed occurrences are unchanged.",
+        )],
+    ),
+    partial_update=extend_schema(
+        parameters=[OpenApiParameter(
+            name="scope", type=str, location=OpenApiParameter.QUERY,
+            enum=["occurrence", "following"], default="occurrence",
+            description="Occurrence edits one entry. Following may change repeat_every_days, repeat_on_weekdays or repeat_ends_on for this and future unfinished occurrences. Read access to a shared calendar never permits editing.",
+        )],
+    ),
     destroy=extend_schema(
         parameters=[
             OpenApiParameter(
                 name="scope",
                 type=str,
                 location=OpenApiParameter.QUERY,
-                enum=["following"],
+                enum=["occurrence", "following"],
+                default="occurrence",
                 description=(
-                    "`following` ends a repeating task from this day on, "
-                    "clearing the unfinished days after it. Omitted, only this "
-                    "day is removed -- a delete that quietly took a year of "
-                    "tasks with it is the worst kind of surprise, so the wider "
-                    "act has to be asked for. Days already ticked off are kept "
-                    "either way: ending a habit is not saying it never "
-                    "happened."
+                    "Following ends this repeat from the addressed original "
+                    "occurrence and removes unfinished future projections, "
+                    "preserving completed history and earlier dates. A "
+                    "completed occurrence cannot use following scope. "
+                    "Occurrence (the default) deletes only the addressed entry."
                 ),
             ),
         ]
@@ -2232,7 +2323,7 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
     # is eleven queries, and the serializer reads `subtasks` three times per
     # row -- for the array and for both counts -- so the prefetched cache is
     # what keeps that one query rather than thirty.
-    queryset = PlannerEntry.objects.select_related("owner", "workout").prefetch_related(
+    queryset = PlannerEntry.objects.select_related("owner", "workout", "recurrence").prefetch_related(
         "subtasks"
     )
     serializer_class = PlannerEntrySerializer
@@ -2283,16 +2374,17 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
             queryset = queryset.filter(completed_at__isnull=not wants_complete)
         return queryset
 
+    @transaction.atomic
     def perform_create(self, serializer):
-        with transaction.atomic():
-            self._create(serializer)
-
-    def _create(self, serializer):
+        owner = self.owner_profile()
+        type(owner).objects.select_for_update().get(pk=owner.pk)
+        serializer.validated_data.update(serializer.validate(dict(serializer.validated_data)))
+        if self.request.query_params.get("scope", "occurrence") != "occurrence":
+            raise ValidationError({"scope": "Create an entry before editing a series."})
         # Write-only, so they are not fields of the row being saved.
         interval = serializer.validated_data.pop("repeat_every_days", None)
         weekdays = serializer.validated_data.pop("repeat_on_weekdays", None)
         ends_on = serializer.validated_data.pop("repeat_ends_on", None)
-        owner = self.owner_profile()
         workout = serializer.validated_data.get("workout")
         lock_workout_days(owner, [(workout and workout.pk, serializer.validated_data.get("scheduled_date"))])
         entry = serializer.save(owner=owner)
@@ -2313,12 +2405,17 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
                 scheduled_time=entry.scheduled_time,
                 duration_minutes=entry.duration_minutes,
                 notes=entry.notes,
+                kind=entry.kind,
+                color=entry.color,
+                scheduling_timezone=entry.scheduling_timezone,
+                workout=entry.workout,
             )
             # The day the person actually filled in belongs to the rule too,
             # and is already written -- so it is claimed rather than written
             # again, and the rule starts counting from the day after.
             entry.recurrence = rule
-            entry.save(update_fields=["recurrence", "updated_at"])
+            entry.recurrence_date = entry.scheduled_date
+            entry.save(update_fields=["recurrence", "recurrence_date", "updated_at"])
             rule.materialized_through = entry.scheduled_date
             rule.save(update_fields=["materialized_through", "updated_at"])
             materialize_planner_repeats(
@@ -2395,58 +2492,248 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
                 ]
             )
 
+    @transaction.atomic
     def perform_update(self, serializer):
+        owner = self.owner_profile()
+        type(owner).objects.select_for_update().get(pk=owner.pk)
         instance = serializer.instance
         data = serializer.validated_data
         workout = data["workout"] if "workout" in data else instance.workout
         day = data.get("scheduled_date", instance.scheduled_date)
-        with transaction.atomic():
-            # Schedules before tasks, as every schedule write takes them.
-            lock_workout_days(
-                instance.owner,
-                [(instance.workout_id, instance.scheduled_date), (workout and workout.pk, day)],
-                schedule_id=instance.source_schedule_id,
-            )
-            try:
-                instance.refresh_from_db(fields=["source_schedule"])
-            except PlannerEntry.DoesNotExist:
-                # Its day was removed while this waited for the lock, and the
-                # task went with it.
-                raise NotFound()
-            previous_id = schedule_id_for(instance)
+        # Schedules before tasks, as every schedule write takes them.
+        lock_workout_days(
+            owner,
+            [(instance.workout_id, instance.scheduled_date), (workout and workout.pk, day)],
+            schedule_id=instance.source_schedule_id,
+        )
+        # Lock only the entry: recurrence is nullable, and PostgreSQL refuses
+        # FOR UPDATE on that outer-joined side. The rule is locked separately.
+        # The owner filter is deliberately repeated under the lock. A shared
+        # calendar grants read access; it never enters this mutation route.
+        serializer.instance = get_object_or_404(
+            self.scope_to_owner(PlannerEntry.objects.select_for_update(of=("self",))).select_related("recurrence"),
+            pk=serializer.instance.pk,
+        )
+        # Re-read under the lock: its day may have moved or gone meanwhile
+        # (a 404 above when the task went with its removed day).
+        previous_id = schedule_id_for(serializer.instance)
+        serializer.validated_data.update(serializer.validate(dict(serializer.validated_data)))
+        if self.request.query_params.get("scope") == "following":
+            serializer.instance = self._update_following(serializer)
+        else:
             entry = serializer.save()
             # Moving a workout on the calendar, or choosing another, changes
             # the plan Training and Home read; see `plan_workout_task`.
             plan_workout_task(entry, previous_id)
             sync_parent_completion(entry.parent)
 
-    def perform_destroy(self, instance):
-        with transaction.atomic():
-            lock_workout_days(
-                instance.owner,
-                [(instance.workout_id, instance.scheduled_date)],
-                schedule_id=instance.source_schedule_id,
+    def _update_following(self, serializer):
+        """Split a rule, not its history, keeping each occurrence's identity.
+
+        Unmentioned occurrence-specific changes survive a metadata edit. An
+        explicit date/weekday/interval change rebuilds future dates, but never
+        changes the original occurrence date used for sharing boundaries and
+        privacy exceptions. Completed rows stay on their original rule.
+        """
+        entry = serializer.instance
+        owner = entry.owner
+        rule = get_object_or_404(
+            PlannerRecurrence.objects.select_for_update(), pk=entry.recurrence_id, owner=owner,
+        )
+        identity = entry.recurrence_date or entry.scheduled_date
+        boundary = identity - timedelta(days=rule.identity_offset_days)
+        if boundary < today_for(owner):
+            raise ValidationError({"scope": "Edit a past occurrence on its own; following starts today or later."})
+        if not rule.covers(boundary):
+            raise ValidationError({"scope": "This occurrence no longer belongs to an active stretch of the repeat."})
+        changes = dict(serializer.validated_data)
+        changes.pop("is_complete", None)  # False is a harmless legacy form value, not a series action.
+        if not serializer.partial:
+            for field in serializer.SCHEDULE_FIELDS_CLEARED_BY_PUT:
+                changes.setdefault(field, None)
+        interval = changes.pop("repeat_every_days", None)
+        weekdays = changes.pop("repeat_on_weekdays", None)
+        ends = changes.pop("repeat_ends_on", rule.ends_on)
+        calendar_changed = "scheduled_date" in changes or interval is not None or weekdays is not None
+        first_day = changes.pop("scheduled_date", boundary)
+        fields = (
+            "kind", "title", "category", "priority", "scheduled_time", "duration_minutes",
+            "notes", "color", "scheduling_timezone", "workout",
+        )
+        template = {name: changes.get(name, getattr(rule, name)) for name in fields}
+        self._validate_repeat_projection(template)
+        future = list(PlannerEntry.objects.select_for_update().filter(
+            owner=owner, recurrence=rule, parent__isnull=True,
+        ).filter(
+            Q(recurrence_date__gte=identity)
+            | Q(recurrence_date__isnull=True, scheduled_date__gte=boundary)
+        ).prefetch_related("subtasks"))
+        if template["kind"] == PlannerEntry.Kind.EVENT and any(
+            row.completed_at is None and row.subtasks.all() for row in future
+        ):
+            raise ValidationError({"kind": "Remove the task steps before changing a series to events."})
+        next_rule = PlannerRecurrence(
+            owner=owner, series_id=rule.series_id, starts_on=first_day, ends_on=ends,
+            interval_days=interval if interval is not None else (1 if weekdays is not None else rule.interval_days),
+            weekdays=weekdays if weekdays is not None else ([] if interval is not None else rule.weekdays),
+            identity_offset_days=(identity - first_day).days,
+            **template,
+        )
+        horizon = min(
+            max(rule.materialized_through or boundary, first_day + timedelta(days=PLANNER_REPEAT_HORIZON_DAYS)),
+            plan_ahead_limit(owner),
+        )
+        desired = {
+            day + timedelta(days=next_rule.identity_offset_days): day
+            for day in next_rule.days_through(horizon)
+        }
+        existing = {(row.recurrence_date or row.scheduled_date): row for row in future}
+        updates, deletions, creations = [], [], []
+        for occurrence_identity, row in existing.items():
+            if row.completed_at is not None:
+                continue
+            if occurrence_identity not in desired:
+                deletions.append(row.pk)
+                continue
+            for name in fields:
+                if name in changes:
+                    setattr(row, name, changes[name])
+            if calendar_changed:
+                row.scheduled_date = desired[occurrence_identity]
+            row.recurrence_date = occurrence_identity
+            self._validate_repeat_projection({name: getattr(row, name) for name in fields})
+            updates.append(row)
+        for occurrence_identity, day in desired.items():
+            if occurrence_identity in existing:
+                continue
+            old_day = occurrence_identity - timedelta(days=rule.identity_offset_days)
+            if (
+                rule.materialized_through is not None and old_day <= rule.materialized_through
+                and rule.covers(old_day)
+            ):
+                # A deliberately deleted occurrence stays deleted when merely
+                # renaming or recoloring its series.
+                continue
+            creations.append(PlannerEntry(
+                owner=owner, scheduled_date=day, recurrence_date=occurrence_identity, **template,
+            ))
+
+        # Check the final state before changing anything. In particular, a
+        # workout repeat cannot steal a separately created workout/day row.
+        affected_ids = deletions + [row.pk for row in updates]
+        targets = set()
+        for row in updates + creations:
+            if row.kind != PlannerEntry.Kind.TASK or not row.workout_id:
+                continue
+            key = (row.workout_id, row.scheduled_date)
+            if key in targets:
+                raise ValidationError({"workout": "A workout is already planned on one of the resulting dates."})
+            targets.add(key)
+        if targets:
+            clashes = PlannerEntry.objects.filter(
+                owner=owner, kind=PlannerEntry.Kind.TASK,
+                workout_id__in={target[0] for target in targets},
+                scheduled_date__in={target[1] for target in targets},
+            ).exclude(pk__in=affected_ids).values_list("workout_id", "scheduled_date")
+            if targets.intersection(clashes):
+                raise ValidationError({"workout": "A workout is already planned on one of the resulting dates."})
+        next_rule.save()
+        step_titles = rule.step_titles() if next_rule.kind == PlannerEntry.Kind.TASK else []
+        PlannerRecurrenceStep.objects.bulk_create([
+            PlannerRecurrenceStep(recurrence=next_rule, title=title, position=at)
+            for at, title in enumerate(step_titles)
+        ])
+        rule.ends_on = boundary
+        rule.save(update_fields=["ends_on", "updated_at"])
+        PlannerEntry.objects.filter(owner=owner, pk__in=deletions).delete()
+        # Temporarily remove workout links inside this transaction so shifting
+        # a sequence of task dates does not collide with its own previous day.
+        PlannerEntry.objects.filter(owner=owner, pk__in=[row.pk for row in updates]).update(workout=None)
+        now = timezone.now()
+        for row in updates:
+            row.recurrence = next_rule
+            row.updated_at = now
+        PlannerEntry.objects.bulk_update(
+            updates, [*fields, "recurrence", "recurrence_date", "scheduled_date", "updated_at"],
+        )
+        if calendar_changed and updates:
+            PlannerEntry.objects.filter(parent_id__in=[row.pk for row in updates]).update(
+                scheduled_date=Case(*[
+                    When(parent_id=row.pk, then=Value(row.scheduled_date)) for row in updates
+                ], output_field=models.DateField()),
+                updated_at=now,
             )
-            # Removing a workout from the calendar removes it from the day, so
-            # Training and Home stop showing it as well.
-            unplan_workout_task(instance)
-            self._destroy(instance)
+        for row in creations:
+            row.recurrence = next_rule
+        PlannerEntry.objects.bulk_create(creations)
+        if step_titles:
+            PlannerEntry.objects.bulk_create([
+                PlannerEntry(
+                    owner=owner, kind=PlannerEntry.Kind.TASK, title=title,
+                    category=row.category, scheduled_date=row.scheduled_date,
+                    parent=row, is_subtask=True,
+                ) for row in creations for title in step_titles
+            ])
+        next_rule.materialized_through = horizon
+        next_rule.save(update_fields=["materialized_through", "updated_at"])
+        entry.refresh_from_db()
+        return entry
+
+    @staticmethod
+    def _validate_repeat_projection(values):
+        # Validation against just the addressed occurrence is not enough:
+        # that occurrence may have different overrides from the rule or from
+        # another future row. Reject every resulting invalid pair before any
+        # bulk update, rather than relying on a constraint to turn it into 500.
+        if values["duration_minutes"] is not None and values["scheduled_time"] is None:
+            raise ValidationError({"duration_minutes": "Include a start time or remove the duration for the resulting series."})
+        categories = EVENT_CATEGORIES if values["kind"] == PlannerEntry.Kind.EVENT else TASK_CATEGORIES
+        if values["category"] not in categories:
+            raise ValidationError({"category": "Choose a category matching every resulting entry's kind."})
+
+    @transaction.atomic
+    def perform_destroy(self, instance):
+        # Owner, then schedules, then tasks: the order create and update take.
+        owner = self.owner_profile()
+        type(owner).objects.select_for_update().get(pk=owner.pk)
+        lock_workout_days(
+            owner,
+            [(instance.workout_id, instance.scheduled_date)],
+            schedule_id=instance.source_schedule_id,
+        )
+        self._destroy(instance)
 
     def _destroy(self, instance):
         # `?scope=following` ends the repeat from this day on; anything else
         # removes this day alone. Default is the narrow one on purpose: a
         # delete that quietly took a year of tasks with it would be the worst
         # kind of surprise, so the wider act has to be asked for.
-        following = self.request.query_params.get("scope") == "following"
+        owner = self.owner_profile()
+        type(owner).objects.select_for_update().get(pk=owner.pk)
+        scope = self.request.query_params.get("scope", "occurrence")
+        if scope not in ("occurrence", "following"):
+            raise ValidationError({"scope": "Use occurrence or following."})
+        instance = get_object_or_404(
+            self.scope_to_owner(PlannerEntry.objects.select_for_update(of=("self",))).select_related("recurrence"), pk=instance.pk,
+        )
+        following = scope == "following"
+        if following and (instance.recurrence_id is None or instance.parent_id is not None):
+            raise ValidationError({"scope": "Following requires a repeating top-level entry."})
+        if following and instance.completed_at is not None:
+            raise ValidationError({"scope": "Delete a completed occurrence on its own, not with following scope."})
         rule = instance.recurrence if following else None
+        # Removing a workout from the calendar removes it from the day, so
+        # Training and Home stop showing it as well.
+        unplan_workout_task(instance)
 
         # Held before the row goes: afterwards `instance.parent` still answers
         # from the in-memory object, but reading it after the delete is the
         # kind of thing that quietly stops working.
         parent = instance.parent
-        day = instance.scheduled_date
-        # Already gone when it was an unfinished plan's task; deleting it again
-        # is a no-op.
+        identity = instance.recurrence_date or instance.scheduled_date
+        day = identity - timedelta(days=rule.identity_offset_days) if rule else instance.scheduled_date
+        if following and day < today_for(owner):
+            raise ValidationError({"scope": "Delete a past occurrence on its own; following starts today or later."})
         super().perform_destroy(instance)
 
         if rule is not None:
@@ -2456,23 +2743,14 @@ class PlannerEntryViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.Mod
             PlannerEntry.objects.filter(
                 owner=instance.owner,
                 recurrence=rule,
-                scheduled_date__gte=day,
+                recurrence_date__gte=identity,
                 completed_at__isnull=True,
             ).delete()
 
-            if day <= rule.starts_on:
-                # Ended on the day it began, so it never ran. There is no
-                # earlier stretch to preserve and closing it here would ask for
-                # an empty range, which the rule refuses to be. Anything it did
-                # write and that survived is detached rather than removed --
-                # the foreign key is SET_NULL, so a day already ticked off
-                # stays on the calendar it happened on.
-                rule.delete()
-            else:
-                # Closed rather than deleted, so the days before this one keep
-                # resolving through the rule that planned them.
-                rule.ends_on = day
-                rule.save(update_fields=["ends_on", "updated_at"])
+            # Closed even at its first occurrence, so surviving history keeps
+            # the original rule/series identity and never loses its privacy key.
+            rule.ends_on = min(day, rule.ends_on) if rule.ends_on else day
+            rule.save(update_fields=["ends_on", "updated_at"])
         # Deleting the last outstanding step can finish the parent, and
         # deleting every step hands the checkbox back to the parent itself --
         # `sync_parent_completion` leaves a childless task alone, so what it
@@ -2594,7 +2872,7 @@ MAX_ROUTE_POINTS_PER_SESSION = 50_000
 )
 class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     queryset = (
-        WorkoutSession.objects.select_related("repbase_user", "workout")
+        WorkoutSession.objects.select_related("repbase_user", "workout", "health_summary")
         # No prefetch of route_points. Serialising a session reads its track
         # values from route_summary, so the points are not touched -- and
         # prefetching them meant a page of fifty sessions pulled every GPS fix
@@ -2721,9 +2999,16 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
 
     @transaction.atomic
     def perform_create(self, serializer):
+        workout = serializer.validated_data.get("workout")
+        if workout is not None:
+            # Lock only the template row (no nullable joins under PostgreSQL),
+            # shared with every relation mutation and atomic plan replacement.
+            get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=workout.pk)
         session = serializer.save(repbase_user=self.owner_profile())
         if session.workout_id:
-            planned = session.workout.workout_exercises.select_related("exercise")
+            planned = list(session.workout.workout_exercises.select_related("exercise"))
+            if any(item.target_sets > 50 for item in planned):
+                raise ValidationError({"workout": "Reduce each exercise to at most 50 planned sets before starting."})
             SessionExercise.objects.bulk_create(
                 [
                     SessionExercise(
@@ -2731,6 +3016,10 @@ class WorkoutSessionViewSet(IdempotentCreateMixin, OwnedViewSetMixin, viewsets.M
                         exercise=item.exercise,
                         order=item.order,
                         notes=item.notes,
+                        workout_exercise_id=item.pk,
+                        planned_sets=item.snapshot_planned_sets(),
+                        rest_seconds=item.rest_seconds,
+                        superset_group=item.superset_group,
                     )
                     for item in planned
                 ]
@@ -3349,6 +3638,16 @@ class FeedCursorPagination(pagination.CursorPagination):
         return size
 
 
+#: A post anybody signed in could read: what a public total counts. Kept as
+#: one expression so the take count on a card and the use count on a sound
+#: cannot come to mean different things.
+PUBLIC_AND_STANDING = Q(
+    is_hidden=False, moderation_status="approved", published_at__isnull=False,
+    moderation_child_hold=False, visibility="public",
+    author__is_profile_public=True, author__user__is_active=True,
+)
+
+
 def annotate_social_counts(viewer, queryset):
     """Add the like, comment and repost figures a card shows.
 
@@ -3383,17 +3682,32 @@ def annotate_social_counts(viewer, queryset):
         viewer_reposted=Exists(
             Post.objects.filter(repost_of=OuterRef("pk"), author=viewer)
         ),
+        tried_total=total(PostTried, "post"),
+        viewer_tried=Exists(PostTried.objects.filter(post=OuterRef("pk"), user=viewer)),
         # Whether this reader already took a copy. Annotated rather than
         # asked per row: the button that reads it is on every card in the
         # feed, and a query each would be a page of them.
         #
         # A post carries a workout or a meal, never both, so at most one of
         # these can be true and the app needs only the pair OR-ed together.
+        # Responses anybody could see, so the number is the same for every
+        # reader and never says who somebody else can and cannot see.
+        take_total=Coalesce(
+            Subquery(
+                Post.objects.filter(source_post=OuterRef("pk"), is_take=True)
+                .filter(PUBLIC_AND_STANDING)
+                .order_by().values("source_post").annotate(n=Count("pk")).values("n")[:1]
+            ),
+            Value(0),
+        ),
         viewer_saved=Exists(
             WorkoutTemplate.objects.filter(source_post=OuterRef("pk"), owner=viewer)
         )
         | Exists(
             SavedFoodMeal.objects.filter(source_post=OuterRef("pk"), owner=viewer)
+        )
+        | Exists(
+            Cookbook.objects.filter(source_post=OuterRef("pk"), owner=viewer)
         ),
     )
 
@@ -3499,8 +3813,64 @@ def visible_posts_for(viewer, queryset, include_reposts=True):
     return result
 
 
-def posts_for_cards():
+#: The query parameter a list of posts takes to leave the exercise and food
+#: rows out of its cards, and the two things it may say.
+ATTACHMENTS_PARAMETER = OpenApiParameter(
+    name="attachments",
+    type=str,
+    enum=["full", "summary"],
+    location=OpenApiParameter.QUERY,
+    description=(
+        "How much of each posted workout or recipe to send. `full`, the "
+        "default, sends every exercise and food. `summary` sends the title "
+        "and totals a card prints and leaves `exercises`, `entries` and "
+        "`cooking_instructions` empty, with `details_included` false; read "
+        "the post itself for the rest."
+    ),
+)
+
+
+def wants_summaries(request):
+    """Whether a list was asked for with `?attachments=summary`."""
+    raw = request.query_params.get("attachments")
+    if raw is None or raw == "full":
+        return False
+    if raw == "summary":
+        return True
+    # Refused rather than guessed at, like every other closed parameter here.
+    raise ValidationError({"attachments": "Use full or summary."})
+
+
+class AttachmentDetailMixin:
+    """A list of post cards that can be asked for without their rows.
+
+    The queryset and the serializer are told together, from the one
+    parameter: the rows are not loaded, and the serializer does not go
+    looking for them.
+    """
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        if getattr(self, "action", None) in self.summarisable_actions and wants_summaries(self.request):
+            context["attachments"] = "summary"
+        return context
+
+    #: The actions that answer with a page of cards.
+    summarisable_actions = ("list", "takes")
+
+    def cards(self):
+        if getattr(self, "action", None) in self.summarisable_actions and wants_summaries(self.request):
+            return posts_for_cards(summary=True)
+        return posts_for_cards()
+
+
+def posts_for_cards(summary=False):
     """Posts with everything a rendered card touches already loaded.
+
+    With `summary`, the exercise and food rows are left out: four of the
+    prefetches below, and the bulk of a page's bytes. Only for a serializer
+    told the same thing (`AttachmentDetailMixin`), which then never reads
+    them.
 
     A card prints the author's name, photo, gym and disciplines, then the
     snapshot and its rows. Left alone that is six queries a post, so a page of
@@ -3534,6 +3904,7 @@ def posts_for_cards():
         "workout",
         "meal",
         "planner",
+        "cookbook",
         # A one-to-one, so a join rather than a prefetch, for the same reason
         # the snapshots are: a clip per card would otherwise be a query per
         # card.
@@ -3544,18 +3915,21 @@ def posts_for_cards():
         "repost_of__workout",
         "repost_of__meal",
         "repost_of__planner",
+        "repost_of__cookbook",
         "repost_of__video",
-    ).prefetch_related(
+    ).defer("cookbook__recipes", "repost_of__cookbook__recipes").prefetch_related(
         "author__disciplines",
         "author__prompts",
         "author__social_links",
-        "workout__exercises",
-        "meal__entries",
         "repost_of__author__disciplines",
         "repost_of__author__prompts",
         "repost_of__author__social_links",
-        "repost_of__workout__exercises",
-        "repost_of__meal__entries",
+        *(() if summary else (
+            "workout__exercises",
+            "meal__entries",
+            "repost_of__workout__exercises",
+            "repost_of__meal__entries",
+        )),
     )
 
 
@@ -3571,6 +3945,9 @@ def public_text_for_source(source, kind):
     The relations walked here are the ones `source_for` prefetches, which is
     not a coincidence: those are what the snapshot builder reads.
     """
+    if kind == Post.Kind.COOKBOOK:
+        from .cookbook_publication import recipe_snapshot
+        return {"name": source.name, "recipes": recipe_snapshot(source)}
     if kind == Post.Kind.WORKOUT:
         return {
             'title': getattr(source.workout, 'name', '') or '',
@@ -3606,6 +3983,14 @@ def source_for(author, kind, source_id):
     cross-owner check in this codebase does. 403 is wrong under either reading:
     it answers "that row exists, and it is not yours".
     """
+    if kind == Post.Kind.COOKBOOK:
+        from .models import Cookbook
+        from .cookbook_publication import recipe_snapshot
+        source = Cookbook.objects.filter(pk=source_id, owner=author).prefetch_related("recipes__ingredients").first()
+        if source is None:
+            raise ValidationError({"source_id": "Choose one of your cookbooks."})
+        recipe_snapshot(source)
+        return source
     if kind == Post.Kind.WORKOUT:
         source = (
             WorkoutSession.objects.filter(pk=source_id, repbase_user=author)
@@ -3739,6 +4124,10 @@ def snapshot_workout(post, session, shows_weights=True):
             )
         )
     PostWorkoutExercise.objects.bulk_create(rows)
+    # The card's figures, added up now from the rows just written so a feed
+    # page never has to load them to print three numbers.
+    workout.summarise(rows)
+    workout.save(update_fields=["exercise_count", "total_set_count", "total_volume_kg"])
 
 
 def snapshot_meal(post, meal, cooking_instructions=""):
@@ -3755,21 +4144,25 @@ def snapshot_meal(post, meal, cooking_instructions=""):
         date=meal.date,
         cooking_instructions=cooking_instructions,
     )
-    PostMealEntry.objects.bulk_create(
-        [
-            PostMealEntry(
-                post_meal=snapshot,
-                name=entry.name,
-                servings=entry.servings,
-                calories=entry.calories,
-                protein_grams=entry.protein_grams,
-                carbohydrate_grams=entry.carbohydrate_grams,
-                fat_grams=entry.fat_grams,
-                position=entry.position,
-            )
-            for entry in meal.entries.all()
-        ]
-    )
+    rows = [
+        PostMealEntry(
+            post_meal=snapshot,
+            name=entry.name,
+            servings=entry.servings,
+            calories=entry.calories,
+            protein_grams=entry.protein_grams,
+            carbohydrate_grams=entry.carbohydrate_grams,
+            fat_grams=entry.fat_grams,
+            position=entry.position,
+            **food_metadata_snapshot(entry),
+        )
+        for entry in meal.entries.all()
+    ]
+    PostMealEntry.objects.bulk_create(rows)
+    snapshot.summarise(rows)
+    snapshot.save(update_fields=[
+        "entry_count", *(f"total_{field}" for field in PostMeal.SUMMED),
+    ])
 
 
 def snapshot_planner(post, entry):
@@ -3799,8 +4192,13 @@ def create_post_from_source(
     visibility,
     shows_weights=True,
     cooking_instructions="",
+    publication=None,
 ):
     """Freeze a source object into a post.
+
+    `publication` is the rest of what the post says about itself -- what it is
+    a take of, its sound, topics, language and who may reuse it -- as column
+    values already resolved and checked by `core.publication`.
 
     The client sends which object it is and nothing about its contents, so the
     numbers in a post are numbers the server read out of that person's own
@@ -3826,13 +4224,21 @@ def create_post_from_source(
         source_meal=source if kind == Post.Kind.MEAL else None,
         source_planner_entry=source if kind == Post.Kind.PLANNER else None,
         shows_weights=shows_weights,
+        hashtags=hashtags_in(caption),
+        **(publication or {}),
     )
+    write_hashtags(post, save=False)
     if kind == Post.Kind.WORKOUT:
         snapshot_workout(post, source, shows_weights=shows_weights)
     elif kind == Post.Kind.MEAL:
         snapshot_meal(post, source, cooking_instructions=cooking_instructions)
     elif kind == Post.Kind.PLANNER:
         snapshot_planner(post, source)
+    elif kind == Post.Kind.COOKBOOK:
+        from .models import PostCookbook
+        from .cookbook_publication import recipe_snapshot
+        recipes = recipe_snapshot(source)
+        PostCookbook.objects.create(post=post, name=source.name, recipe_count=len(recipes), recipes=recipes)
     # A media post has no snapshot: its photo or clip is the post.
     return post
 
@@ -3923,6 +4329,13 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
 @extend_schema_view(
     list=extend_schema(
         parameters=[
+            ATTACHMENTS_PARAMETER,
+            OpenApiParameter(
+                name="prompt",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="Return only posts answering this prompt, by its code.",
+            ),
             OpenApiParameter(
                 name="author",
                 type=int,
@@ -3981,8 +4394,11 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
         request=UpdatePostSerializer,
         responses={200: PostSerializer},
         description=(
-            "Change the caption or who can see this post. The snapshot records "
-            "what happened and is not editable."
+            "Change the caption, who can see this post, who may post a take "
+            "of it, its language or its topics. The snapshot records what "
+            "happened and is not editable, and neither is what the post is a "
+            "take of. Closing a post to takes stops new ones; takes already "
+            "posted stay."
         ),
     ),
     # PUT is refused at runtime by http_method_names below. Excluded here as
@@ -3995,7 +4411,7 @@ class PreviousSetsView(OwnedViewSetMixin, APIView):
     create=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
     partial_update=extend_schema(parameters=[MODERATION_CONSENT_PARAMETER]),
 )
-class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
+class PostViewSet(AttachmentDetailMixin, ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSet):
     """Posts: what someone has chosen to show other people.
 
     Reading and writing use different querysets on purpose. A reader gets
@@ -4020,6 +4436,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         # A repost publishes to the reposter's followers, so it is publishing.
         "repost": "post",
         "like": "social",
+        "tried": "social",
         "save_workout": "social",
         "save_meal": "social",
         "not_interested": "social",
@@ -4052,11 +4469,13 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             visible = visible_posts_for(profile, base).values('pk')
             return annotate_social_counts(profile, base.filter(Q(pk__in=visible) | Q(author=profile, is_hidden=False)))
         if self.action == 'list' and id_param(self.request, 'author') == profile.pk:
-            return annotate_social_counts(profile, super().get_queryset().filter(author=profile, is_hidden=False))
+            return annotate_social_counts(profile, self.cards().filter(author=profile, is_hidden=False))
 
         queryset = annotate_social_counts(
-            profile, visible_posts_for(profile, super().get_queryset())
+            profile, visible_posts_for(profile, self.cards())
         )
+        if self.action == "takes":
+            return queryset
         if self.action != "list":
             # The author filter is the list's alone: a create reads its own new
             # post back through this queryset, and a stray query string on the
@@ -4065,6 +4484,12 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         author = id_param(self.request, "author")
         if author:
             queryset = queryset.filter(author_id=author)
+        prompt = self.request.query_params.get("prompt")
+        if prompt:
+            try:
+                queryset = queryset.filter(prompt=checked_prompt(prompt))
+            except ValueError as error:
+                raise ValidationError({"prompt": str(error)})
         return self._matching_search(self._matching_follow_state(queryset))
 
     def _matching_follow_state(self, queryset):
@@ -4148,6 +4573,41 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         )
 
     @extend_schema(
+        parameters=[
+            OpenApiParameter(
+                name="cursor",
+                type=str,
+                location=OpenApiParameter.QUERY,
+                description="The position carried by the previous page's `next` link.",
+            ),
+            OpenApiParameter(
+                name="page_size",
+                type=int,
+                location=OpenApiParameter.QUERY,
+                description="How many takes to return, at most 50.",
+            ),
+            ATTACHMENTS_PARAMETER,
+        ],
+        responses=PostSerializer(many=True),
+        description=(
+            "The takes people have posted of this post, newest first: the "
+            "ones that answer it directly, and only those the reader may "
+            "see. A repost's id stands for the post it passes on."
+        ),
+    )
+    @action(detail=True, methods=["get"], pagination_class=FeedCursorPagination)
+    def takes(self, request, pk=None):
+        # The post in the URL is found among what the reader may see, so the
+        # takes of one they may not are a 404 like the post itself.
+        post = self.get_object()
+        source = post.repost_of_id or post.pk
+        # visible_posts_for decides each take on its own merits: a private
+        # take of a public post is its author's alone here too.
+        takes = self.get_queryset().filter(source_post_id=source, is_take=True)
+        page = self.paginate_queryset(takes)
+        return self.get_paginated_response(self.get_serializer(page, many=True).data)
+
+    @extend_schema(
         methods=["POST"],
         request=None,
         responses=PostSerializer,
@@ -4174,6 +4634,35 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                 notify(post.author, profile, Notification.Kind.LIKE, post=post)
         else:
             PostLike.objects.filter(post=post, user=profile).delete()
+        return Response(self._card(post.pk))
+
+    @extend_schema(
+        methods=["POST"],
+        request=None,
+        responses=PostSerializer,
+        description=(
+            "Say \"I tried this\" about somebody else's post. It is the "
+            "reader's own statement and is only ever made by this request: "
+            "nothing they track -- a finished workout, a logged meal -- makes "
+            "it for them. Saying it twice is not an error."
+        ),
+    )
+    @extend_schema(
+        methods=["DELETE"],
+        request=None,
+        responses={200: PostSerializer},
+        description="Take back \"I tried this\". Answers with the post, not 204.",
+    )
+    @action(detail=True, methods=["post", "delete"])
+    def tried(self, request, pk=None):
+        post = self.get_object()
+        profile = self.owner_profile()
+        if request.method == "POST":
+            if post.author_id == profile.pk:
+                raise ValidationError({"detail": "That is your own post."})
+            PostTried.objects.get_or_create(post=post, user=profile)
+        else:
+            PostTried.objects.filter(post=post, user=profile).delete()
         return Response(self._card(post.pk))
 
     @extend_schema(
@@ -4475,7 +4964,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         )
 
     @extend_schema(
-        request=None,
+        request=CookbookDestinationSerializer,
         responses={
             200: SavedMealResultSerializer,
             201: SavedMealResultSerializer,
@@ -4490,9 +4979,14 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         ),
     )
     @action(detail=True, methods=["post"], url_path="save-meal")
+    @transaction.atomic
     def save_meal(self, request, pk=None):
         post = self.get_object()
         owner = self.owner_profile()
+        from .cookbooks import destination_for, lock_owner, touch
+        lock_owner(owner)
+        destination = CookbookDestinationSerializer(data=request.data)
+        destination.is_valid(raise_exception=True)
         # A repost carries nothing of its own; what is being saved is the meal
         # in the post underneath it.
         source = post.repost_of or post
@@ -4528,9 +5022,10 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                 status=status.HTTP_200_OK,
             )
 
+        cookbook = destination_for(owner, destination.validated_data["cookbook"])
         name = self._free_copy_name(
             set(
-                SavedFoodMeal.objects.filter(owner=owner)
+                SavedFoodMeal.objects.filter(owner=owner, cookbook=cookbook)
                 .values_list("name", flat=True)
             ),
             snapshot.name,
@@ -4540,6 +5035,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         with transaction.atomic():
             saved = SavedFoodMeal.objects.create(
                 owner=owner,
+                cookbook=cookbook,
                 name=name,
                 source_post=source,
                 # The recipe comes with the food. Saving a meal whose author
@@ -4561,9 +5057,12 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                     carbohydrate_grams=entry.carbohydrate_grams,
                     fat_grams=entry.fat_grams,
                     position=position,
+                    **food_metadata_snapshot(entry),
                 )
                 for position, entry in enumerate(entries, start=1)
             )
+
+        touch([cookbook.pk])
 
         return Response(
             SavedMealResultSerializer(
@@ -4579,11 +5078,35 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             status=status.HTTP_201_CREATED,
         )
 
+    @extend_schema(responses={200: PublishedCookbookSerializer})
+    @action(detail=True, methods=["get"], url_path="cookbook")
+    def cookbook(self, request, pk=None):
+        post = self.get_object()
+        source = post.repost_of or post
+        snapshot = getattr(source, "cookbook", None)
+        if snapshot is None:
+            raise NotFound("This post has no cookbook.")
+        return Response(PublishedCookbookSerializer(snapshot).data)
+
+    @extend_schema(request=None, responses={200: CookbookSerializer, 201: CookbookSerializer})
+    @action(detail=True, methods=["post"], url_path="save-cookbook")
+    def save_cookbook(self, request, pk=None):
+        from .cookbook_publication import save_publication
+        from .models import Cookbook
+        post = self.get_object()
+        source = post.repost_of or post
+        if getattr(source, "cookbook", None) is None:
+            raise NotFound("This post has no cookbook.")
+        cookbook, created = save_publication(self.owner_profile(), source)
+        cookbook = Cookbook.objects.annotate(recipe_count=Count("recipes")).get(pk=cookbook.pk)
+        return Response(CookbookSerializer(cookbook).data,
+                        status=status.HTTP_201_CREATED if created else status.HTTP_200_OK)
+
     @staticmethod
     def _free_copy_name(taken, title, author, fallback):
         """A name this user does not already have.
 
-        Workouts and saved meals are both unique by name per user, so saving
+        Workouts are unique by name per user, recipes within their cookbook, so saving
         somebody's "Push Day" -- or their "Meal 1", which everyone has -- when
         you have your own would either fail or quietly hand back yours.
         Neither is what was asked for, so the copy is named after who it came
@@ -4596,12 +5119,14 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         if base not in taken:
             return base
 
-        from_author = f"{base} (from @{author.user.username})"[:150]
+        credit = f" (from @{author.user.username})"
+        from_author = (base[:max(1, 150 - len(credit))] + credit)[:150]
         if from_author not in taken:
             return from_author
 
         for suffix in range(2, 100):
-            numbered = f"{from_author} {suffix}"[:150]
+            tail = f" {suffix}"
+            numbered = from_author[:150 - len(tail)] + tail
             if numbered not in taken:
                 return numbered
         raise ValidationError({"post": "You already have too many copies of that."})
@@ -4698,6 +5223,29 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             None if kind == Post.Kind.MEDIA
             else source_for(author, kind, payload.validated_data["source_id"])
         )
+        # What it is a take of and what it is set to, resolved and refused
+        # here for the reason the source above is: before anything is
+        # reviewed, stored or written.
+        publication = {
+            "reuse_permission": payload.validated_data.get(
+                "reuse_permission", Post.Reuse.EVERYONE
+            ),
+            "prompt": payload.validated_data.get("prompt", ""),
+            "language": payload.validated_data.get("language", ""),
+            "topics": payload.validated_data.get("topics", []),
+        }
+        # Released a part at a time (`core.rollout`). Refused in the words of
+        # a field error, so an app that offered the button says why.
+        if payload.validated_data.get("source_post_id") is not None and not rollout.enabled("takes", author):
+            raise ValidationError({"source_post_id": "Takes are not available on this account yet."})
+        if payload.validated_data.get("sound_id") is not None and not rollout.enabled("sounds", author):
+            raise ValidationError({"sound_id": "Sounds are not available on this account yet."})
+        if payload.validated_data.get("source_post_id") is not None:
+            publication.update(lineage_from(
+                take_source_for(author, payload.validated_data["source_post_id"])
+            ))
+        if payload.validated_data.get("sound_id") is not None:
+            publication["sound"] = sound_for(author, payload.validated_data["sound_id"])
         decoded = payload.validated_data.get("decoded_image")
         extension = payload.validated_data.get("image_extension", ".jpg")
         if settings.MEDIA_SCREENING_ENABLED and decoded:
@@ -4720,11 +5268,20 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
         )
         try:
             with publication_media(decoded, extension) as media:
-                return self._publish_post(payload, media, source)
+                return self._publish_post(payload, media, source, publication)
         except PublicationMediaError:
             raise ServiceUnavailable("Your post was not published because its photo could not be saved. Please retry.")
+        except IntegrityError:
+            # The post being answered, or the sound, was deleted between the
+            # check above and the write. Asked again, each now gives its own
+            # refusal; anything else was not about them and is not swallowed.
+            if payload.validated_data.get("source_post_id") is not None:
+                take_source_for(author, payload.validated_data["source_post_id"])
+            if payload.validated_data.get("sound_id") is not None:
+                sound_for(author, payload.validated_data["sound_id"])
+            raise
 
-    def _publish_post(self, payload, media, source):
+    def _publish_post(self, payload, media, source, publication):
         author = self.owner_profile()
         kind = payload.validated_data["kind"]
         post = create_post_from_source(
@@ -4738,6 +5295,7 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             cooking_instructions=payload.validated_data.get(
                 "cooking_instructions", ""
             ),
+            publication=publication,
         )
         for field, name in media.items():
             setattr(post, field, name)
@@ -4766,6 +5324,8 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
             for field, value in payload.validated_data.items():
                 setattr(post, field, value)
             post.save(update_fields=[*payload.validated_data, "updated_at"])
+            if "caption" in payload.validated_data:
+                write_hashtags(post)
             if consent and (post.image or getattr(post, 'video', None)):
                 from .media_screening_jobs import enqueue
                 enqueue(post.pk, consent_version=consent, threshold=settings.MEDIA_SCREENING_THRESHOLD)
@@ -4795,10 +5355,11 @@ class PostViewSet(ThrottleByActionMixin, OwnedViewSetMixin, viewsets.ModelViewSe
                     "it was asked for."
                 ),
             ),
+            ATTACHMENTS_PARAMETER,
         ]
     )
 )
-class FeedViewSet(OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
+class FeedViewSet(AttachmentDetailMixin, OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericViewSet):
     """What the people you follow have posted, newest first.
 
     Fanned out on read: a page is one indexed walk over the posts of everyone
@@ -4822,7 +5383,7 @@ class FeedViewSet(OwnedViewSetMixin, mixins.ListModelMixin, viewsets.GenericView
     def get_queryset(self):
         profile = self.owner_profile()
         queryset = annotate_social_counts(
-            profile, visible_posts_for(profile, super().get_queryset())
+            profile, visible_posts_for(profile, self.cards())
         )
         # visible_posts_for has already annotated the follow test, so narrowing
         # to the people being followed reuses that subquery instead of asking
@@ -5251,6 +5812,8 @@ class DailyStepCountViewSet(
         days = payload.validated_data["days"]
 
         with transaction.atomic():
+            lock_health_owner(owner)
+            require_health_connection(owner)
             for entry in days:
                 DailyStepCount.objects.update_or_create(
                     owner=owner,
@@ -5270,6 +5833,7 @@ class HealthWorkoutImportView(APIView):
     """
 
     permission_classes = [IsAuthenticated]
+    throttle_scope = "health_import"
 
     @extend_schema(
         request=HealthWorkoutImportSerializer,
@@ -5281,61 +5845,7 @@ class HealthWorkoutImportView(APIView):
         owner = profile_for(request.user)
         incoming = payload.validated_data["workouts"]
 
-        imported = 0
-        skipped_overlapping = 0
-        already_imported = 0
-
-        with transaction.atomic():
-            for entry in incoming:
-                if WorkoutSession.objects.filter(
-                    repbase_user=owner,
-                    health_external_id=entry["external_id"],
-                ).exists():
-                    already_imported += 1
-                    continue
-
-                # A run tracked in Repbase and by the Watch is one run. The
-                # session Repbase recorded itself wins: it has the route and
-                # the climb, and this one would be the same effort counted
-                # twice. Only sessions Repbase recorded are compared against,
-                # so two imported workouts that happen to abut do not cancel
-                # each other out.
-                if WorkoutSession.objects.filter(
-                    repbase_user=owner,
-                    health_external_id__isnull=True,
-                    started_at__lt=entry["ended_at"],
-                    ended_at__gt=entry["started_at"],
-                ).exists():
-                    skipped_overlapping += 1
-                    continue
-
-                activity = entry["activity"]
-                template, _ = WorkoutTemplate.objects.get_or_create(
-                    owner=owner,
-                    name=WorkoutTemplate.WorkoutType(activity).label,
-                    defaults={"workout_type": activity},
-                )
-                WorkoutSession.objects.create(
-                    repbase_user=owner,
-                    workout=template,
-                    status=WorkoutSession.Status.COMPLETED,
-                    started_at=entry["started_at"],
-                    ended_at=entry["ended_at"],
-                    health_external_id=entry["external_id"],
-                    health_distance_km=entry.get("distance_km"),
-                    recorded_distance_km=entry.get("distance_km"),
-                )
-                imported += 1
-
-        return Response(
-            HealthImportResultSerializer(
-                {
-                    "imported": imported,
-                    "skipped_overlapping": skipped_overlapping,
-                    "already_imported": already_imported,
-                }
-            ).data
-        )
+        return Response(HealthImportResultSerializer(import_health_workouts(owner, incoming)).data)
 
 
 class GearViewSet(OwnedViewSetMixin, viewsets.ModelViewSet):
@@ -5485,6 +5995,7 @@ class TrainingStatsView(APIView):
                 "recorded_distance_km",
                 "manual_distance_km",
                 "logged_sets",
+                "health_summary__duration_seconds",
             )
         )
 
@@ -5512,7 +6023,7 @@ class TrainingStatsView(APIView):
                 distances=(row["recorded_distance_km"], row["manual_distance_km"]),
             )
 
-            if trained:
+            if trained or (row["health_summary__duration_seconds"] or 0) > 0:
                 days.add((row["workout__name"], timezone.localtime(performed).date()))
 
         week_of = {}

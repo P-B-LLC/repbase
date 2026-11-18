@@ -24,7 +24,10 @@ What each section answers:
 - `retention`: of the people who started using For You in the window, how
   many were back the next day and within a week (needs ANALYTICS_ENABLED,
   which is what records a day's activity);
-- `by_variant`: the same figures per arm, when FOR_YOU_EXPERIMENT is set.
+- `by_variant`: the same figures per arm, when FOR_YOU_EXPERIMENT is set, and
+  for each arm beside one named `control` whether its difference can be
+  claimed (`core.experiment_stats`): with too few readers it reads
+  `directional`, and is not an improvement to report.
 """
 
 import json
@@ -38,6 +41,7 @@ from django.db.models.functions import Cast
 from django.utils import timezone
 
 from core.analytics_models import DailyActiveAccount
+from core.experiment_stats import compare
 from core.models import Post, PostComment, PostFeedback, PostLike, PostView, SavedFoodMeal, WorkoutTemplate
 from core.models import Follow
 from core.recommendations import NEWCOMER_DAYS, experiment_config, experiment_variant, latency_summary
@@ -164,8 +168,20 @@ def by_variant(rows, annotated, config, comebacks):
         arm["viewers"] += 1
         for name in ("impressions", "skipped", "with_clip", "completed", "engaged", "dismissed"):
             arm[name] += counts.get(name, 0)
+        # Per reader, which is the unit that was assigned.
+        arm["engaged_viewers"] += 1 if counts.get("engaged") else 0
         if viewer in comebacks:
             arm_returns[variant].append(comebacks[viewer])
+    # The arm every other is read against: "control" when there is one.
+    baseline = arms.get("control")
+
+    def against_control(variant, arm):
+        if baseline is None or variant == "control":
+            return {}
+        return {"engaged_readers_vs_control": compare(
+            baseline["engaged_viewers"], baseline["viewers"], arm["engaged_viewers"], arm["viewers"],
+        )}
+
     return {
         variant: {
             "viewers": arm["viewers"],
@@ -174,6 +190,8 @@ def by_variant(rows, annotated, config, comebacks):
             "skip_rate": rate(arm["skipped"], arm["impressions"]),
             "not_interested_rate": rate(arm["dismissed"], arm["impressions"]),
             "clip_completion_rate": rate(arm["completed"], arm["with_clip"]),
+            "engaged_reader_rate": rate(arm["engaged_viewers"], arm["viewers"]),
+            **against_control(variant, arm),
             **({"retention": summarise_returns(arm_returns[variant])} if comebacks else {}),
         }
         for variant, arm in sorted(arms.items())

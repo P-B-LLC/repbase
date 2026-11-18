@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone as datetime_timezone
 
 import base64
 import io
+import itertools
 import binascii
 from decimal import Decimal
 from zoneinfo import available_timezones
@@ -11,12 +12,14 @@ from django.contrib.auth import authenticate, get_user_model, password_validatio
 from django.contrib.auth.validators import ASCIIUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import F, Q
+from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import serializers
 
 from drf_spectacular.utils import extend_schema_field
 
+from . import rollout
 from . import models as core_models
 from .activities import (
     ACTIVITIES,
@@ -27,9 +30,12 @@ from .activities import (
 )
 from .media import signed_media_url
 from .moderation import check_public_content
+from .cookbook_serializers import PostCookbookSerializer
 from .params import MAX_ID
+from .food_nutrition import FOOD_METADATA_FIELDS, FoodMetadataSerializerMixin
 from .uploads import check_image_dimensions, without_metadata
 from .throttles import FailedSignInLimit
+from .health_serializers import HealthWorkoutSummarySerializer, HealthWorkoutImportSerializer, HealthImportResultSerializer
 
 
 class SessionFinishSerializer(serializers.Serializer):
@@ -63,6 +69,7 @@ from .models import (
     Personalization,
     SavedFoodIngredient,
     SavedFoodMeal,
+    Sound,
     UserDiscipline,
     MAX_PROFILE_SOCIAL_LINKS,
     PlannerEntry,
@@ -244,7 +251,7 @@ class NutritionGoalSerializer(serializers.ModelSerializer):
         read_only_fields = ["updated_at"]
 
 
-class FoodEntrySerializer(serializers.ModelSerializer):
+class FoodEntrySerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     """One food. Nutrition is per serving; totals are derived, never stored,
     so a serving count and its totals cannot drift apart."""
 
@@ -258,6 +265,7 @@ class FoodEntrySerializer(serializers.ModelSerializer):
         fields = [
             "id",
             "meal",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -364,11 +372,12 @@ class FoodMealSerializer(serializers.ModelSerializer):
         return self._total(meal, "fat_grams")
 
 
-class SavedFoodIngredientSerializer(serializers.ModelSerializer):
+class SavedFoodIngredientSerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     class Meta:
         model = SavedFoodIngredient
         fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -386,7 +395,9 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
     #: Bounded, because applying a saved meal copies every ingredient onto
     #: each of up to 31 days in one transaction.
-    ingredients = SavedFoodIngredientSerializer(many=True, max_length=100)
+    ingredients = SavedFoodIngredientSerializer(many=True, max_length=100, allow_empty=False)
+    cookbook = serializers.IntegerField(source="cookbook_id", min_value=1, max_value=MAX_ID, required=False,
+        help_text="Required on creation. Omit on edits to keep the recipe in its existing cookbook.")
     #: Declared rather than left to the model field, which is a TextField and
     #: would otherwise be exposed with no ceiling at all. The number matches
     #: the one a post's instructions are held to, so a recipe copied out of a
@@ -399,9 +410,11 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = SavedFoodMeal
+        validators = []  # Name checks below are case-insensitive and rechecked under the owner lock.
         fields = [
             "id",
             "name",
+            "cookbook",
             "ingredients",
             "cooking_instructions",
             "created_at",
@@ -420,31 +433,48 @@ class SavedFoodMealSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         owner = self.context["request"].user.repbase_profile
+        if self.instance is None and "cookbook_id" not in attrs:
+            raise serializers.ValidationError({"cookbook": "Choose a cookbook for this recipe."})
         name = attrs.get("name", getattr(self.instance, "name", ""))
-        clash = SavedFoodMeal.objects.filter(owner=owner, name__iexact=name)
+        cookbook_id = attrs.get("cookbook_id", getattr(self.instance, "cookbook_id", None))
+        clash = SavedFoodMeal.objects.filter(owner=owner, cookbook_id=cookbook_id, name__iexact=name)
         if self.instance:
             clash = clash.exclude(pk=self.instance.pk)
         if clash.exists():
             raise serializers.ValidationError(
-                {"name": "You already have a saved meal with this name."}
+                {"name": "You already have a recipe with this name in this cookbook."}
             )
         return attrs
 
     @transaction.atomic
     def create(self, validated_data):
+        from .cookbooks import destination_for, lock_owner, touch
+        owner = lock_owner(validated_data["owner"])
+        self.validate(validated_data)
+        validated_data["cookbook"] = destination_for(owner, validated_data.pop("cookbook_id"))
         ingredients = validated_data.pop("ingredients", [])
         saved = SavedFoodMeal.objects.create(**validated_data)
         self._replace_ingredients(saved, ingredients)
+        touch([saved.cookbook_id])
         return saved
 
     @transaction.atomic
     def update(self, instance, validated_data):
+        from .cookbooks import destination_for, lock_owner, touch
+        lock_owner(instance.owner)
+        instance = SavedFoodMeal.objects.select_for_update().get(pk=instance.pk)
+        self.validate(validated_data)
+        previous_cookbook = instance.cookbook_id
+        validated_data["cookbook"] = destination_for(
+            instance.owner, validated_data.pop("cookbook_id", instance.cookbook_id), excluding=instance.pk
+        )
         ingredients = validated_data.pop("ingredients", None)
         for field, value in validated_data.items():
             setattr(instance, field, value)
         instance.save()
         if ingredients is not None:
             self._replace_ingredients(instance, ingredients)
+        touch([previous_cookbook, instance.cookbook_id])
         return instance
 
     def _replace_ingredients(self, saved, ingredients):
@@ -503,11 +533,11 @@ class EnsureFoodDaySerializer(serializers.Serializer):
     date = serializers.DateField()
 
 
-class RecentFoodSerializer(serializers.Serializer):
+class RecentFoodSerializer(FoodMetadataSerializerMixin, serializers.Serializer):
     """A food the user has logged before, for the picker."""
 
     name = serializers.CharField()
-    servings = serializers.DecimalField(max_digits=6, decimal_places=2)
+    servings = serializers.DecimalField(max_digits=10, decimal_places=6)
     calories = serializers.DecimalField(max_digits=8, decimal_places=2)
     protein_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
     carbohydrate_grams = serializers.DecimalField(max_digits=8, decimal_places=2)
@@ -1643,8 +1673,70 @@ def fitted_set_types(set_types, target_sets, *, sent):
     return set_types[:target_sets]
 
 
+class WorkoutPlannedSetSerializer(serializers.Serializer):
+    """One ordered target, not a completed/logged set. Null means unspecified."""
+    id = serializers.UUIDField()
+    set_type = serializers.ChoiceField(choices=core_models.SetType.choices)
+    target_reps = serializers.IntegerField(required=False, allow_null=True, min_value=1, max_value=1000)
+    target_weight_kg = serializers.DecimalField(required=False, allow_null=True, max_digits=7,
+                                                decimal_places=2, min_value=Decimal("0"))
+
+    def to_internal_value(self, data):
+        if isinstance(data, dict):
+            # A parent PATCH is partial, but each submitted row is a complete
+            # replacement, never a partial row patch keyed by its position.
+            missing = {"id", "set_type"} - set(data)
+            if missing:
+                raise serializers.ValidationError({key: "This field is required." for key in sorted(missing)})
+            if set(data) - set(self.fields):
+                raise serializers.ValidationError("Unknown planned-set fields.")
+            if "id" in data and not isinstance(data["id"], str):
+                raise serializers.ValidationError({"id": "Use a UUID string."})
+            reps = data.get("target_reps")
+            if reps is not None and (isinstance(reps, bool) or not isinstance(reps, int)):
+                raise serializers.ValidationError({"target_reps": "Use a whole number or null."})
+            weight = data.get("target_weight_kg")
+            if weight is not None and not isinstance(weight, str):
+                raise serializers.ValidationError({"target_weight_kg": "Use a decimal string or null."})
+        result = super().to_internal_value(data)
+        # JSONField stores canonical strings, not Decimal/UUID objects.
+        result["id"] = str(result["id"])
+        result["target_reps"] = result.get("target_reps")
+        weight = result.get("target_weight_kg")
+        result["target_weight_kg"] = format(weight, ".2f") if weight is not None else None
+        return result
+
+
+def settle_planned_sets(attrs, instance=None):
+    """Preserve explicit targets from old clients; rows own count and kinds."""
+    current = getattr(instance, "planned_sets", [])
+    if "planned_sets" in attrs:
+        rows = attrs["planned_sets"]
+        ids = [row["id"] for row in rows]
+        if len(ids) != len(set(ids)):
+            raise serializers.ValidationError({"planned_sets": "Each set needs a distinct UUID."})
+        if rows:
+            attrs["target_sets"] = len(rows)
+            attrs["set_types"] = [row["set_type"] for row in rows]
+            # A single old-reader target cannot represent different row targets.
+            # Never project one set's number onto every set in older clients.
+            attrs["target_reps"] = None
+            attrs["target_weight_kg"] = None
+    elif current:
+        for field in ("target_sets", "set_types", "target_reps", "target_weight_kg", "exercise"):
+            if field in attrs and attrs[field] != getattr(instance, field):
+                raise serializers.ValidationError({"planned_sets": "This workout has individual set targets. Reload with a supported app before changing its set plan."})
+    return attrs
+
+
+class WorkoutCapabilitiesSerializer(serializers.Serializer):
+    planned_sets_version = serializers.IntegerField(read_only=True)
+
+
 class WorkoutExerciseSerializer(serializers.ModelSerializer):
     exercise_name = serializers.CharField(source="exercise.name", read_only=True)
+    planned_sets = WorkoutPlannedSetSerializer(many=True, required=False, max_length=core_models.MAX_PLANNED_SET_TYPES,
+        help_text="Ordered explicit targets. Nonempty rows define target_sets and set_types and clear aggregate target_reps/target_weight_kg. Empty uses legacy aggregate targets; omission preserves existing rows.")
     # The three below are declared rather than inferred, for the reason
     # PlannerEntrySerializer.duration_minutes is: the bounds belong in the
     # contract, and left to the model the schema advertised the database's
@@ -1709,6 +1801,7 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
             "rest_seconds",
             "superset_group",
             "set_types",
+            "planned_sets",
         ]
         read_only_fields = ["id", "exercise_name"]
 
@@ -1721,6 +1814,8 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
         if exercise and exercise.created_by_id not in (None, profile.id):
             raise serializers.ValidationError("Exercise is not available to this user.")
 
+        attrs = settle_planned_sets(attrs, self.instance)
+
         target_sets = attrs.get("target_sets", getattr(self.instance, "target_sets", None))
         if target_sets is None and self.omitted_target_sets_is_default:
             target_sets = DEFAULT_TARGET_SETS
@@ -1731,6 +1826,26 @@ class WorkoutExerciseSerializer(serializers.ModelSerializer):
             if sent or fitted != current:
                 attrs["set_types"] = fitted
         return attrs
+
+    @transaction.atomic
+    def create(self, validated_data):
+        # Same parent lock as template replacements and session snapshots.
+        get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=validated_data["workout"].pk)
+        return super().create(validated_data)
+
+    @transaction.atomic
+    def update(self, instance, validated_data):
+        if "workout" in validated_data and validated_data["workout"].pk != instance.workout_id:
+            raise serializers.ValidationError({"workout": "An exercise relation cannot move to another workout."})
+        get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=instance.workout_id)
+        instance = get_object_or_404(WorkoutExercise.objects.select_for_update(), pk=instance.pk)
+        settle_planned_sets(validated_data, instance)
+        target_sets = validated_data.get("target_sets", instance.target_sets)
+        current = validated_data.get("set_types", instance.set_types)
+        fitted = fitted_set_types(current, target_sets, sent="set_types" in validated_data)
+        if fitted != current:
+            validated_data["set_types"] = fitted
+        return super().update(instance, validated_data)
 
 
 class InitialWorkoutExerciseSerializer(WorkoutExerciseSerializer):
@@ -1745,6 +1860,7 @@ class InitialWorkoutExerciseSerializer(WorkoutExerciseSerializer):
             "rest_seconds",
             "superset_group",
             "set_types",
+            "planned_sets",
         ]
         read_only_fields = []
 
@@ -1762,6 +1878,9 @@ class WorkoutPlanExerciseSerializer(InitialWorkoutExerciseSerializer):
 
 
 class WorkoutTemplateSerializer(serializers.ModelSerializer):
+    supports_planned_sets = serializers.SerializerMethodField()
+    planned_sets_version = serializers.IntegerField(required=False, write_only=True, min_value=1, max_value=1,
+        help_text="Send 1 after checking workouts/capabilities/ when intentionally replacing/removing explicit per-set exercise plans.")
     exercise_plan = WorkoutPlanExerciseSerializer(
         many=True, required=False, write_only=True, max_length=200,
         help_text="Update-only: atomically replace the exercise plan, preserving supplied relation IDs.",
@@ -1805,7 +1924,7 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
     )
 
     #: Added to a response the app already decodes; see core.schema.
-    optional_response_fields = frozenset({"last_performed_at", "activity"})
+    optional_response_fields = frozenset({"last_performed_at", "activity", "supports_planned_sets"})
 
     class Meta:
         model = WorkoutTemplate
@@ -1825,8 +1944,14 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
             "last_performed_at",
             "created_at",
             "updated_at",
+            "supports_planned_sets",
+            "planned_sets_version",
         ]
         read_only_fields = ["id", "owner", "created_at", "updated_at"]
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_supports_planned_sets(self, workout):
+        return True
 
     @extend_schema_field(serializers.DateTimeField(allow_null=True))
     def get_last_performed_at(self, workout):
@@ -1881,7 +2006,8 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
 
     @transaction.atomic
     def update(self, instance, validated_data):
-        instance = WorkoutTemplate.objects.select_for_update().get(pk=instance.pk)
+        instance = get_object_or_404(WorkoutTemplate.objects.select_for_update(), pk=instance.pk)
+        planned_sets_version = validated_data.pop("planned_sets_version", None)
         plan = validated_data.pop("exercise_plan", None)
         if plan is not None:
             rows = list(instance.workout_exercises.all())
@@ -1890,10 +2016,13 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError({"exercise_plan": "An exercise relation is not in this workout. Reload the plan."})
             # Move existing rows aside first so exchanging positions never
             # violates the unique(workout, order) constraint halfway through.
-            offset = max([row.order for row in rows] + [entry["order"] for entry in plan] + [0]) + 1
+            taken = {row.order for row in rows} | {entry["order"] for entry in plan}
+            spare = (number for number in itertools.count(1) if number not in taken)
             original = {(row.order, row.exercise_id): row for row in rows}
-            for index, row in enumerate(rows):
-                row.order = offset + index
+            for row in rows:
+                # Bounded spare positions, not max(order)+1, which can overflow
+                # PostgreSQL's integer column for an older sparse plan.
+                row.order = next(spare)
                 row.save(update_fields=["order"])
             kept = set()
             reserved = {entry["relation_id"] for entry in plan if "relation_id" in entry}
@@ -1915,6 +2044,7 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
                 # out, because only now is it known which relation's count
                 # that is.
                 existing = row is not None and row.pk not in kept
+                settle_planned_sets(values, row if existing else None)
                 target_sets = values.get(
                     "target_sets", row.target_sets if existing else DEFAULT_TARGET_SETS
                 )
@@ -1934,11 +2064,15 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
                 else:
                     row = WorkoutExercise.objects.create(workout=instance, **values)
                 kept.add(row.pk)
+            removed = [row for row in rows if row.pk not in kept]
+            if planned_sets_version != 1 and any(row.planned_sets for row in removed):
+                raise serializers.ValidationError({"planned_sets_version": "Reload with a supported app before replacing individual set targets."})
             instance.workout_exercises.exclude(pk__in=kept).delete()
         return super().update(instance, validated_data)
 
     @transaction.atomic
     def create(self, validated_data):
+        validated_data.pop("planned_sets_version", None)
         exercises = validated_data.pop("initial_exercises", [])
         date = validated_data.pop("initial_date", None)
         workout = super().create(validated_data)
@@ -2068,6 +2202,9 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
     """
 
     owner = serializers.PrimaryKeyRelatedField(read_only=True)
+    recurrence_id = serializers.IntegerField(read_only=True, allow_null=True)
+    scheduling_timezone = serializers.CharField(required=False, allow_blank=True, max_length=64)
+    optional_response_fields = frozenset({"recurrence_id", "color", "scheduling_timezone"})
     # Explicitly nullable: most entries have no workout, and without this the
     # schema promises a string where the API sends null, which makes every
     # ordinary task fail to decode in a generated client.
@@ -2142,6 +2279,9 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             "priority",
             "scheduled_date",
             "scheduled_time",
+            "color",
+            "scheduling_timezone",
+            "recurrence_id",
             "duration_minutes",
             "is_complete",
             "completed_at",
@@ -2163,6 +2303,7 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "owner",
+            "recurrence_id",
             "completed_at",
             "workout_name",
             "subtasks",
@@ -2204,6 +2345,12 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Give the task a name.")
         return title
 
+    def validate_scheduling_timezone(self, value):
+        name = value.strip()
+        if name and name not in available_timezones():
+            raise serializers.ValidationError("Use an IANA time zone this server knows.")
+        return name
+
     def validate_workout(self, value):
         if value is None:
             return value
@@ -2242,22 +2389,30 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         # leave the pair in the state the database constraint forbids, and the
         # refusal would arrive as a 500 instead of a named field error.
         duration = self._resulting(attrs, "duration_minutes")
-        start = self._resulting(attrs, "scheduled_time")
+        start_time = self._resulting(attrs, "scheduled_time")
         # The range is the field's own business. What is left here is the
         # part no single field can see: a length is only meaningful next to a
         # start, and either half can arrive in a different request.
-        if duration is not None and start is None:
+        if duration is not None and start_time is None:
             raise serializers.ValidationError(
                 {"duration_minutes": "Give it a start time before a length."}
             )
 
         # An event happens at a time; it is not something to tick off. Letting
         # one be "completed" would put a checkbox on a birthday.
-        kind = attrs.get("kind", getattr(self.instance, "kind", None))
-        if kind == PlannerEntry.Kind.EVENT and attrs.get("is_complete"):
+        kind = attrs.get("kind", getattr(self.instance, "kind", PlannerEntry.Kind.TASK))
+        if kind == PlannerEntry.Kind.EVENT and (
+            attrs.get("is_complete")
+            or (
+                self.instance is not None and self.instance.completed_at is not None
+                and attrs.get("is_complete") is not False
+            )
+        ):
             raise serializers.ValidationError(
                 {"is_complete": "An event happens rather than being completed."}
             )
+        if kind == PlannerEntry.Kind.EVENT and self.instance is not None and self.instance.subtasks.exists():
+            raise serializers.ValidationError({"kind": "An event cannot have steps."})
 
         # A task with steps does not own its own checkbox: the steps are the
         # record of the work and the heading is derived from them. The same
@@ -2282,35 +2437,57 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
         # holding none of its own work.
         parent = attrs.get("parent", getattr(self.instance, "parent", None))
         if parent is not None:
+            if kind == PlannerEntry.Kind.EVENT:
+                raise serializers.ValidationError({"parent": "An event cannot be a step."})
+            if self.instance is not None and self.instance.recurrence_id:
+                raise serializers.ValidationError({"parent": "A repeating entry must stand on its own."})
             attrs["scheduled_date"] = parent.scheduled_date
             attrs["kind"] = PlannerEntry.Kind.TASK
 
-        # Repeats belong to tasks that stand on their own. An event happens
-        # once by definition, and a step repeating independently of the task
-        # it belongs to describes nothing.
+        # The narrower default edits this occurrence. Changing the repeat is
+        # only permitted with an explicit following scope on its owner route;
+        # a read-only recurrence ID can never assign another person's rule.
+        request = self.context.get("request")
+        scope = request.query_params.get("scope", "occurrence") if request else "occurrence"
+        if scope not in ("occurrence", "following"):
+            raise serializers.ValidationError({"scope": "Use occurrence or following."})
+        following = self.instance is not None and scope == "following"
+        if following and (self.instance.recurrence_id is None or self.instance.parent_id is not None):
+            raise serializers.ValidationError({"scope": "Following requires a repeating top-level entry."})
+        if following and (attrs.get("is_complete") is True or self.instance.completed_at is not None):
+            raise serializers.ValidationError({"is_complete": "Complete one occurrence, not a series."})
         interval = attrs.get("repeat_every_days")
         weekdays = attrs.get("repeat_on_weekdays")
         if interval is not None and weekdays is not None:
             raise serializers.ValidationError({"repeat_on_weekdays": "Choose weekdays or an interval, not both."})
-        if self.instance is not None and any(key in attrs for key in ("repeat_every_days", "repeat_on_weekdays", "repeat_ends_on")):
-            raise serializers.ValidationError({"repeat_on_weekdays": "Stop the existing repeat and create a new task to change its schedule."})
-        if interval is not None or weekdays is not None:
-            if kind == PlannerEntry.Kind.EVENT:
-                raise serializers.ValidationError(
-                    {"repeat_every_days": "An event happens once. Use a task to repeat."}
-                )
+        repeat_fields = ("repeat_every_days", "repeat_on_weekdays", "repeat_ends_on")
+        if self.instance is not None and any(key in attrs for key in repeat_fields) and not following:
+            raise serializers.ValidationError({"repeat_on_weekdays": "Use scope=following to change the repeat's schedule."})
+        if interval is not None or weekdays is not None or following:
             if parent is not None:
                 raise serializers.ValidationError(
                     {"repeat_every_days": "A step repeats with its task, not on its own."}
                 )
-            ends = attrs.get("repeat_ends_on")
-            start = attrs.get("scheduled_date", getattr(self.instance, "scheduled_date", None))
+            rule = self.instance.recurrence if following else None
+            effective_weekdays = weekdays if weekdays is not None else (
+                rule.weekdays if rule is not None and interval is None else []
+            )
+            ends = attrs.get("repeat_ends_on", rule.ends_on if rule else None)
+            original_date = (self.instance.recurrence_date or self.instance.scheduled_date) if following else None
+            source_date = original_date - timedelta(days=rule.identity_offset_days) if rule else None
+            start = attrs.get("scheduled_date", source_date)
             repeater = getattr(self.instance, "owner", None) or self.context["request"].user.repbase_profile
+            if following and start is not None and start < today_for(repeater):
+                raise serializers.ValidationError({"scheduled_date": "Following edits cannot move a series into the past."})
             if start is not None and start > plan_ahead_limit(repeater):
                 raise serializers.ValidationError({"repeat_every_days": "A repeat can start at most a year from today."})
-            if weekdays and start is not None:
-                start += timedelta(days=min((weekday - start.weekday()) % 7 for weekday in weekdays))
+            if effective_weekdays and start is not None and (
+                self.instance is None or "scheduled_date" in attrs or weekdays is not None
+            ):
+                start += timedelta(days=min((weekday - start.weekday()) % 7 for weekday in effective_weekdays))
                 attrs["scheduled_date"] = start
+            if self.instance is None and start is not None and start < today_for(repeater) - timedelta(days=30):
+                raise serializers.ValidationError({"scheduled_date": "A new repeat can start at most 30 days before today."})
             if ends is not None and start is not None and ends <= start:
                 raise serializers.ValidationError(
                     {"repeat_ends_on": "The repeat has to end after the day it starts."}
@@ -2327,12 +2504,12 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             if self.instance is None:
                 running = PlannerRecurrence.objects.filter(owner=repeater).filter(
                     Q(ends_on__isnull=True) | Q(ends_on__gt=today_for(repeater))
-                )
-                if running.count() >= core_models.MAX_ACTIVE_PLANNER_REPEATS:
+                ).exclude(ends_on__lte=F("starts_on"))
+                if running.values("series_id").distinct().count() >= core_models.MAX_ACTIVE_PLANNER_REPEATS:
                     raise serializers.ValidationError(
                         {
                             "repeat_every_days": (
-                                "You have as many repeating tasks as one account can "
+                                "You have as many repeating entries as one account can "
                                 "hold. End one before adding another."
                             )
                         }
@@ -2341,6 +2518,15 @@ class PlannerEntrySerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(
                 {"repeat_ends_on": "Say how often it repeats before saying when it stops."}
             )
+
+        if start_time is not None:
+            # scheduled_time is a floating local wall time, made stable by
+            # persisting its zone. Legacy clients may omit this new field.
+            zone = attrs.get("scheduling_timezone", getattr(self.instance, "scheduling_timezone", ""))
+            if not zone:
+                profile = getattr(self.instance, "owner", None) or self.context["request"].user.repbase_profile
+                profile_zone = profile.time_zone
+                attrs["scheduling_timezone"] = profile_zone if profile_zone in available_timezones() else "UTC"
 
         # A workout that was trained cannot be un-trained by a checkbox.
         #
@@ -2638,6 +2824,7 @@ def activity_details_field():
 
 
 class WorkoutSessionSerializer(serializers.ModelSerializer):
+    health_summary = HealthWorkoutSummarySerializer(read_only=True, allow_null=True)
     repbase_user = serializers.PrimaryKeyRelatedField(read_only=True)
     #: allow_null for the same reason workout_type has it, which is the whole
     #: bug: without it DRF does not send null when workout is None, it drops
@@ -2699,6 +2886,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
 
     #: Added to a response the app already decodes; see core.schema.
     optional_response_fields = frozenset({
+        "health_summary",
         "activity",
         "perceived_effort",
         "manual_calories_kcal",
@@ -2711,6 +2899,7 @@ class WorkoutSessionSerializer(serializers.ModelSerializer):
     class Meta:
         model = WorkoutSession
         fields = [
+            "health_summary",
             "id",
             "repbase_user",
             "workout",
@@ -3012,10 +3201,17 @@ class SessionRouteUploadSerializer(serializers.Serializer):
 
 class SessionExerciseSerializer(serializers.ModelSerializer):
     exercise_name = serializers.CharField(source="exercise.name", read_only=True)
+    planned_sets = WorkoutPlannedSetSerializer(many=True, read_only=True, allow_null=True,
+        help_text="Immutable plan snapshot at session creation. Null is unknown historical data; [] is a known empty plan. Never completed sets.")
+    workout_exercise_id = serializers.IntegerField(read_only=True, allow_null=True)
+    rest_seconds = serializers.IntegerField(read_only=True, allow_null=True)
+    superset_group = serializers.IntegerField(read_only=True, allow_null=True)
+    optional_response_fields = frozenset({"planned_sets", "workout_exercise_id", "rest_seconds", "superset_group"})
 
     class Meta:
         model = SessionExercise
-        fields = ["id", "session", "exercise", "exercise_name", "order", "notes"]
+        fields = ["id", "session", "exercise", "exercise_name", "order", "notes",
+                  "planned_sets", "workout_exercise_id", "rest_seconds", "superset_group"]
         read_only_fields = ["id", "exercise_name"]
 
     def validate(self, attrs):
@@ -3026,7 +3222,14 @@ class SessionExerciseSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Session does not belong to this user.")
         if exercise and exercise.created_by_id not in (None, profile.id):
             raise serializers.ValidationError("Exercise is not available to this user.")
+        if self.instance and (session != self.instance.session or exercise != self.instance.exercise):
+            raise serializers.ValidationError("A recorded session exercise cannot change its source exercise or session.")
         return attrs
+
+    def create(self, validated_data):
+        # Added during a session, not copied from a plan. Historical rows stay
+        # null through the additive migration; new manual additions are known.
+        return super().create({**validated_data, "planned_sets": []})
 
 
 #: The most exercises one reorder may name. A session is copied from a plan of
@@ -3138,6 +3341,61 @@ def nutrition_amount(row, field):
     return (getattr(row, field) or Decimal("0")) * (row.servings or Decimal("0"))
 
 
+class SummarisableSnapshot:
+    """A posted workout or recipe that can be sent without its rows.
+
+    A feed page draws a card from a title and three figures; the exercises
+    and the foods are for whoever opens the post. A list asked for with
+    `?attachments=summary` puts `"attachments": "summary"` in the serializer
+    context, and a snapshot then sends its figures from the columns stored
+    when it was published and leaves the fields named in
+    `withheld_in_summary` empty, without reading a row.
+
+    `details_included` says which it was. An empty `exercises` on a summary
+    is "not sent", not "none": `exercise_count` beside it has the real
+    number, and the post's own URL has the rows.
+
+    The withheld fields are taken out in `get_fields`, where the context is
+    known, so nothing ever evaluates the relation behind them. The schema is
+    generated without a context and describes every field.
+    """
+
+    #: {field name: a callable giving its empty value}.
+    withheld_in_summary = {}
+
+    #: The stored column that is null until the figures have been added up.
+    summarised_marker = None
+
+    @property
+    def is_summary(self):
+        return self.context.get("attachments") == "summary"
+
+    def reads_stored_figures(self, snapshot):
+        """Whether to answer from the stored columns: a summary was asked
+        for, and this snapshot has them. One written by the release before
+        these columns has not, and is added up from its rows like a full
+        card -- a query or two for that card, rather than a zero."""
+        return self.is_summary and getattr(snapshot, self.summarised_marker) is not None
+
+    def get_fields(self):
+        fields = super().get_fields()
+        if self.is_summary:
+            for name in self.withheld_in_summary:
+                fields.pop(name, None)
+        return fields
+
+    def to_representation(self, snapshot):
+        data = super().to_representation(snapshot)
+        if self.is_summary:
+            for name, empty in self.withheld_in_summary.items():
+                data[name] = empty()
+        return data
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_details_included(self, snapshot):
+        return not self.is_summary
+
+
 class PostWorkoutExerciseSerializer(serializers.ModelSerializer):
     """One exercise inside a posted workout."""
 
@@ -3173,7 +3431,7 @@ class PostWorkoutExerciseSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "name", "order", "set_count"]
 
 
-class PostWorkoutSerializer(serializers.ModelSerializer):
+class PostWorkoutSerializer(SummarisableSnapshot, serializers.ModelSerializer):
     """A posted workout, frozen at the moment it was posted.
 
     The three totals are summed from the exercises nested underneath rather
@@ -3208,9 +3466,13 @@ class PostWorkoutSerializer(serializers.ModelSerializer):
     exercise_count = serializers.SerializerMethodField()
     total_set_count = serializers.SerializerMethodField()
     total_volume_kg = serializers.SerializerMethodField()
+    details_included = serializers.SerializerMethodField()
 
     #: Added to a response the app already decodes; see core.schema.
-    optional_response_fields = frozenset({"activity"})
+    optional_response_fields = frozenset({"activity", "details_included"})
+    #: Left empty when a page asks for summaries; see SummarisableSnapshot.
+    withheld_in_summary = {"exercises": list}
+    summarised_marker = "exercise_count"
 
     class Meta:
         model = PostWorkout
@@ -3230,15 +3492,20 @@ class PostWorkoutSerializer(serializers.ModelSerializer):
             "exercise_count",
             "total_set_count",
             "total_volume_kg",
+            "details_included",
         ]
         read_only_fields = ["title", "performed_at", "exercises"]
 
     @extend_schema_field(serializers.IntegerField())
     def get_exercise_count(self, snapshot):
+        if self.reads_stored_figures(snapshot):
+            return snapshot.exercise_count
         return len(snapshot.exercises.all())
 
     @extend_schema_field(serializers.IntegerField())
     def get_total_set_count(self, snapshot):
+        if self.reads_stored_figures(snapshot):
+            return snapshot.total_set_count
         return sum(exercise.set_count for exercise in snapshot.exercises.all())
 
     @extend_schema_field(serializers.DecimalField(
@@ -3247,6 +3514,10 @@ class PostWorkoutSerializer(serializers.ModelSerializer):
     def get_total_volume_kg(self, snapshot):
         # Null, not zero, when no exercise logged a load: a bodyweight session
         # and a session nobody filled in must not both read "0 kg".
+        if self.reads_stored_figures(snapshot):
+            if snapshot.total_volume_kg is None:
+                return None
+            return VOLUME_DECIMAL.to_representation(snapshot.total_volume_kg)
         volumes = [
             exercise.volume_kg
             for exercise in snapshot.exercises.all()
@@ -3257,7 +3528,7 @@ class PostWorkoutSerializer(serializers.ModelSerializer):
         return VOLUME_DECIMAL.to_representation(sum(volumes))
 
 
-class PostMealEntrySerializer(serializers.ModelSerializer):
+class PostMealEntrySerializer(FoodMetadataSerializerMixin, serializers.ModelSerializer):
     """One food inside a posted meal, per serving with its servings beside it."""
 
     total_calories = serializers.SerializerMethodField()
@@ -3269,6 +3540,7 @@ class PostMealEntrySerializer(serializers.ModelSerializer):
         model = PostMealEntry
         fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -3283,6 +3555,7 @@ class PostMealEntrySerializer(serializers.ModelSerializer):
         ]
         read_only_fields = [
             "id",
+            *FOOD_METADATA_FIELDS,
             "name",
             "servings",
             "calories",
@@ -3312,7 +3585,7 @@ class PostMealEntrySerializer(serializers.ModelSerializer):
         return self._total(entry, "fat_grams")
 
 
-class PostMealSerializer(serializers.ModelSerializer):
+class PostMealSerializer(SummarisableSnapshot, serializers.ModelSerializer):
     """A posted meal, frozen at the moment it was posted.
 
     Totals are derived from the foods nested underneath, exactly as
@@ -3326,6 +3599,14 @@ class PostMealSerializer(serializers.ModelSerializer):
     total_protein_grams = serializers.SerializerMethodField()
     total_carbohydrate_grams = serializers.SerializerMethodField()
     total_fat_grams = serializers.SerializerMethodField()
+    entry_count = serializers.SerializerMethodField()
+    details_included = serializers.SerializerMethodField()
+
+    #: Added to a response the app already decodes; see core.schema.
+    optional_response_fields = frozenset({"entry_count", "details_included"})
+    #: The foods and the method are what opening a recipe is for.
+    withheld_in_summary = {"entries": list, "cooking_instructions": str}
+    summarised_marker = "entry_count"
 
     class Meta:
         model = PostMeal
@@ -3338,10 +3619,20 @@ class PostMealSerializer(serializers.ModelSerializer):
             "total_protein_grams",
             "total_carbohydrate_grams",
             "total_fat_grams",
+            "entry_count",
+            "details_included",
         ]
         read_only_fields = ["name", "date", "entries", "cooking_instructions"]
 
+    @extend_schema_field(serializers.IntegerField())
+    def get_entry_count(self, snapshot):
+        if self.reads_stored_figures(snapshot):
+            return snapshot.entry_count
+        return len(snapshot.entries.all())
+
     def _total(self, snapshot, field):
+        if self.reads_stored_figures(snapshot):
+            return NUTRITION_DECIMAL.to_representation(getattr(snapshot, f"total_{field}"))
         total = sum(
             nutrition_amount(entry, field) for entry in snapshot.entries.all()
         ) or Decimal("0")
@@ -3480,7 +3771,249 @@ def video_for(post, context):
     return PostVideoSerializer(video, context=context).data
 
 
-class RepostedPostSerializer(serializers.ModelSerializer):
+class CreditedPersonSerializer(serializers.ModelSerializer):
+    """Whoever a credit line names: enough to print "by Mia Chen" and link to
+    the profile, and nothing a credit does not need. A whole public profile
+    here would be a second author on every card."""
+
+    username = serializers.CharField(source="user.username", read_only=True)
+    first_name = serializers.CharField(source="user.first_name", read_only=True)
+    last_name = serializers.CharField(source="user.last_name", read_only=True)
+    profile_photo_url = serializers.SerializerMethodField()
+
+    class Meta:
+        model = RepbaseUser
+        fields = ["id", "username", "first_name", "last_name", "profile_photo_url"]
+        read_only_fields = fields
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_profile_photo_url(self, profile):
+        return profile_photo_url_for(profile, self.context.get("request"))
+
+
+class PostSourceSerializer(serializers.Serializer):
+    """The post a take answers, as its credit line.
+
+    Present on every take and null on everything else. When the reader may
+    not see the source -- it was deleted, taken down, made private, its
+    author blocked them or was suspended -- `available` is false and every
+    other field is null: the card can say the original is unavailable, and
+    nothing here says what it was or whose.
+    """
+
+    available = serializers.BooleanField(read_only=True)
+    post_id = serializers.IntegerField(read_only=True, allow_null=True)
+    #: Where the chain of takes started, when the reader may see that post.
+    #: Equal to `post_id` for a take of an original.
+    original_post_id = serializers.IntegerField(read_only=True, allow_null=True)
+    kind = serializers.CharField(read_only=True, allow_null=True)
+    author = CreditedPersonSerializer(read_only=True, allow_null=True)
+    #: The source's workout title or recipe name. Null for a photo or video.
+    title = serializers.CharField(read_only=True, allow_null=True)
+    #: The version of the source's workout or recipe this take was made from.
+    attachment_version = serializers.IntegerField(read_only=True, allow_null=True)
+
+
+class PostSoundSerializer(serializers.Serializer):
+    """The sound a post's clip is set to, as its credit line."""
+
+    id = serializers.IntegerField(read_only=True)
+    title = serializers.CharField(read_only=True)
+    duration_ms = serializers.IntegerField(read_only=True, allow_null=True)
+    owner = CreditedPersonSerializer(read_only=True)
+    #: True on the post the sound was first made from.
+    is_original = serializers.BooleanField(read_only=True)
+
+
+UNAVAILABLE_SOURCE = {
+    "available": False,
+    "post_id": None,
+    "original_post_id": None,
+    "kind": None,
+    "author": None,
+    "title": None,
+    "attachment_version": None,
+}
+
+
+class PostCredits:
+    """The sources and sounds one reader may be shown, for a whole page.
+
+    Loaded at most once per response and only for what is on it: one query
+    for the sources of the page's takes, which is also the visibility check,
+    and one for its sounds plus one for blocks. A page with no takes and no
+    sounds -- every page, until those ship -- costs nothing.
+
+    Reposted originals are gathered with the rows that carry them, so the
+    card nested in a repost reads its credit from the same load.
+    """
+
+    def __init__(self, viewer, posts):
+        from .models import Sound
+        from .publication import sounds_shown_to
+        from .views import visible_posts_for
+
+        rows = []
+        for post in posts:
+            rows.append(post)
+            if post.repost_of_id is not None:
+                rows.append(post.repost_of)
+        wanted = {
+            pk for row in rows if row.is_take
+            for pk in (row.source_post_id, row.original_post_id) if pk is not None
+        }
+        self.sources = {}
+        if wanted and viewer is not None:
+            # visible_posts_for is the rule; nothing about who may see a
+            # source is restated here.
+            self.sources = {
+                source.pk: source
+                for source in visible_posts_for(viewer, Post.objects.filter(pk__in=wanted))
+                .select_related("author__user", "workout", "meal")
+            }
+        sound_ids = {row.sound_id for row in rows if row.sound_id is not None}
+        self.sounds = {}
+        if sound_ids and viewer is not None:
+            loaded = list(Sound.objects.filter(pk__in=sound_ids).select_related("owner__user"))
+            shown = sounds_shown_to(viewer, loaded)
+            self.sounds = {sound.pk: sound for sound in loaded if sound.pk in shown}
+
+    def source_of(self, post, context):
+        if not post.is_take:
+            return None
+        source = self.sources.get(post.source_post_id)
+        if source is None:
+            return UNAVAILABLE_SOURCE
+        snapshot = getattr(source, "workout", None) or getattr(source, "meal", None)
+        return PostSourceSerializer(
+            {
+                "available": True,
+                "post_id": source.pk,
+                "original_post_id": (
+                    post.original_post_id if post.original_post_id in self.sources else None
+                ),
+                "kind": source.kind,
+                "author": source.author,
+                "title": getattr(snapshot, "title", None) or getattr(snapshot, "name", None),
+                "attachment_version": post.source_attachment_version,
+            },
+            context=context,
+        ).data
+
+    def sound_of(self, post, context):
+        sound = self.sounds.get(post.sound_id)
+        if sound is None:
+            return None
+        return PostSoundSerializer(
+            {
+                "id": sound.pk,
+                "title": sound.title,
+                "duration_ms": sound.duration_ms,
+                "owner": sound.owner,
+                "is_original": sound.origin_post_id == post.pk,
+            },
+            context=context,
+        ).data
+
+
+def credits_for(serializer, post):
+    """The page's `PostCredits`, loaded on first use and kept in the context.
+
+    Built by the serializer of the page -- a list, or one post -- so every
+    card and every card nested in a repost shares one load. A serializer
+    reached with no page behind it loads for its own post and keeps nothing:
+    what it loaded would be wrong for the next one.
+    """
+    cached = serializer.context.get("_post_credits")
+    if cached is not None:
+        return cached
+    request = serializer.context.get("request")
+    viewer = getattr(getattr(request, "user", None), "repbase_profile", None)
+    if not isinstance(serializer, PostSerializer):
+        return PostCredits(viewer, [post])
+    parent = serializer.parent
+    batch = parent.instance if isinstance(parent, serializers.ListSerializer) else serializer.instance
+    if batch is None:
+        batch = [post]
+    elif isinstance(batch, Post):
+        batch = [batch]
+    credits = PostCredits(viewer, batch)
+    serializer.context["_post_credits"] = credits
+    return credits
+
+
+def audience_of(post):
+    """Who can read a post, in one word, the author's profile included.
+
+    `visibility` is what the author chose for this post; a closed profile
+    narrows a public post to followers all the same, and a card that said
+    "public" over it would be wrong about who is reading.
+    """
+    if post.visibility == Post.Visibility.PRIVATE:
+        return Post.Visibility.PRIVATE
+    if post.visibility == Post.Visibility.FOLLOWERS or not post.author.is_profile_public:
+        return Post.Visibility.FOLLOWERS
+    return Post.Visibility.PUBLIC
+
+
+class PublicationFieldsMixin(serializers.Serializer):
+    """What a post says about its lineage, sound and subject. Shared by the
+    card and by the card nested in a repost, which show the same credits.
+
+    Every field here was added to responses the apps already decode, so each
+    is optional in the contract (see core.schema) and each is a plain string,
+    number or object -- no enum a client generated earlier would refuse.
+    """
+
+    is_take = serializers.BooleanField(read_only=True)
+    source = serializers.SerializerMethodField()
+    sound = serializers.SerializerMethodField()
+    hashtags = serializers.ListField(child=serializers.CharField(), read_only=True)
+    topics = serializers.ListField(child=serializers.CharField(), read_only=True)
+    language = serializers.SerializerMethodField()
+    attachment_version = serializers.IntegerField(read_only=True)
+    audience = serializers.SerializerMethodField()
+    reuse_permission = serializers.CharField(read_only=True)
+
+    PUBLICATION_FIELDS = [
+        "is_take",
+        "source",
+        "sound",
+        "hashtags",
+        "topics",
+        "language",
+        "attachment_version",
+        "audience",
+        "reuse_permission",
+        "prompt",
+    ]
+
+    #: The prompt the post answers, as its code, or null.
+    prompt = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_prompt(self, post):
+        return post.prompt or None
+
+    @extend_schema_field(PostSourceSerializer(allow_null=True))
+    def get_source(self, post):
+        return credits_for(self, post).source_of(post, self.context)
+
+    @extend_schema_field(PostSoundSerializer(allow_null=True))
+    def get_sound(self, post):
+        return credits_for(self, post).sound_of(post, self.context)
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_language(self, post):
+        """The caption's language tag, or null when it was never said."""
+        return post.language or None
+
+    @extend_schema_field(serializers.CharField())
+    def get_audience(self, post):
+        return audience_of(post)
+
+
+class RepostedPostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
     """The original, as it appears inside a repost.
 
     Deliberately not `PostSerializer`. That one carries `repost_of`, and a
@@ -3494,6 +4027,7 @@ class RepostedPostSerializer(serializers.ModelSerializer):
     workout = PostWorkoutSerializer(read_only=True, allow_null=True)
     meal = PostMealSerializer(read_only=True, allow_null=True)
     planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
+    cookbook = PostCookbookSerializer(read_only=True, allow_null=True)
     image_url = serializers.SerializerMethodField()
     feed_image_url = serializers.SerializerMethodField()
     video = serializers.SerializerMethodField()
@@ -3512,10 +4046,15 @@ class RepostedPostSerializer(serializers.ModelSerializer):
             "workout",
             "meal",
             "planner",
+            "cookbook",
             "created_at",
             "published_at",
+            *PublicationFieldsMixin.PUBLICATION_FIELDS,
         ]
         read_only_fields = fields
+
+    #: Added to a response the app already decodes; see core.schema.
+    optional_response_fields = frozenset(PublicationFieldsMixin.PUBLICATION_FIELDS)
 
     @extend_schema_field(serializers.CharField(allow_null=True))
     def get_image_url(self, post):
@@ -3721,7 +4260,7 @@ class SavedMealResultSerializer(serializers.Serializer):
     already_saved = serializers.BooleanField(read_only=True, default=False)
 
 
-class PostSerializer(serializers.ModelSerializer):
+class PostSerializer(PublicationFieldsMixin, serializers.ModelSerializer):
     """A post as anyone allowed to see it reads it.
 
     `workout`, `meal` and `planner` are three keys side by side with exactly one
@@ -3749,6 +4288,7 @@ class PostSerializer(serializers.ModelSerializer):
     workout = PostWorkoutSerializer(read_only=True, allow_null=True)
     meal = PostMealSerializer(read_only=True, allow_null=True)
     planner = PostPlannerEntrySerializer(read_only=True, allow_null=True)
+    cookbook = PostCookbookSerializer(read_only=True, allow_null=True)
     source_id = serializers.SerializerMethodField()
     #: True when this reader has already copied the post into their own.
     #:
@@ -3785,6 +4325,23 @@ class PostSerializer(serializers.ModelSerializer):
     #: why it can be a serializer of its own rather than a recursive reference
     #: the schema could not describe.
     repost_of = serializers.SerializerMethodField()
+    #: Whether this reader could post a take of this right now, so the
+    #: button is offered only where it would work. A hint: the create is what
+    #: decides, and it asks again.
+    viewer_can_take = serializers.SerializerMethodField()
+    #: How many takes of this post anybody could see: published, approved,
+    #: public, by an account in good standing. The same number for every
+    #: reader, so it is a count of responses and not of who the reader knows.
+    take_count = serializers.SerializerMethodField()
+    #: How many people have said "I tried this", and whether this reader has.
+    tried_count = serializers.SerializerMethodField()
+    viewer_has_tried = serializers.SerializerMethodField()
+
+    #: Added to a response the app already decodes; see core.schema.
+    optional_response_fields = frozenset([
+        *PublicationFieldsMixin.PUBLICATION_FIELDS, "viewer_can_take", "take_count",
+        "tried_count", "viewer_has_tried",
+    ])
 
     class Meta:
         model = Post
@@ -3800,6 +4357,7 @@ class PostSerializer(serializers.ModelSerializer):
             "workout",
             "meal",
             "planner",
+            "cookbook",
             "source_id",
             "viewer_follows_author",
             "shows_weights",
@@ -3815,6 +4373,11 @@ class PostSerializer(serializers.ModelSerializer):
             "published_at",
             "moderation_status",
             "updated_at",
+            *PublicationFieldsMixin.PUBLICATION_FIELDS,
+            "viewer_can_take",
+            "take_count",
+            "tried_count",
+            "viewer_has_tried",
         ]
         read_only_fields = [
             "id",
@@ -3916,12 +4479,19 @@ class PostSerializer(serializers.ModelSerializer):
         those fifty were visible in the first place. Asking the follow table per
         row is the one thing this field must never do.
 
-        False when the annotation is absent, which happens on exactly one path:
-        the author-scoped queryset behind PATCH and DELETE. Those return the
-        reader's own post, and nobody follows themself, so false is the true
-        answer there rather than a stand-in for one.
+        Two paths have no annotation: the author-scoped queryset behind PATCH
+        and DELETE, and a post read by its own URL. There the answer comes
+        from the reader's follows, which the author card beside this field
+        loads once for the response anyway. It used to be a flat false, which
+        was right for the first -- nobody follows themself -- and wrong for
+        the second: opening a post by somebody you follow said you did not.
         """
-        return bool(getattr(post, "viewer_follows_author", False))
+        annotated = getattr(post, "viewer_follows_author", None)
+        if annotated is not None:
+            return bool(annotated)
+        return post.author_id in PublicRepbaseUserSerializer(
+            context=self.context
+        )._followed_profile_ids
 
     #: Read off the annotation the queryset added when it is there, and only
     #: counted per row when it is not -- a serializer used on a single object,
@@ -4002,7 +4572,62 @@ class PostSerializer(serializers.ModelSerializer):
             return None
         if original.pk not in self._visible_repost_targets():
             return None
+        # Loaded here, for the page, before the nested card asks: on its own
+        # it could only load for itself.
+        credits_for(self, post)
         return RepostedPostSerializer(original, context=self.context).data
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_take_count(self, post):
+        # Off the annotation. Zero where a post is serialized without it: a
+        # post just created, which nobody can have answered yet.
+        return int(getattr(post, "take_total", 0) or 0)
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_tried_count(self, post):
+        return int(getattr(post, "tried_total", 0) or 0)
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_has_tried(self, post):
+        return bool(getattr(post, "viewer_tried", False))
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_can_take(self, post):
+        """Mirrors `publication.take_source_for` without asking the database
+        again: every fact it needs is already on the row.
+
+        A repost answers for the post it passes on, because that is what a
+        take of it would be a take of.
+        """
+        from .publication import TAKE_KINDS, may_reuse
+
+        viewer = self._viewer()
+        target = post.repost_of or post
+        if viewer is None or target.kind not in TAKE_KINDS:
+            return False
+        if not rollout.enabled("takes", viewer):
+            return False
+        if post.repost_of_id is not None and target.pk not in self._visible_repost_targets():
+            return False
+        if (
+            target.is_hidden
+            or target.moderation_status != "approved"
+            or target.published_at is None
+            or not target.is_open_to_everyone
+        ):
+            return False
+
+        def follows():
+            if target is post:
+                return self.get_viewer_follows_author(post)
+            # The annotation is about whoever reposted. The original's author
+            # is looked up in the reader's follows, which the author cards in
+            # this response have loaded already.
+            return target.author_id in PublicRepbaseUserSerializer(
+                context=self.context
+            )._followed_profile_ids
+
+        return may_reuse(viewer, target.author_id, target.reuse_permission, follows)
 
     def _viewer(self):
         request = self.context.get("request")
@@ -4038,6 +4663,23 @@ class ForYouPostSerializer(PostSerializer):
         return {"reason": reason, "label": label}
 
 
+class SocialFeaturesSerializer(serializers.Serializer):
+    """Which parts of the new Social are on for the account (`core.rollout`).
+    Every one may be missing from an older server, and missing means off."""
+
+    new_feed = serializers.BooleanField(read_only=True)
+    autoplay = serializers.BooleanField(read_only=True)
+    measurement_v2 = serializers.BooleanField(read_only=True)
+    measured_ranking = serializers.BooleanField(read_only=True)
+    sounds = serializers.BooleanField(read_only=True)
+    takes = serializers.BooleanField(read_only=True)
+    ranked_for_you = serializers.BooleanField(read_only=True)
+
+    optional_response_fields = frozenset([
+        "new_feed", "autoplay", "measurement_v2", "measured_ranking", "sounds", "takes", "ranked_for_you",
+    ])
+
+
 class ForYouPageSerializer(serializers.Serializer):
     """One page of the For You feed, in the shape every cursor page has."""
 
@@ -4068,17 +4710,88 @@ class ImpressionSerializer(serializers.Serializer):
         choices=PostView.Surface.choices, default=PostView.Surface.OTHER
     )
 
+    # ---- Schema version 2: one summary of one exposure, measured on the
+    # device. All optional here so a version 1 body is still valid; the batch
+    # requires `sequence` and `observed_at` of every event when it says 2.
+    # In a version 2 batch `dwell_ms` is the whole time on the card, and
+    # `watch_ms` is ignored: it is the furthest position a player reached,
+    # which is not a measurement of watching. See core.attention for what
+    # each figure is bounded by.
+
+    #: This exposure's number within the session, counting up.
+    sequence = serializers.IntegerField(min_value=0, max_value=2_000_000_000, required=False)
+    #: When the exposure ended, by the device's clock.
+    observed_at = serializers.DateTimeField(required=False)
+    #: Time visible in the foreground with nothing covering the card.
+    active_dwell_ms = serializers.IntegerField(
+        min_value=0, max_value=10 * 60 * 1000, required=False, default=0
+    )
+    #: Time the clip was actually playing. Null when the post has no clip.
+    playback_ms = serializers.IntegerField(
+        min_value=0, max_value=10 * 60 * 1000, required=False, allow_null=True, default=None
+    )
+    #: How much of the clip was played, counting each part once.
+    coverage_ms = serializers.IntegerField(
+        min_value=0, max_value=60 * 60 * 1000, required=False, allow_null=True, default=None
+    )
+    #: Time spent playing parts already played in this exposure.
+    rewatch_ms = serializers.IntegerField(
+        min_value=0, max_value=10 * 60 * 1000, required=False, allow_null=True, default=None
+    )
+    #: The clip could not start, or stalled until the reader left.
+    playback_failed = serializers.BooleanField(required=False, default=False)
+    #: The workout or recipe sheet was opened during this exposure.
+    attachment_opened = serializers.BooleanField(required=False, default=False)
+    attachment_read_ms = serializers.IntegerField(
+        min_value=0, max_value=10 * 60 * 1000, required=False, default=0
+    )
+
 
 class ImpressionBatchSerializer(serializers.Serializer):
     #: Fifty at most, which is more than two pages of a feed. A client sends
     #: these as it goes, not as one upload at the end of a session.
     events = ImpressionSerializer(many=True, allow_empty=False, max_length=50)
+    #: 1, or absent: what apps have always sent. 2: measured summaries, which
+    #: need the two ids below. A plain integer, so a later version is a value
+    #: this server refuses by name rather than a body it cannot parse.
+    schema_version = serializers.IntegerField(required=False, default=1)
+    #: Random, made by the device for this batch and sent again unchanged if
+    #: the batch is retried. A batch already recorded is not recorded twice.
+    batch_id = serializers.UUIDField(required=False)
+    #: Random, made by the device for this account's session. Never an
+    #: identity: who is reporting comes from the token, always.
+    session_id = serializers.UUIDField(required=False)
+
+    def validate_schema_version(self, value):
+        if value not in (1, 2):
+            raise serializers.ValidationError("This server reads schema versions 1 and 2.")
+        return value
+
+    def validate(self, attrs):
+        if attrs["schema_version"] == 2:
+            missing = {
+                name: "Required with schema_version 2."
+                for name in ("batch_id", "session_id") if attrs.get(name) is None
+            }
+            if missing:
+                raise serializers.ValidationError(missing)
+            for event in attrs["events"]:
+                if event.get("sequence") is None or event.get("observed_at") is None:
+                    raise serializers.ValidationError(
+                        {"events": "Every event needs sequence and observed_at with schema_version 2."}
+                    )
+        return attrs
 
 
 class ImpressionResultSerializer(serializers.Serializer):
     #: How many of the posts named were recorded. Posts the reader cannot
     #: see, and their own, are left out without complaint.
     recorded = serializers.IntegerField(read_only=True)
+    #: True when this batch had been recorded before and nothing was added.
+    duplicate = serializers.BooleanField(read_only=True, default=False)
+
+    #: Added to a response the app already decodes; see core.schema.
+    optional_response_fields = frozenset({"duplicate"})
 
 
 class TopicSerializer(serializers.Serializer):
@@ -4271,13 +4984,77 @@ class CreatePostSerializer(serializers.Serializer):
         ),
     )
 
+    #: The post this one answers, making it a "Your take". Any kind but a
+    #: planner entry can be one; it is still that kind, with its own caption,
+    #: media and snapshot, and older apps draw it as such. Resolved and
+    #: refused by `publication.take_source_for`, for the reason `source_id`
+    #: is resolved in the view.
+    source_post_id = serializers.IntegerField(
+        min_value=1,
+        max_value=MAX_ID,
+        required=False,
+        help_text=(
+            "The post this is a take of. It must be one you can see, that "
+            "everybody can see, and whose author allows takes. A repost's id "
+            "stands for the post it passes on."
+        ),
+    )
+    #: The sound the clip is set to: somebody's that may be reused, or the
+    #: author's own. Resolved by `publication.sound_for`.
+    sound_id = serializers.IntegerField(
+        min_value=1,
+        max_value=MAX_ID,
+        required=False,
+        help_text="A sound to set this post's clip to, if it uses one.",
+    )
+    #: Who may post a take of this.
+    reuse_permission = serializers.ChoiceField(
+        choices=Post.Reuse.choices,
+        required=False,
+        default=Post.Reuse.EVERYONE,
+    )
+    language = serializers.CharField(
+        max_length=16,
+        required=False,
+        allow_blank=True,
+        help_text="The language the caption is written in, as a tag such as en or pt-BR.",
+    )
+    #: Plain strings checked here rather than an enum in the contract, so a
+    #: topic added later is not a value an older app cannot send.
+    topics = serializers.ListField(
+        child=serializers.CharField(max_length=40),
+        required=False,
+        allow_empty=True,
+        max_length=20,
+        help_text=(
+            "What the post is about: up to five codes for a type of training "
+            "(type:running) or a discipline (discipline:powerlifting)."
+        ),
+    )
+
     def validate_caption(self, value):
         return value.strip()
 
     def validate_cooking_instructions(self, value):
         return value.strip()
 
+    #: An optional prompt this post answers, one of `GET /social/prompts/`.
+    prompt = serializers.CharField(max_length=24, required=False, allow_blank=True)
+
+    def validate_language(self, value):
+        return checked_language(value)
+
+    def validate_topics(self, value):
+        return checked_post_topics(value)
+
+    def validate_prompt(self, value):
+        return checked_post_prompt(value)
+
     def validate(self, attrs):
+        if attrs.get("source_post_id") is not None and attrs["kind"] == Post.Kind.PLANNER:
+            raise serializers.ValidationError(
+                {"source_post_id": "A planner post cannot be a take. Post a photo, video, workout or recipe."}
+            )
         # Whether there is a source to resolve, but not the resolving: see the
         # note below on source_id.
         if attrs["kind"] == Post.Kind.MEDIA:
@@ -4319,26 +5096,168 @@ class CreatePostSerializer(serializers.Serializer):
     # resolves a source and the single place that refuses one.
 
 
+def checked_language(value):
+    from .publication import normalised_language
+
+    try:
+        return normalised_language(value)
+    except ValueError as error:
+        raise serializers.ValidationError(str(error)) from None
+
+
+def checked_post_topics(value):
+    from .publication import checked_topics
+
+    try:
+        return checked_topics(value)
+    except ValueError as error:
+        raise serializers.ValidationError(str(error)) from None
+
+
+def checked_post_prompt(value):
+    from .publication import checked_prompt
+
+    try:
+        return checked_prompt(value)
+    except ValueError as error:
+        raise serializers.ValidationError(str(error)) from None
+
+
+class PromptSerializer(serializers.Serializer):
+    """A prompt a post can answer, by its code and the words to show."""
+
+    code = serializers.CharField(read_only=True)
+    label = serializers.CharField(read_only=True)
+
+
+class SoundSerializer(serializers.ModelSerializer):
+    """A sound, as anybody who may use or hear it reads it."""
+
+    owner = CreditedPersonSerializer(read_only=True)
+    reuse_permission = serializers.CharField(read_only=True)
+    origin_post_id = serializers.IntegerField(read_only=True, allow_null=True)
+    #: The prepared audio, signed like every other media link. Null until it
+    #: has been extracted, which happens shortly after the sound is made.
+    audio_url = serializers.SerializerMethodField()
+    #: How many posts anybody could see are set to it.
+    use_count = serializers.SerializerMethodField()
+    viewer_is_owner = serializers.SerializerMethodField()
+    viewer_can_use = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Sound
+        fields = [
+            "id", "title", "owner", "duration_ms", "reuse_permission", "origin_post_id",
+            "audio_url", "use_count", "viewer_is_owner", "viewer_can_use", "created_at",
+        ]
+        read_only_fields = fields
+
+    def _viewer(self):
+        return getattr(getattr(self.context.get("request"), "user", None), "repbase_profile", None)
+
+    @extend_schema_field(serializers.CharField(allow_null=True))
+    def get_audio_url(self, sound):
+        if not sound.audio_key:
+            return None
+        from .media import signed_media_path
+
+        request = self.context.get("request")
+        path = signed_media_path(sound.audio_key)
+        return request.build_absolute_uri(path) if request else path
+
+    @extend_schema_field(serializers.IntegerField())
+    def get_use_count(self, sound):
+        return int(getattr(sound, "use_total", 0) or 0)
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_is_owner(self, sound):
+        viewer = self._viewer()
+        return viewer is not None and sound.owner_id == viewer.pk
+
+    @extend_schema_field(serializers.BooleanField())
+    def get_viewer_can_use(self, sound):
+        from .publication import may_reuse
+
+        viewer = self._viewer()
+        if viewer is None:
+            return False
+        return may_reuse(
+            viewer, sound.owner_id, sound.reuse_permission,
+            lambda: sound.owner_id in PublicRepbaseUserSerializer(context=self.context)._followed_profile_ids,
+        )
+
+
+class PublishSoundSerializer(serializers.Serializer):
+    """What an author says when they make a post's audio a sound."""
+
+    title = serializers.CharField(max_length=120, required=False, allow_blank=True, default="")
+    reuse_permission = serializers.ChoiceField(
+        choices=Post.Reuse.choices, required=False, default=Post.Reuse.EVERYONE
+    )
+
+    def validate_title(self, value):
+        value = value.strip()
+        if value:
+            check_public_content({"title": value}, request=self.context.get("request"))
+        return value
+
+
+class CreateSoundSerializer(PublishSoundSerializer):
+    #: The post whose audio it is. One of the author's own.
+    post = serializers.IntegerField(min_value=1, max_value=MAX_ID)
+
+
+class UpdateSoundSerializer(PublishSoundSerializer):
+    title = serializers.CharField(max_length=120, required=False, allow_blank=False)
+    reuse_permission = serializers.ChoiceField(choices=Post.Reuse.choices, required=False)
+
+
 class UpdatePostSerializer(serializers.ModelSerializer):
-    """The two things about a post that can still change.
+    """What about a post can still change: its words, and who it is for.
 
     The snapshot is not among them. It is the record of what happened, and one
     that could be edited into a different workout after people had read it would
-    be worth nothing as a record.
+    be worth nothing as a record. Nor is what it is a take of, or its sound:
+    those are what it was published as.
+
+    Closing a post to takes stops new ones. The takes already made of it are
+    their authors' own posts and stay.
     """
 
     visibility = serializers.ChoiceField(
         choices=Post.Visibility.choices,
         required=False,
     )
+    reuse_permission = serializers.ChoiceField(
+        choices=Post.Reuse.choices,
+        required=False,
+    )
+    language = serializers.CharField(max_length=16, required=False, allow_blank=True)
+    topics = serializers.ListField(
+        child=serializers.CharField(max_length=40),
+        required=False,
+        allow_empty=True,
+        max_length=20,
+    )
+
+    prompt = serializers.CharField(max_length=24, required=False, allow_blank=True)
 
     class Meta:
         model = Post
-        fields = ["caption", "visibility"]
+        fields = ["caption", "visibility", "reuse_permission", "language", "topics", "prompt"]
+
+    def validate_prompt(self, value):
+        return checked_post_prompt(value)
 
     def validate_caption(self, value):
         check_public_content({'caption': value}, request=self.context.get("request"))
         return value.strip()
+
+    def validate_language(self, value):
+        return checked_language(value)
+
+    def validate_topics(self, value):
+        return checked_post_topics(value)
 
 
 class UnreadCountSerializer(serializers.Serializer):
@@ -4582,46 +5501,6 @@ class DailyStepCountRecordSerializer(serializers.Serializer):
     #: Each day is an upsert in one transaction, so the batch is bounded:
     #: the app sends a week, and a year is more than any backfill needs.
     days = DailyStepCountEntrySerializer(many=True, allow_empty=True, max_length=400)
-
-
-class HealthWorkoutSerializer(serializers.Serializer):
-    """One finished workout on its way in from Apple Health."""
-
-    external_id = serializers.CharField(max_length=64)
-    activity = serializers.ChoiceField(choices=WorkoutTemplate.WorkoutType.choices)
-    started_at = serializers.DateTimeField()
-    ended_at = serializers.DateTimeField()
-    distance_km = serializers.DecimalField(
-        max_digits=7,
-        decimal_places=3,
-        required=False,
-        allow_null=True,
-    )
-
-    def validate(self, attrs):
-        if attrs["ended_at"] < attrs["started_at"]:
-            raise serializers.ValidationError(
-                {"ended_at": "End time cannot be before start time."}
-            )
-        return attrs
-
-
-class HealthWorkoutImportSerializer(serializers.Serializer):
-    #: Bounded for the same reason as step counts: two lookups and a write per
-    #: workout, in one transaction. The app sends thirty days.
-    workouts = HealthWorkoutSerializer(many=True, allow_empty=True, max_length=500)
-
-
-class HealthImportResultSerializer(serializers.Serializer):
-    """What the import did, counted rather than described.
-
-    Three numbers rather than one, because "nothing happened" has three very
-    different causes and a user who imported nothing deserves to know which.
-    """
-
-    imported = serializers.IntegerField()
-    skipped_overlapping = serializers.IntegerField()
-    already_imported = serializers.IntegerField()
 
 
 class GearSerializer(serializers.ModelSerializer):
@@ -4986,7 +5865,19 @@ class PersonalizationSerializer(serializers.ModelSerializer):
         return value
 
 
-class FoodSearchResultSerializer(serializers.Serializer):
+class FoodDiscoveryResultSerializer(serializers.Serializer):
+    """A search candidate, not nutrition and never a loggable food entry.
+
+    Resolve source_id through food/search with barcode:<GTIN> before showing
+    portions or saving. The search index does not preserve a reliable basis.
+    """
+
+    source_id = serializers.CharField()
+    name = serializers.CharField()
+    brand = serializers.CharField(allow_blank=True)
+
+
+class FoodSearchResultSerializer(FoodMetadataSerializerMixin, serializers.Serializer):
     """One food from the public catalogue, in the shape the app logs.
 
     Deliberately the same four figures a FoodEntry holds, and nothing else the
@@ -4994,6 +5885,8 @@ class FoodSearchResultSerializer(serializers.Serializer):
     reason every other nutrition figure here is: a calorie count that travels
     as a JSON number comes back from some parsers as 232.99999999999997.
     """
+
+    optional_response_fields = ("reference_quantity", "reference_unit", "nutrients")
 
     source_id = serializers.CharField()
     name = serializers.CharField()
