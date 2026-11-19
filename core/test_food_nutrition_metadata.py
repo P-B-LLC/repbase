@@ -5,12 +5,12 @@ from unittest import mock
 
 from django.test import TestCase
 from django.utils import timezone
-from rest_framework.test import APITestCase, APIClient
+from rest_framework.test import APITestCase
 
 from . import food_sources as off
 from .food_nutrition import FOOD_METADATA_FIELDS
 from .fixtures_for_tests import FAST_PASSWORDS
-from .models import Cookbook, FoodEntry, FoodMeal, FoodSearchCache, Post, SavedFoodMeal
+from .models import Cookbook, FoodMeal, FoodSearchCache, Post, SavedFoodMeal
 from .test_open_food_facts import product
 from .tests import RepbaseAPITestMixin
 

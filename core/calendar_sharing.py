@@ -13,6 +13,7 @@ from django.db.models import Exists, OuterRef, Q
 from django.utils import timezone
 from rest_framework.exceptions import APIException, NotFound, ValidationError
 
+from .params import MAX_ID
 from .models import Block, CalendarShare, CalendarShareExclusion, Follow, PlannerEntry, PlannerRecurrence, RepbaseUser
 
 MAX_RECIPIENT_ACTIVE_SHARES = 250
@@ -143,10 +144,25 @@ def create_invitations(owner, data):
     return list(share_queryset().filter(pk__in=[row.pk for row in result]).order_by("id")), changed
 
 
+def share_pk(value):
+    """A share id from the URL, or 404 -- as for any id that names nothing.
+
+    The router passes the path segment through as text, and `.get(pk="abc")`
+    raises ValueError (a 500) rather than DoesNotExist.
+    """
+    try:
+        identifier = int(value)
+    except (TypeError, ValueError):
+        raise NotFound() from None
+    if not 1 <= identifier <= MAX_ID:
+        raise NotFound()
+    return identifier
+
+
 @transaction.atomic
 def respond_invitation(viewer, share_id, answer):
     try:
-        row = CalendarShare.objects.select_for_update().get(pk=share_id, recipient=viewer)
+        row = CalendarShare.objects.select_for_update().get(pk=share_pk(share_id), recipient=viewer)
     except CalendarShare.DoesNotExist:
         raise NotFound() from None
     # The share lock serializes against the unfollow/block revoke signals.
@@ -164,7 +180,7 @@ def respond_invitation(viewer, share_id, answer):
 @transaction.atomic
 def revoke_invitation(owner, share_id):
     try:
-        row = CalendarShare.objects.select_for_update().get(pk=share_id, owner=owner)
+        row = CalendarShare.objects.select_for_update().get(pk=share_pk(share_id), owner=owner)
     except CalendarShare.DoesNotExist:
         raise NotFound() from None
     if row.status != "revoked":

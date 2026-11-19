@@ -207,7 +207,9 @@ def sign_in_attempt_refusal(request):
     address, which the cache has no business holding.
     """
     allowed = getattr(settings, "DJANGO_LOGIN_ATTEMPTS_PER_ADDRESS", 5)
-    key = "django-login:" + salted_hmac("django-login", client_address(request)).hexdigest()
+    key = "django-login:" + salted_hmac(
+        "django-login", client_address(request), algorithm="sha1",
+    ).hexdigest()
     try:
         cache.add(key, 0, SIGN_IN_WINDOW_SECONDS)
         attempts = cache.incr(key)

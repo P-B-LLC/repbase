@@ -1,7 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from unittest import skipUnless
 
-from django.db import close_old_connections, connection, transaction
+from django.db import close_old_connections, connection
 from django.db.migrations.executor import MigrationExecutor
 from django.test import TransactionTestCase
 from django.db.models import Count

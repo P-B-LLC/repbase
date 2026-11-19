@@ -30,8 +30,12 @@ class CalendarPrivateResponses:
     permission_classes = [IsAuthenticated]
 
     def viewer(self):
-        profile, _ = RepbaseUser.objects.get_or_create(user=self.request.user)
-        return profile
+        # Asked for two or three times per request (queryset, payload,
+        # response); one get_or_create is enough. DRF makes a new view for
+        # every request, so this never outlives the request it read.
+        if getattr(self, "_viewer", None) is None:
+            self._viewer, _ = RepbaseUser.objects.get_or_create(user=self.request.user)
+        return self._viewer
 
     def finalize_response(self, request, response, *args, **kwargs):
         response = super().finalize_response(request, response, *args, **kwargs)

@@ -3,7 +3,6 @@
 All writers lock the owner first, then collections. Locks are per account and
 cover short SQL work only, so simultaneous saves cannot exceed the 20 limit.
 """
-from django.db import transaction
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 

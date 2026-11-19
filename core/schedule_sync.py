@@ -15,7 +15,7 @@ Keep this module's deletion callable importable: migrations refer to it.
 The FK is deliberately private to the backend, not a writable API field.
 """
 
-from django.db import models, transaction
+from django.db import transaction
 from django.db.models import Exists, OuterRef, Q, Subquery
 from django.db.models.deletion import CASCADE, SET_NULL
 from django.utils import timezone

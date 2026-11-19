@@ -34,6 +34,7 @@ from .cookbook_serializers import PostCookbookSerializer
 from .params import MAX_ID
 from .food_nutrition import FOOD_METADATA_FIELDS, FoodMetadataSerializerMixin
 from .uploads import check_image_dimensions, without_metadata
+from .recommendations import MAX_ADDED_TOPICS
 from .throttles import FailedSignInLimit
 from .health_serializers import HealthWorkoutSummarySerializer, HealthWorkoutImportSerializer, HealthImportResultSerializer
 
@@ -4848,7 +4849,8 @@ class UpdateForYouPreferencesSerializer(serializers.Serializer):
         child=serializers.CharField(max_length=40), required=False, allow_empty=True, max_length=20
     )
     added_topics = serializers.ListField(
-        child=serializers.CharField(max_length=160), required=False, allow_empty=True, max_length=30
+        child=serializers.CharField(max_length=160), required=False, allow_empty=True,
+        max_length=MAX_ADDED_TOPICS,
     )
 
     def validate_added_topics(self, value):

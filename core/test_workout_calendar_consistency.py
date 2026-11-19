@@ -20,7 +20,6 @@ from rest_framework.test import APIClient, APITestCase, APITransactionTestCase
 
 from .models import (
     PlannerEntry,
-    WorkoutRecurrence,
     WorkoutSchedule,
     WorkoutSession,
     WorkoutTemplate,

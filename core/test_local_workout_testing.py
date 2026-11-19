@@ -32,7 +32,10 @@ class LocalWorkoutLauncherTests(TestCase):
             env = launcher.local_environment({})
             def resolve(path, *args, **kwargs):
                 if path == source:
-                    return Path(temp) / "config/local_workout_testing.py"
+                    # Resolved, as the real one is: on macOS the temporary
+                    # directory is a symlink (/var -> /private/var), and
+                    # prepare_state hands back the resolved path.
+                    return original_resolve(Path(temp)) / "config/local_workout_testing.py"
                 return original_resolve(path, *args, **kwargs)
             with patch.dict(os.environ, env, clear=True), patch.object(Path, "resolve", autospec=True, side_effect=resolve):
                 settings = runpy.run_module("config.local_workout_testing")

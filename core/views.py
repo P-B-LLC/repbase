@@ -80,7 +80,6 @@ from .throttles import (
 )
 from .videos import ReceivedVideo, VideoUploadParser, attach_video, remove_video
 from .publication import (
-    PROMPTS,
     checked_prompt,
     hashtags_in,
     lineage_from,

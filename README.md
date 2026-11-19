@@ -20,19 +20,44 @@ The native iOS application is maintained as a separate project. This repository 
 - Body-weight history
 - Owner-scoped data access
 - A social feed: posts built from workouts, meals and plans, with photos and short video clips
-- A personalized For You page (see [RECOMMENDATIONS.md](RECOMMENDATIONS.md))
-- Reporting, moderation and human review of video (see [MODERATION_OPERATIONS.md](MODERATION_OPERATIONS.md))
+- A personalized For You page (see [docs/RECOMMENDATIONS.md](docs/RECOMMENDATIONS.md))
+- Reporting, moderation and human review of video (see [docs/MODERATION_OPERATIONS.md](docs/MODERATION_OPERATIONS.md))
 - Interactive OpenAPI documentation
 
 ## Technology
 
-- Python 3.12+
+- Python 3.12+ (CI and production use 3.14)
 - Django 6.1
 - Django REST Framework 3.18
 - SQLite for local development
 - drf-spectacular for OpenAPI generation
 
+## Repository layout
+
+```text
+config/        Settings: settings.py (development), production.py, test_postgres.py,
+               test_e2e.py (the iOS end-to-end suite), loadtest.py, local_workout_testing.py
+core/          The Django app: models, serializers, views, feature modules
+               (calendar_sharing*, health_*, cookbook*, sound*, recommendations, ...),
+               management/commands, migrations, templates, static
+core/test_*.py The test suite (one module per feature)
+deploy/        deploy.sh, systemd units and timers, nginx snippets, operator notes
+loadtest/      The mixed Social load-test harness and reviewed baselines
+Scripts/       Contract validation and the local workout-testing launcher
+docs/          Guides, runbooks and feature notes; docs/archive/ holds old PDF exports
+openapi.yaml   The committed API contract (CI fails if it drifts from the serializers)
+```
+
 ## Local setup
+
+On macOS or Linux:
+
+```sh
+python3.14 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python manage.py migrate
+.venv/bin/python manage.py runserver 5000
+```
 
 From PowerShell in the project directory:
 
@@ -142,13 +167,14 @@ Starting and ending a session records its timestamps. `duration_seconds` is calc
 
 ## Testing and validation
 
-Run the automated API tests (about 815 tests, three minutes):
+Run the automated API tests (about 2,200 tests; nine minutes serially, two
+to three with `--parallel 4`):
 
-```powershell
-python manage.py test core
+```sh
+.venv/bin/python manage.py test core --parallel 4
 ```
 
-[TESTING.md](TESTING.md) covers every suite across the three repositories --
+[docs/TESTING.md](docs/TESTING.md) covers every suite across the three repositories --
 the backend on SQLite and PostgreSQL, the contract checks, the web client's
 unit tests, the web-to-backend integration suite, and the iOS tests -- and what
 each one proves.
@@ -182,12 +208,16 @@ SQLite is appropriate for local development. A production deployment should use 
 
 ## Project documentation
 
-- [User Guide](USER_GUIDE.md) - plain-language walkthrough
-- [API Guide](API.md) - API integration details
-- [Testing](TESTING.md) - how to run every suite, and what each covers
+- [User Guide](docs/USER_GUIDE.md) - plain-language walkthrough
+- [API Guide](docs/API.md) - API integration details
+- [Testing](docs/TESTING.md) - how to run every suite, and what each covers
 - [Security](SECURITY.md) - audit findings, controls in place, remaining risks
-- [Recommendations](RECOMMENDATIONS.md) - how the For You page ranks, and how to tune and monitor it
-- [Product Feature Summary](PRODUCT_FEATURE_SUMMARY.md) - product scope and roadmap
-- [OpenAPI specification](openapi.yaml) - machine-readable contract for the iOS client
+- [Recommendations](docs/RECOMMENDATIONS.md) - how the For You page ranks, and how to tune and monitor it
+- [Product Feature Summary](docs/PRODUCT_FEATURE_SUMMARY.md) - product scope and roadmap
+- [Social release](docs/SOCIAL_RELEASE.md) and [privacy](docs/SOCIAL_PRIVACY.md) - staged rollout and data handling
+- [Hosted configuration](docs/HOSTED_CONFIGURATION.md) and [deploy/README.md](deploy/README.md) - running it
+- [OpenAPI specification](openapi.yaml) - machine-readable contract for the iOS and web clients
 
-PDF versions of the user, API, and product guides are included for convenient sharing.
+Everything else in [docs/](docs/) is a feature note or a testing handoff. The
+PDFs in [docs/archive/](docs/archive/) are exports from the first version and
+are older than the Markdown guides.

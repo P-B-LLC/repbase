@@ -221,6 +221,18 @@ class MeasuredWorld(ForYouTestCase):
             patcher = mock.patch.object(ranking_model, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
+        # Production holds a reader out by hashing their id, and ids here
+        # depend on how many rows every earlier test module created
+        # (PostgreSQL does not reset sequences between tests). Left to the
+        # hash, this world held out anywhere from 5 readers (31 test
+        # exposures against a minimum of 30) to too few to judge, depending
+        # only on what ran before it. Hold out exactly every fifth reader:
+        # the share HOLDOUT_SHARE intends, whatever the ids turn out to be.
+        held = {viewer.pk for viewer in self.viewers[::5]}
+        self.assertAlmostEqual(len(held) / len(self.viewers), ranking_model.HOLDOUT_SHARE)
+        patcher = mock.patch.object(ranking_model, "_held_out", side_effect=lambda viewer_id: viewer_id in held)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
 
 class MeasuredLabelTests(MeasuredWorld):

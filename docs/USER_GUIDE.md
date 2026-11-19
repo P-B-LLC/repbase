@@ -244,4 +244,4 @@ The exercise may belong to another account. Create your own version or select an
 
 ## Additional help
 
-For technical request and response details, see the [Repbase API Guide](API.md). Developers integrating the iOS application should use the validated [OpenAPI specification](openapi.yaml).
+For technical request and response details, see the [Repbase API Guide](API.md). Developers integrating the iOS application should use the validated [OpenAPI specification](../openapi.yaml).

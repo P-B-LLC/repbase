@@ -12,7 +12,6 @@ from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase, APITransactionTestCase
 
 from .fixtures_for_tests import FAST_PASSWORDS, make_account
-from .health_imports import import_health_workouts
 from .health_models import AppleHealthConnection, HealthWorkoutRecord
 from .health_serializers import HealthWorkoutImportSerializer
 from .models import (DailyStepCount, Exercise, SessionExercise, SetEntry, WorkoutSession,

@@ -498,6 +498,73 @@ class CalendarSharingTests(RepbaseAPITestMixin, APITestCase):
         self.assertLessEqual(len(large), len(small) + 1)
         self.assertEqual(PlannerEntry.objects.count(), before)
 
+    def test_malformed_share_ids_are_not_found_not_server_errors(self):
+        share = self.invite(self.entry()).data["shares"][0]
+        for bad in ("abc", "1.5", "0", "-3", str(2 ** 63), str(10 ** 30)):
+            self.authenticate(self.owner_token)
+            self.assertEqual(self.client.post(f"/api/v1/calendar/shares/{bad}/revoke/").status_code, 404, bad)
+            self.authenticate(self.reader_token)
+            self.assertEqual(self.client.post(f"/api/v1/calendar/invitations/{bad}/accept/").status_code, 404, bad)
+            self.assertEqual(self.client.post(f"/api/v1/calendar/invitations/{bad}/decline/").status_code, 404, bad)
+        # Nothing about the real invitation changed.
+        self.assertEqual(CalendarShare.objects.get(pk=share["id"]).status, "pending")
+
+    def test_answering_a_revoked_invitation_names_the_state_conflict(self):
+        share = self.invite(self.entry()).data["shares"][0]
+        self.authenticate(self.owner_token)
+        self.assertEqual(self.client.post(f"/api/v1/calendar/shares/{share['id']}/revoke/").status_code, 200)
+        response = self.accept(share, code=409)
+        self.assertEqual(response.data["code"], "state_conflict")
+        self.assertTrue(response.data["detail"])
+
+    def test_accepting_twice_and_declining_after_accepting_are_allowed(self):
+        share = self.invite(self.entry()).data["shares"][0]
+        self.assertEqual(self.accept(share).data["status"], "accepted")
+        self.assertEqual(self.accept(share).data["status"], "accepted")
+        self.authenticate(self.reader_token)
+        declined = self.client.post(f"/api/v1/calendar/invitations/{share['id']}/decline/")
+        self.assertEqual(declined.status_code, 200)
+        self.assertEqual(declined.data["status"], "declined")
+        # Declined is final for the recipient: accepting again is a conflict.
+        self.accept(share, code=409)
+
+    def test_revoking_twice_is_idempotent(self):
+        share = self.invite(self.entry()).data["shares"][0]
+        self.authenticate(self.owner_token)
+        first = self.client.post(f"/api/v1/calendar/shares/{share['id']}/revoke/")
+        second = self.client.post(f"/api/v1/calendar/shares/{share['id']}/revoke/")
+        self.assertEqual((first.status_code, second.status_code), (200, 200))
+        self.assertEqual(CalendarShare.objects.get(pk=share["id"]).status, "revoked")
+
+    def test_source_entry_filter_refuses_non_ids(self):
+        self.authenticate(self.owner_token)
+        for bad in ("abc", "0", "-1", "1.5"):
+            response = self.client.get("/api/v1/calendar/shares/", {"source_entry_id": bad})
+            self.assertEqual(response.status_code, 400, bad)
+            self.assertIn("source_entry_id", response.data)
+
+    def test_every_shared_read_is_private_and_uncached(self):
+        self.active(self.entry())
+        self.authenticate(self.reader_token)
+        for path, params in (
+            ("/api/v1/calendar/shared/day/", {"date": str(self.day)}),
+            ("/api/v1/calendar/shared/month/", {"start": str(self.day), "end": str(self.day)}),
+            ("/api/v1/calendar/invitations/", {}),
+            ("/api/v1/calendar/share-recipients/", {}),
+        ):
+            response = self.client.get(path, params)
+            self.assertEqual(response.status_code, 200, path)
+            self.assertEqual(response["Cache-Control"], "private, no-store", path)
+            self.assertIn("Authorization", response["Vary"], path)
+        self.authenticate(self.owner_token)
+        self.assertEqual(self.client.get("/api/v1/calendar/shares/")["Cache-Control"], "private, no-store")
+
+    def test_recipient_search_is_cut_to_eighty_characters(self):
+        self.authenticate(self.owner_token)
+        response = self.client.get("/api/v1/calendar/share-recipients/", {"search": "x" * 500})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 0)
+
 
 @skipUnless(connection.vendor == "postgresql", "PostgreSQL row locks are required")
 @override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
