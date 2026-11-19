@@ -161,4 +161,4 @@ Every new response field is optional in the contract, and no response enum gaine
 - The user's `unit_preference` controls client display, not stored values.
 - Resource ownership is derived from the authentication token and cannot be assigned in request bodies.
 
-The committed [OpenAPI schema](openapi.yaml) is the source of truth for request and response shapes.
+The committed [OpenAPI schema](../openapi.yaml) is the source of truth for request and response shapes.
