@@ -498,6 +498,17 @@ class CalendarSharingTests(RepbaseAPITestMixin, APITestCase):
         self.assertLessEqual(len(large), len(small) + 1)
         self.assertEqual(PlannerEntry.objects.count(), before)
 
+    def test_malformed_share_ids_are_not_found_not_server_errors(self):
+        share = self.invite(self.entry()).data["shares"][0]
+        for bad in ("abc", "1.5", "0", "-3", str(2 ** 63), str(10 ** 30)):
+            self.authenticate(self.owner_token)
+            self.assertEqual(self.client.post(f"/api/v1/calendar/shares/{bad}/revoke/").status_code, 404, bad)
+            self.authenticate(self.reader_token)
+            self.assertEqual(self.client.post(f"/api/v1/calendar/invitations/{bad}/accept/").status_code, 404, bad)
+            self.assertEqual(self.client.post(f"/api/v1/calendar/invitations/{bad}/decline/").status_code, 404, bad)
+        # Nothing about the real invitation changed.
+        self.assertEqual(CalendarShare.objects.get(pk=share["id"]).status, "pending")
+
 
 @skipUnless(connection.vendor == "postgresql", "PostgreSQL row locks are required")
 @override_settings(PASSWORD_HASHERS=["django.contrib.auth.hashers.MD5PasswordHasher"])
