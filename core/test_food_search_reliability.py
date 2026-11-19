@@ -1,15 +1,13 @@
 """No network: bounded modern discovery, authoritative details and shared gates."""
 from datetime import timedelta
 from concurrent.futures import ThreadPoolExecutor
-from decimal import Decimal
-import json
 from threading import Barrier
 import time
 from unittest import mock
 from unittest import skipUnless
 
 from django.db import close_old_connections, connection
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase
 

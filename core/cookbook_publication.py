@@ -4,7 +4,7 @@ from rest_framework.exceptions import ValidationError
 
 from .cookbooks import MAX_COOKBOOK_RECIPES, available_name, lock_owner
 from .cookbook_serializers import CookbookRecipeSerializer
-from .models import Cookbook, PostCookbook, SavedFoodIngredient, SavedFoodMeal
+from .models import Cookbook, SavedFoodIngredient, SavedFoodMeal
 from .food_nutrition import food_metadata_snapshot
 
 

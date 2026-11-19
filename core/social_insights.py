@@ -158,7 +158,6 @@ def product_figures(day, days):
 
     start, end = _bounds(day, days)
     member = _members("viewer")
-    same = {"post": OuterRef("post")}
     saved = (
         Exists(WorkoutTemplate.objects.filter(owner=OuterRef("viewer"), source_post=OuterRef("post")))
         | Exists(SavedFoodMeal.objects.filter(owner=OuterRef("viewer"), source_post=OuterRef("post")))

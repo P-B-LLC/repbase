@@ -9,8 +9,6 @@ from pathlib import Path
 
 from .driver import CORE_GROUPS, GROUPS
 
-GROUP_FIELDS = ("count", "errors_5xx", "failures", "p50_ms", "p95_ms", "p99_ms", "sql_count_mean", "sql_ms_mean")
-
 
 def percentile(values, fraction):
     if not values:

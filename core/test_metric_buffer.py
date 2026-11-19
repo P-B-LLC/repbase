@@ -9,7 +9,6 @@ import os
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone as datetime_timezone
-from decimal import Decimal
 from types import SimpleNamespace
 from unittest import mock, skipUnless
 

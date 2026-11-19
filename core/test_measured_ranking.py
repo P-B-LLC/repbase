@@ -16,12 +16,12 @@ from django.test import SimpleTestCase, override_settings
 from django.utils import timezone
 
 from . import recommendations
-from .fixtures_for_tests import meal_post, workout_post
+from .fixtures_for_tests import meal_post
 from .models import (
-    Follow, Post, PostEngagementStats, PostHashtag, PostLike, PostVideo, PostView, Sound,
+    Follow, Post, PostEngagementStats, PostHashtag, PostLike, PostView, Sound,
 )
 from .recommendations import (
-    CANDIDATE_SHARES, MEASURED_VARIANT, TAG_CEILING, Candidate, FeedWeights, InterestProfile,
+    CANDIDATE_SHARES, MEASURED_VARIANT, TAG_CEILING, FeedWeights, InterestProfile,
     RankState, build_profile, build_ranking, candidates, eligible_posts, experiment_config,
     format_baselines, rank, score,
 )

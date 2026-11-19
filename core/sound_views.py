@@ -24,7 +24,6 @@ from .serializers import (
     CreateSoundSerializer,
     PostSerializer,
     PromptSerializer,
-    PublishSoundSerializer,
     SoundSerializer,
     UpdateSoundSerializer,
 )

@@ -30,7 +30,7 @@ from .activities import (
     ACTIVITIES,
 )
 from .exercise_library import muscle_index_for, search_text_for
-from zoneinfo import ZoneInfo, available_timezones
+from zoneinfo import ZoneInfo
 
 from django.utils import timezone
 
@@ -3309,10 +3309,6 @@ class Sound(models.Model):
     def __str__(self):
         return f"{self.title} ({self.owner})"
 
-    @property
-    def is_prepared(self):
-        return bool(self.audio_key)
-
 
 class PostHashtag(models.Model):
     """One hashtag on one post.
@@ -5181,10 +5177,6 @@ class FoodSearchCache(models.Model):
 
     def __str__(self):
         return self.term
-
-    @property
-    def is_fresh(self):
-        return timezone.now() - self.fetched_at < self.LIFETIME
 
     @classmethod
     def prune(cls, now=None):

@@ -2695,7 +2695,6 @@ def forget_reasons(viewer):
 # a later page re-ranked from its session.
 
 LATENCY_BUCKETS_MS = (25, 50, 100, 250, 500, 1000, 2500)
-LATENCY_KINDS = ("first", "next")
 
 
 def _latency_key(hour, label, kind="first"):

@@ -8,7 +8,6 @@ never sees: a media post with nothing yet to show is its author's alone, and
 reaches everybody else the moment its clip is ready, with no second publish.
 """
 
-import io
 import tempfile
 from pathlib import Path
 from unittest import mock
